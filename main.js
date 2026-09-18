@@ -24,6 +24,22 @@ var __copyProps = (to, from, except, desc) => {
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// src/models/notations.ts
+function isNotationType(value) {
+  return NOTATION_TYPES.includes(value);
+}
+function normalizeNotationType(value) {
+  const normalized = String(value != null ? value : "").trim().toLowerCase();
+  return isNotationType(normalized) ? normalized : DEFAULT_NOTATION_TYPE;
+}
+var NOTATION_TYPES, DEFAULT_NOTATION_TYPE;
+var init_notations = __esm({
+  "src/models/notations.ts"() {
+    NOTATION_TYPES = ["highlight", "underline", "box", "circle", "strike-through", "crossed-off"];
+    DEFAULT_NOTATION_TYPE = "highlight";
+  }
+});
+
 // src/utils/highlights.ts
 function escapeRegex(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -56,6 +72,13 @@ function extractBackgroundFromStyle(styleValue) {
   }
   return null;
 }
+function extractAttribute(openTag, attributeName) {
+  var _a;
+  const pattern = new RegExp(`\\s${escapeRegex(attributeName)}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i");
+  const match = openTag.match(pattern);
+  const value = (_a = match == null ? void 0 : match[2]) == null ? void 0 : _a.trim();
+  return value || null;
+}
 function normalizeTagsText(tagsText) {
   const tokens = String(tagsText || "").split(/\s+/).map((token) => token.trim()).filter(Boolean);
   const cleaned = tokens.map((token) => token.replace(/^#/, "")).filter(Boolean).map((token) => `#${token}`);
@@ -84,7 +107,7 @@ function parseFootnotes(raw) {
   return results;
 }
 function parseHighlights(raw) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
   const newline = detectNewline(raw);
   const footnotes = parseFootnotes(raw);
   const highlights = [];
@@ -114,6 +137,9 @@ function parseHighlights(raw) {
         text: ((_a = match[1]) != null ? _a : "").trim(),
         line: lineIdx,
         type: "markdown",
+        notationType: "highlight",
+        color: null,
+        groupId: null,
         start,
         end,
         innerStart,
@@ -146,7 +172,10 @@ function parseHighlights(raw) {
       const innerStart = openTagEnd;
       const innerEnd = end - closeTagLength;
       const styleAttr = extractStyleAttribute(openTag);
-      const color = styleAttr ? extractBackgroundFromStyle(styleAttr.value) : null;
+      const styleColor = styleAttr ? extractBackgroundFromStyle(styleAttr.value) : null;
+      const color = (_h = extractAttribute(openTag, "data-fp-color")) != null ? _h : styleColor;
+      const notationType = normalizeNotationType(extractAttribute(openTag, "data-fp-notation"));
+      const groupId = extractAttribute(openTag, "data-fp-group");
       const { tagsText, tagsStart, tagsEnd } = extractLeadingTagsRange(line, lineOffset, match.index);
       const footnote = detectFootnoteForHighlight({
         line,
@@ -157,10 +186,12 @@ function parseHighlights(raw) {
       });
       highlights.push({
         id: `${lineIdx}:${matchIndex}`,
-        text: ((_h = match[1]) != null ? _h : "").trim(),
+        text: ((_i = match[1]) != null ? _i : "").trim(),
         line: lineIdx,
         type: "html",
+        notationType,
         color: color ? color.trim() : null,
+        groupId,
         start,
         end,
         innerStart,
@@ -173,11 +204,11 @@ function parseHighlights(raw) {
         tagsText,
         tagsStart,
         tagsEnd,
-        footnoteId: (_i = footnote == null ? void 0 : footnote.id) != null ? _i : null,
-        footnoteStart: (_j = footnote == null ? void 0 : footnote.start) != null ? _j : null,
-        footnoteEnd: (_k = footnote == null ? void 0 : footnote.end) != null ? _k : null,
-        footnotePlacement: (_l = footnote == null ? void 0 : footnote.placement) != null ? _l : null,
-        annotation: (footnote == null ? void 0 : footnote.id) ? (_n = (_m = footnotes.get(footnote.id)) == null ? void 0 : _m.text) != null ? _n : "" : ""
+        footnoteId: (_j = footnote == null ? void 0 : footnote.id) != null ? _j : null,
+        footnoteStart: (_k = footnote == null ? void 0 : footnote.start) != null ? _k : null,
+        footnoteEnd: (_l = footnote == null ? void 0 : footnote.end) != null ? _l : null,
+        footnotePlacement: (_m = footnote == null ? void 0 : footnote.placement) != null ? _m : null,
+        annotation: (footnote == null ? void 0 : footnote.id) ? (_o = (_n = footnotes.get(footnote.id)) == null ? void 0 : _n.text) != null ? _o : "" : ""
       });
       matchIndex++;
     }
@@ -488,6 +519,7 @@ function migrateSpanHighlightsInRaw(raw) {
 }
 var init_highlights = __esm({
   "src/utils/highlights.ts"() {
+    init_notations();
   }
 });
 

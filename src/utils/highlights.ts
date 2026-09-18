@@ -1,12 +1,14 @@
+import { normalizeNotationType, type NotationSpec } from "../models/notations";
+
 export type HighlightType = "markdown" | "html";
 export type FootnotePlacement = "after" | "inside";
 
-export interface Highlight {
+export interface Highlight extends NotationSpec {
     id: string;
     text: string;
     line: number;
     type: HighlightType;
-    color?: string | null;
+    color: string | null;
     start: number;
     end: number;
     innerStart: number;
@@ -16,6 +18,7 @@ export interface Highlight {
     closeTagStart: number;
     closeTagEnd: number;
     openTag?: string;
+    groupId: string | null;
     tagsText: string;
     tagsStart: number | null;
     tagsEnd: number | null;
@@ -101,6 +104,15 @@ function extractBackgroundFromStyle(styleValue: string | null | undefined): stri
     return null;
 }
 
+function extractAttribute(openTag: string, attributeName: string): string | null {
+    const pattern = new RegExp(`\\s${escapeRegex(attributeName)}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i");
+
+    const match = openTag.match(pattern);
+    const value = match?.[2]?.trim();
+
+    return value || null;
+}
+
 function normalizeTagsText(tagsText: string): string {
     const tokens = String(tagsText || "")
         .split(/\s+/)
@@ -173,6 +185,9 @@ export function parseHighlights(raw: string): ParsedHighlights {
                 text: (match[1] ?? "").trim(),
                 line: lineIdx,
                 type: "markdown",
+                notationType: "highlight",
+                color: null,
+                groupId: null,
                 start,
                 end,
                 innerStart,
@@ -210,7 +225,13 @@ export function parseHighlights(raw: string): ParsedHighlights {
             const innerEnd = end - closeTagLength;
 
             const styleAttr = extractStyleAttribute(openTag);
-            const color = styleAttr ? extractBackgroundFromStyle(styleAttr.value) : null;
+            const styleColor = styleAttr ? extractBackgroundFromStyle(styleAttr.value) : null;
+
+            const color = extractAttribute(openTag, "data-fp-color") ?? styleColor;
+
+            const notationType = normalizeNotationType(extractAttribute(openTag, "data-fp-notation"));
+
+            const groupId = extractAttribute(openTag, "data-fp-group");
 
             const { tagsText, tagsStart, tagsEnd } = extractLeadingTagsRange(line, lineOffset, match.index);
             const footnote = detectFootnoteForHighlight({
@@ -226,7 +247,9 @@ export function parseHighlights(raw: string): ParsedHighlights {
                 text: (match[1] ?? "").trim(),
                 line: lineIdx,
                 type: "html",
+                notationType,
                 color: color ? color.trim() : null,
+                groupId,
                 start,
                 end,
                 innerStart,

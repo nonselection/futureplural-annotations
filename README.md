@@ -1,3 +1,17 @@
+# FuturePlural Annotations
+
+FuturePlural Annotations is an independent development fork of
+[Reader Highlighter Tags](https://github.com/DuckTapeKiller/obsidian-reader-highlighter-tags)
+by [DuckTapeKiller](https://github.com/DuckTapeKiller), originally released under
+the MIT License. It preserves the upstream Git history and licence while extending
+the plugin into a reading-view notation system whose visual gesture and semantic
+colour are independent choices.
+
+The inherited upstream feature documentation follows below and will be revised as
+FuturePlural functionality replaces or extends it.
+
+---
+
 [![GitHub Repo stars](https://img.shields.io/github/stars/DuckTapeKiller/obsidian-reader-highlighter-tags?style=flat&logo=obsidian&color=%238e44ad)](https://github.com/DuckTapeKiller/obsidian-reader-highlighter-tags/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/DuckTapeKiller/obsidian-reader-highlighter-tags?logo=obsidian&color=%238e44ad)](https://github.com/DuckTapeKiller/obsidian-reader-highlighter-tags/issues)
 [![GitHub closed issues](https://img.shields.io/github/issues-closed/DuckTapeKiller/obsidian-reader-highlighter-tags?logo=obsidian&color=%238e44ad)](https://github.com/DuckTapeKiller/obsidian-reader-highlighter-tags/issues?q=is%3Aissue+is%3Aclosed)
