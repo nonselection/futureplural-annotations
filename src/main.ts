@@ -11,6 +11,7 @@ import {
     WorkspaceLeaf,
     loadPdfJs,
     type SettingDefinitionItem,
+    type SettingGroupItem,
 } from "obsidian";
 import { FloatingManager, type SelectionSnapshot } from "./ui/FloatingManager";
 import { SelectionLogic } from "./core/SelectionLogic";
@@ -885,7 +886,10 @@ export default class ReadingHighlighterPlugin extends Plugin {
                 if (i % 10 === 0) notice.setMessage(`Extracting text... Page ${i}/${pdf.numPages}`);
             }
 
-            const dummySnapshot = { text: fullText };
+            const dummySnapshot: SelectionSnapshot = {
+                text: fullText,
+                range: null,
+            };
             await this.savePdfHighlight(view, dummySnapshot, "action", "highlightSelection");
             notice.hide();
             new Notice(`Successfully extracted ${pdf.numPages} pages.`);
@@ -1777,7 +1781,7 @@ class ReadingHighlighterSettingTab extends PluginSettingTab {
      */
     getSettingDefinitions(): SettingDefinitionItem[] {
         const s = this.plugin.settings;
-        const colourMeanings: SettingDefinitionItem[] = s.semanticColors.map((item, index) => ({
+        const colourMeanings: SettingGroupItem[] = s.semanticColors.map((item, index) => ({
             name: `Color ${index + 1}`,
             desc: item.color,
             aliases: item.meaning ? [item.meaning] : [],

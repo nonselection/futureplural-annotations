@@ -1387,7 +1387,10 @@ var SelectionLogic = class {
       snippet = snippet.trim();
     }
     const activeFile = view.file;
-    const opContext = { cache: /* @__PURE__ */ new Map(), visited: /* @__PURE__ */ new Set() };
+    const opContext = {
+      cache: /* @__PURE__ */ new Map(),
+      visited: /* @__PURE__ */ new Set()
+    };
     const virtual = await this.resolveVirtualContent(activeFile, 0, opContext);
     const fullRaw = virtual.text;
     let firstSegmentBodyStart = 0;
@@ -4035,17 +4038,14 @@ var ResearchView = class extends import_obsidian7.ItemView {
 };
 
 // src/utils/dom.ts
-function getPreview(view) {
-  return view.previewMode;
-}
 function getScroll(view) {
-  const preview = getPreview(view);
-  return typeof (preview == null ? void 0 : preview.getScroll) === "function" ? preview.getScroll() : getFallbackScroll(view);
+  const preview = view.previewMode;
+  return typeof (preview == null ? void 0 : preview.getScroll) === "function" ? { x: 0, y: preview.getScroll() } : getFallbackScroll(view);
 }
 function applyScroll(view, pos) {
-  const preview = getPreview(view);
+  const preview = view.previewMode;
   if (typeof (preview == null ? void 0 : preview.applyScroll) === "function") {
-    preview.applyScroll(pos);
+    preview.applyScroll(pos.y);
   } else {
     setFallbackScroll(view, pos);
   }
@@ -4965,7 +4965,10 @@ ${appendString}`;
         fullText += pageText + "\n\n";
         if (i % 10 === 0) notice.setMessage(`Extracting text... Page ${i}/${pdf.numPages}`);
       }
-      const dummySnapshot = { text: fullText };
+      const dummySnapshot = {
+        text: fullText,
+        range: null
+      };
       await this.savePdfHighlight(view, dummySnapshot, "action", "highlightSelection");
       notice.hide();
       new import_obsidian9.Notice(`Successfully extracted ${pdf.numPages} pages.`);

@@ -9,6 +9,7 @@
         "predeploy": "npm run build",
         "deploy": "node --env-file-if-exists=.env.local scripts/deploy.mjs",
         "test": "vitest run",
+        "typecheck": "tsc --noEmit",
         "test:watch": "vitest",
         "lint": "eslint src tests scripts *.mjs package.json manifest.json",
         "format": "prettier --write \"src/**/*.{js,ts}\" \"tests/**/*.{js,ts}\" \"scripts/**/*.mjs\" \"*.{json,md,mjs}\"",

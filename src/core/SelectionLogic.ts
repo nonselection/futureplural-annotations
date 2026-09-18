@@ -208,7 +208,10 @@ export class SelectionLogic {
         }
 
         const activeFile = view.file;
-        const opContext = { cache: /* @__PURE__ */ new Map(), visited: /* @__PURE__ */ new Set() };
+        const opContext: OpContext = {
+            cache: new Map(),
+            visited: new Set(),
+        };
         const virtual = await this.resolveVirtualContent(activeFile, 0, opContext);
         const fullRaw = virtual.text;
 
