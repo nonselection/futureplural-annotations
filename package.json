@@ -1,7 +1,7 @@
 {
-    "name": "reader-highlighter-tags",
-    "version": "1.0.7",
-    "description": "Highlight text in Reading View",
+    "name": "futureplural-annotations",
+    "version": "0.1.0",
+    "description": "Annotate text and add tags in Reading View.",
     "main": "main.js",
     "scripts": {
         "dev": "node esbuild.config.mjs",
@@ -16,7 +16,7 @@
         "obsidian",
         "obsidian-plugin"
     ],
-    "author": "DuckTapeKiller",
+    "author": "nonselection",
     "license": "MIT",
     "optionalDependencies": {
         "@esbuild/darwin-x64": "^0.28.0"
