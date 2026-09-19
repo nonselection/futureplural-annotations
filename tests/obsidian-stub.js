@@ -20,6 +20,12 @@ export class Component extends Events {
     registerEvent() {}
     registerInterval() {}
 }
+export class MarkdownRenderChild extends Component {
+    constructor(containerEl) {
+        super();
+        this.containerEl = containerEl;
+    }
+}
 export class Plugin extends Component {
     constructor(app, manifest) {
         super();

@@ -47,5 +47,8 @@
         "brace-expansion": "1.1.13",
         "flatted": "3.4.2",
         "minimatch": "3.1.4"
+    },
+    "dependencies": {
+        "rough-notation": "^0.5.1"
     }
 }

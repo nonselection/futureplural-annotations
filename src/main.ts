@@ -33,6 +33,7 @@ import {
 import { getSelectedOccurrence, type SelectionHint } from "./utils/blockOccurrence";
 import { kindForTag, type BlockKind } from "./utils/sourceBlocks";
 import { BulkRecolorModal } from "./modals/BulkRecolorModal";
+import { RoughNotationRenderer } from "./core/RoughNotationRenderer";
 
 export interface SemanticColor {
     color: string;
@@ -184,6 +185,10 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
         this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
         this.registerCommands();
+
+        this.registerMarkdownPostProcessor((el, ctx) => {
+            ctx.addChild(new RoughNotationRenderer(el));
+        });
 
         this.registerDomEvent(activeDocument, "selectionchange", () => {
             this.floatingManager.handleSelection();

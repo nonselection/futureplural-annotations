@@ -45,7 +45,9 @@
     /* Standard Shadow */
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     color: var(--text-normal);
-    transition: transform 0.1s ease-in-out, background-color 0.15s;
+    transition:
+        transform 0.1s ease-in-out,
+        background-color 0.15s;
 }
 
 .reading-highlighter-btn svg,
@@ -114,7 +116,9 @@ body.theme-light .reading-highlighter-remove-btn:hover {
     border-radius: var(--button-radius);
     border: 2px solid rgba(255, 255, 255, 0.4);
     cursor: pointer;
-    transition: transform 0.1s, box-shadow 0.15s;
+    transition:
+        transform 0.1s,
+        box-shadow 0.15s;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
@@ -581,7 +585,11 @@ body .highlight-navigator-container .highlight-navigator-item .highlight-item-me
     font-size: 18px;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.12s ease, background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    transition:
+        opacity 0.12s ease,
+        background-color 0.12s ease,
+        border-color 0.12s ease,
+        color 0.12s ease;
 }
 
 body .highlight-navigator-container .highlight-navigator-item:hover .highlight-item-menu {
@@ -1031,11 +1039,11 @@ body.is-mobile .research-view-container {
     .research-view-header {
         padding: 12px;
     }
-    
+
     .research-view-color-filters {
         gap: 4px;
     }
-    
+
     .research-color-chip {
         padding: 4px 8px;
         font-size: 0.75em;
@@ -1237,24 +1245,24 @@ body.is-mobile .research-view-container {
 }
 
 /* --- Failure Recovery Modal --- */
-.recovery-desc { 
-    margin-bottom: 20px; 
-    color: var(--text-muted); 
+.recovery-desc {
+    margin-bottom: 20px;
+    color: var(--text-muted);
     font-size: 0.95em;
 }
 
-.recovery-info-box { 
-    background: var(--background-secondary); 
-    padding: 12px; 
-    border-radius: var(--radius-m); 
-    margin-bottom: 20px; 
-    border: 1px solid var(--background-modifier-border); 
+.recovery-info-box {
+    background: var(--background-secondary);
+    padding: 12px;
+    border-radius: var(--radius-m);
+    margin-bottom: 20px;
+    border: 1px solid var(--background-modifier-border);
 }
 
-.recovery-snippet-preview { 
-    font-family: var(--font-monospace); 
-    font-size: 0.85em; 
-    margin-top: 8px; 
+.recovery-snippet-preview {
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+    margin-top: 8px;
     color: var(--text-accent);
     padding: 6px;
     background: var(--background-primary);
@@ -1262,20 +1270,20 @@ body.is-mobile .research-view-container {
     word-break: break-all;
 }
 
-.recovery-rule-preview { 
-    margin-top: 15px; 
+.recovery-rule-preview {
+    margin-top: 15px;
     padding: 10px;
     border-radius: var(--radius-s);
-    font-weight: 500; 
+    font-weight: 500;
     min-height: 24px;
     background: var(--background-secondary-alt);
     font-size: 0.9em;
 }
 
-.recovery-instruction { 
-    margin-top: 20px; 
-    margin-bottom: 8px; 
-    font-weight: bold; 
+.recovery-instruction {
+    margin-top: 20px;
+    margin-bottom: 8px;
+    font-weight: bold;
     color: var(--text-normal);
 }
 
@@ -1364,4 +1372,12 @@ body .reading-highlighter-float-container.is-pdf-view button.pdf-only-btn {
     border-radius: 4px;
     margin-right: 10px;
     flex-shrink: 0;
+}
+
+/* Rough Notation supplies the visible gesture.
+   Keep the semantic <mark> wrapper in the DOM
+   without painting a second rectangular background. */
+
+.markdown-rendered mark.fp-rough-notation-target {
+    background: transparent !important;
 }

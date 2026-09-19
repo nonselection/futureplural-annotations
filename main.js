@@ -214,7 +214,7 @@ function parseHighlights(raw) {
     }
     lineOffset += line.length + (lineIdx < lines.length - 1 ? newline.length : 0);
   }
-  highlights.sort((a, b) => a.start - b.start);
+  highlights.sort((a2, b) => a2.start - b.start);
   return { highlights, footnotes };
 }
 function extractLeadingTagsRange(line, lineOffset, wrapperStartInLine) {
@@ -271,7 +271,7 @@ function detectFootnoteForHighlight({
   };
 }
 function findHighlightById(parsed, id) {
-  return parsed.highlights.find((h) => h.id === id) || null;
+  return parsed.highlights.find((h2) => h2.id === id) || null;
 }
 function removeHighlightFromRaw(raw, highlight) {
   if (!highlight) return raw;
@@ -441,7 +441,7 @@ function removeAllFootnotesFromRaw(raw) {
   return { raw: updated, removedCount };
 }
 function applyDeletions(raw, deletions) {
-  const ranges = (deletions || []).filter((r) => r && Number.isInteger(r.start) && Number.isInteger(r.end) && r.end > r.start).sort((a, b) => b.start - a.start);
+  const ranges = (deletions || []).filter((r2) => r2 && Number.isInteger(r2.start) && Number.isInteger(r2.end) && r2.end > r2.start).sort((a2, b) => b.start - a2.start);
   let updated = raw;
   for (const range of ranges) {
     updated = updated.slice(0, range.start) + updated.slice(range.end);
@@ -458,24 +458,24 @@ function mergeAdjacentHighlightsInRaw(raw) {
     const highlights = parsed.highlights;
     const deletions = [];
     let mergedThisPass = 0;
-    for (let i = 0; i < highlights.length - 1; i++) {
-      const a = highlights[i];
-      const b = highlights[i + 1];
-      if (a.line !== b.line) continue;
-      if (a.type !== b.type) continue;
-      if ((a.tagsText || "").trim() || (b.tagsText || "").trim()) continue;
-      if (a.footnoteId || b.footnoteId) continue;
-      const between = updated.slice(a.closeTagEnd, b.openTagStart);
+    for (let i2 = 0; i2 < highlights.length - 1; i2++) {
+      const a2 = highlights[i2];
+      const b = highlights[i2 + 1];
+      if (a2.line !== b.line) continue;
+      if (a2.type !== b.type) continue;
+      if ((a2.tagsText || "").trim() || (b.tagsText || "").trim()) continue;
+      if (a2.footnoteId || b.footnoteId) continue;
+      const between = updated.slice(a2.closeTagEnd, b.openTagStart);
       if (!/^\s*$/.test(between)) continue;
-      if (a.type === "html") {
-        const aOpen = updated.slice(a.openTagStart, a.openTagEnd);
+      if (a2.type === "html") {
+        const aOpen = updated.slice(a2.openTagStart, a2.openTagEnd);
         const bOpen = updated.slice(b.openTagStart, b.openTagEnd);
         if (aOpen !== bOpen) continue;
       }
-      deletions.push({ start: a.closeTagStart, end: a.closeTagEnd });
+      deletions.push({ start: a2.closeTagStart, end: a2.closeTagEnd });
       deletions.push({ start: b.openTagStart, end: b.openTagEnd });
       mergedThisPass++;
-      i++;
+      i2++;
     }
     if (mergedThisPass === 0) break;
     updated = applyDeletions(updated, deletions);
@@ -491,10 +491,10 @@ function recolorMarkHighlightsInRaw(raw, { fromColor = "", toColor = "" } = {}) 
   }
   const from = String(fromColor || "").trim().toLowerCase();
   const parsed = parseHighlights(updated);
-  const candidates = parsed.highlights.filter((h) => h.type === "html").filter((h) => {
+  const candidates = parsed.highlights.filter((h2) => h2.type === "html").filter((h2) => {
     if (!from) return true;
-    return String(h.color || "").trim().toLowerCase() === from;
-  }).sort((a, b) => b.openTagStart - a.openTagStart);
+    return String(h2.color || "").trim().toLowerCase() === from;
+  }).sort((a2, b) => b.openTagStart - a2.openTagStart);
   let changedCount = 0;
   for (const highlight of candidates) {
     const before = updated;
@@ -524,17 +524,17 @@ var init_highlights = __esm({
 });
 
 // src/utils/time.ts
-function pad2(n) {
-  return String(n).padStart(2, "0");
+function pad2(n2) {
+  return String(n2).padStart(2, "0");
 }
 function formatDate(fmt, date = /* @__PURE__ */ new Date()) {
   const Y = date.getFullYear();
   const M = pad2(date.getMonth() + 1);
   const D = pad2(date.getDate());
-  const h = pad2(date.getHours());
+  const h2 = pad2(date.getHours());
   const m = pad2(date.getMinutes());
-  const s = pad2(date.getSeconds());
-  return fmt === "YYYYMMDD-HHmmss" ? `${Y}${M}${D}-${h}${m}${s}` : `${Y}-${M}-${D} ${h}:${m}`;
+  const s2 = pad2(date.getSeconds());
+  return fmt === "YYYYMMDD-HHmmss" ? `${Y}${M}${D}-${h2}${m}${s2}` : `${Y}-${M}-${D} ${h2}:${m}`;
 }
 var init_time = __esm({
   "src/utils/time.ts"() {
@@ -569,7 +569,7 @@ function csvEscape(value) {
 function ensureBlockIdsForHighlightLines(raw, highlights) {
   const newline = detectNewline2(raw);
   const lines = raw.split(/\r?\n/);
-  const lineSet = new Set(highlights.map((h) => h.line).filter((n) => Number.isInteger(n)));
+  const lineSet = new Set(highlights.map((h2) => h2.line).filter((n2) => Number.isInteger(n2)));
   let changed = false;
   const lineToBlockId = /* @__PURE__ */ new Map();
   for (const lineIdx of lineSet) {
@@ -642,7 +642,7 @@ async function exportHighlightsToMD(app, file) {
 
 ---
 
-${highlights.map((h, i) => `${i + 1}. ${h.text}`).join("\n\n")}
+${highlights.map((h2, i2) => `${i2 + 1}. ${h2.text}`).join("\n\n")}
 
 ---
 
@@ -677,19 +677,19 @@ async function exportHighlightsToJSON(app, file) {
     exported: date,
     source: { path: file.path, basename: file.basename },
     total: parsed.highlights.length,
-    highlights: parsed.highlights.map((h) => {
+    highlights: parsed.highlights.map((h2) => {
       var _a, _b, _c, _d;
-      const blockId = ensured.lineToBlockId.get(h.line) || null;
+      const blockId = ensured.lineToBlockId.get(h2.line) || null;
       return {
-        id: h.id,
-        text: h.text,
-        type: h.type,
-        color: (_a = h.color) != null ? _a : null,
-        tagsText: (_b = h.tagsText) != null ? _b : "",
-        tags: (h.tagsText || "").split(/\s+/).filter(Boolean),
-        annotation: (_c = h.annotation) != null ? _c : "",
-        footnoteId: (_d = h.footnoteId) != null ? _d : null,
-        line: h.line,
+        id: h2.id,
+        text: h2.text,
+        type: h2.type,
+        color: (_a = h2.color) != null ? _a : null,
+        tagsText: (_b = h2.tagsText) != null ? _b : "",
+        tags: (h2.tagsText || "").split(/\s+/).filter(Boolean),
+        annotation: (_c = h2.annotation) != null ? _c : "",
+        footnoteId: (_d = h2.footnoteId) != null ? _d : null,
+        line: h2.line,
         blockId,
         blockEmbed: blockId ? `![[${file.basename}#${blockId}]]` : null
       };
@@ -729,23 +729,23 @@ async function exportHighlightsToCSV(app, file) {
     "block_embed",
     "text"
   ].join(",");
-  const rows = parsed.highlights.map((h) => {
+  const rows = parsed.highlights.map((h2) => {
     var _a, _b, _c, _d;
-    const blockId = ensured.lineToBlockId.get(h.line) || "";
+    const blockId = ensured.lineToBlockId.get(h2.line) || "";
     const blockEmbed = blockId ? `![[${file.basename}#${blockId}]]` : "";
     return [
       csvEscape(file.path),
       csvEscape(file.basename),
-      csvEscape(h.id),
-      csvEscape(h.type),
-      csvEscape((_a = h.color) != null ? _a : ""),
-      csvEscape((h.tagsText || "").trim()),
-      csvEscape((_b = h.annotation) != null ? _b : ""),
-      csvEscape((_c = h.footnoteId) != null ? _c : ""),
-      csvEscape(h.line),
+      csvEscape(h2.id),
+      csvEscape(h2.type),
+      csvEscape((_a = h2.color) != null ? _a : ""),
+      csvEscape((h2.tagsText || "").trim()),
+      csvEscape((_b = h2.annotation) != null ? _b : ""),
+      csvEscape((_c = h2.footnoteId) != null ? _c : ""),
+      csvEscape(h2.line),
       csvEscape(blockId),
       csvEscape(blockEmbed),
-      csvEscape((_d = h.text) != null ? _d : "")
+      csvEscape((_d = h2.text) != null ? _d : "")
     ].join(",");
   });
   const csv = [header, ...rows].join("\n");
@@ -778,11 +778,11 @@ async function exportHighlightsToCanvas(app, allHighlights) {
     throw new Error("No highlights to export.");
   }
   const groups = /* @__PURE__ */ new Map();
-  for (const h of allHighlights) {
-    if (!groups.has(h.file.path)) {
-      groups.set(h.file.path, { file: h.file, highlights: [] });
+  for (const h2 of allHighlights) {
+    if (!groups.has(h2.file.path)) {
+      groups.set(h2.file.path, { file: h2.file, highlights: [] });
     }
-    groups.get(h.file.path).highlights.push(h);
+    groups.get(h2.file.path).highlights.push(h2);
   }
   const nodes = [];
   const edges = [];
@@ -806,10 +806,10 @@ async function exportHighlightsToCanvas(app, allHighlights) {
       // Default obsidian color (blue/green-ish)
     });
     let rowIndex = 1;
-    for (const h of group.highlights) {
+    for (const h2 of group.highlights) {
       const hNodeId = generateId();
       let canvasColor = "";
-      if (h.color) {
+      if (h2.color) {
         const colorMap = {
           "#ffcdd2": "1",
           "#f8bbd0": "6",
@@ -827,12 +827,12 @@ async function exportHighlightsToCanvas(app, allHighlights) {
           "#ffecb3": "2",
           "#ffe0b2": "2"
         };
-        canvasColor = colorMap[h.color.toLowerCase()] || "";
+        canvasColor = colorMap[h2.color.toLowerCase()] || "";
       }
       nodes.push({
         id: hNodeId,
         type: "text",
-        text: `${h.text}
+        text: `${h2.text}
 
 \u2014 [[${group.file.path}|${group.file.basename}]]`,
         x: currentX,
@@ -873,7 +873,7 @@ __export(main_exports, {
   default: () => ReadingHighlighterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 
 // src/ui/FloatingManager.ts
 var import_obsidian = require("obsidian");
@@ -1248,14 +1248,14 @@ function tableCellRanges(line, lineStart) {
     while (end > start && /\s/.test(line[end - 1])) end--;
     if (end > start) cells.push({ start: lineStart + start, end: lineStart + end, kind: "table" });
   };
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === "\\") {
-      i++;
+  for (let i2 = 0; i2 < line.length; i2++) {
+    if (line[i2] === "\\") {
+      i2++;
       continue;
     }
-    if (line[i] === "|") {
-      push(cursor, i);
-      cursor = i + 1;
+    if (line[i2] === "|") {
+      push(cursor, i2);
+      cursor = i2 + 1;
     }
   }
   push(cursor, line.length);
@@ -1390,8 +1390,8 @@ var SelectionLogic = class {
           break;
         }
       }
-    } catch (e) {
-      console.warn("[Highlighter] Regex execution error:", e instanceof Error ? e.message : String(e));
+    } catch (e2) {
+      console.warn("[Highlighter] Regex execution error:", e2 instanceof Error ? e2.message : String(e2));
     }
     return results;
   }
@@ -1411,8 +1411,8 @@ var SelectionLogic = class {
           try {
             const regex = new RegExp(this.escapeRegex(rule.stripPattern), "g");
             snippet = snippet.replace(regex, "");
-          } catch (e) {
-            console.warn("[Highlighter] Failed to apply learned rule:", rule, e);
+          } catch (e2) {
+            console.warn("[Highlighter] Failed to apply learned rule:", rule, e2);
           }
         }
       }
@@ -1529,7 +1529,7 @@ var SelectionLogic = class {
     }
     const cache = this.app.metadataCache.getFileCache(file);
     const embeds = (cache == null ? void 0 : cache.embeds) || [];
-    const sortedEmbeds = [...embeds].sort((a, b) => a.position.start.offset - b.position.start.offset);
+    const sortedEmbeds = [...embeds].sort((a2, b) => a2.position.start.offset - b.position.start.offset);
     let sliceStart = 0;
     let sliceEnd = raw.length;
     if (fragmentKey) {
@@ -1611,7 +1611,7 @@ var SelectionLogic = class {
     if (!rawFragment) return "";
     try {
       return decodeURIComponent(rawFragment).trim();
-    } catch (e) {
+    } catch (e2) {
       return rawFragment;
     }
   }
@@ -1634,15 +1634,15 @@ var SelectionLogic = class {
       });
     }
     const idx = headings.findIndex(
-      (h) => h.normalized === needle || h.normalized.includes(needle) || needle.includes(h.normalized)
+      (h2) => h2.normalized === needle || h2.normalized.includes(needle) || needle.includes(h2.normalized)
     );
     if (idx === -1) return null;
     const start = headings[idx].index;
     const level = headings[idx].level;
     let end = raw.length;
-    for (let i = idx + 1; i < headings.length; i++) {
-      if (headings[i].level <= level) {
-        end = headings[i].index;
+    for (let i2 = idx + 1; i2 < headings.length; i2++) {
+      if (headings[i2].level <= level) {
+        end = headings[i2].index;
         break;
       }
     }
@@ -1673,7 +1673,7 @@ var SelectionLogic = class {
     const candidates = [];
     candidates.push(decoded);
     if (decoded.includes("#")) {
-      const parts = decoded.split("#").map((p) => p.trim()).filter(Boolean);
+      const parts = decoded.split("#").map((p2) => p2.trim()).filter(Boolean);
       if (parts.length) candidates.push(parts[parts.length - 1]);
     }
     for (const cand of candidates) {
@@ -1747,8 +1747,8 @@ var SelectionLogic = class {
           matches.push({ start: match.index, end: match.index + match[0].length, length: match[0].length });
         }
       }
-      for (let i = matches.length - 1; i >= 0; i--) {
-        const { start, end, length } = matches[i];
+      for (let i2 = matches.length - 1; i2 >= 0; i2--) {
+        const { start, end, length } = matches[i2];
         currentText = currentText.substring(0, start) + currentText.substring(end);
         const newSegments = [];
         for (const seg of currentSegments) {
@@ -1783,8 +1783,8 @@ var SelectionLogic = class {
     return { text: currentText, segments: currentSegments };
   }
   mapVirtualToPhysical(vStart, vEnd, segments) {
-    const startSeg = segments.find((s) => vStart >= s.vStart && vStart < s.vEnd);
-    const endSeg = segments.find((s) => vEnd > s.vStart && vEnd <= s.vEnd);
+    const startSeg = segments.find((s2) => vStart >= s2.vStart && vStart < s2.vEnd);
+    const endSeg = segments.find((s2) => vEnd > s2.vStart && vEnd <= s2.vEnd);
     if (!startSeg || !endSeg) return null;
     const pStart = startSeg.pOffset + (vStart - startSeg.vStart);
     const pEnd = endSeg.pOffset + (vEnd - endSeg.vStart);
@@ -1846,7 +1846,7 @@ var SelectionLogic = class {
   resolveCandidates(candidates, raw, snippet, context, occurrenceIndex, withinBlock = null, blocks = [], contextKind = null) {
     if (candidates.length === 0) return null;
     const seenStarts = /* @__PURE__ */ new Set();
-    const unique = candidates.slice().sort((a, b) => a.start - b.start).filter((cand) => {
+    const unique = candidates.slice().sort((a2, b) => a2.start - b.start).filter((cand) => {
       if (seenStarts.has(cand.start)) return false;
       seenStarts.add(cand.start);
       return true;
@@ -1862,10 +1862,10 @@ var SelectionLogic = class {
       const expected = blockStart + Math.max(0, withinBlock.caret);
       let best = pool[0];
       let bestDistance = Math.abs(pool[0].start - expected);
-      for (let i = 1; i < pool.length; i++) {
-        const distance = Math.abs(pool[i].start - expected);
+      for (let i2 = 1; i2 < pool.length; i2++) {
+        const distance = Math.abs(pool[i2].start - expected);
         if (distance < bestDistance) {
-          best = pool[i];
+          best = pool[i2];
           bestDistance = distance;
         }
       }
@@ -1889,9 +1889,9 @@ var SelectionLogic = class {
           candidates: [cand]
         });
       }
-      const scored = [...groups.values()].map((group) => ({ ...group, score: this.calculateSimilarity(group.text, cleanContext) })).sort((a, b) => b.score - a.score || a.start - b.start);
+      const scored = [...groups.values()].map((group) => ({ ...group, score: this.calculateSimilarity(group.text, cleanContext) })).sort((a2, b) => b.score - a2.score || a2.start - b.start);
       if (scored.length > 0) {
-        const byStart = (a, b) => a.start - b.start;
+        const byStart = (a2, b) => a2.start - b.start;
         const exact = scored.filter((group) => group.text === cleanContext).sort(byStart);
         const containing = scored.filter((group) => group.text.includes(cleanContext)).sort(byStart);
         const best = scored[0];
@@ -1946,8 +1946,8 @@ var SelectionLogic = class {
     const parts = [];
     let pendingGap = false;
     const codePoints = [...normalizedLine];
-    for (let i = 0; i < codePoints.length; i++) {
-      const char = codePoints[i];
+    for (let i2 = 0; i2 < codePoints.length; i2++) {
+      const char = codePoints[i2];
       if (/\s/.test(char)) {
         pendingGap = true;
         continue;
@@ -1957,7 +1957,7 @@ var SelectionLogic = class {
         pendingGap = false;
       }
       parts.push(this.getFlexibleCharPattern(char));
-      if (i < codePoints.length - 1) {
+      if (i2 < codePoints.length - 1) {
         parts.push(FLEX_INTER_CHAR_GAP_PATTERN);
       }
     }
@@ -2013,8 +2013,8 @@ var SelectionLogic = class {
       try {
         startRegex = new RegExp(startP, "gmu");
         endRegex = new RegExp(endP, "gmu");
-      } catch (e) {
-        console.error("INVALID REGEX PATTERN (anchor):", e);
+      } catch (e2) {
+        console.error("INVALID REGEX PATTERN (anchor):", e2);
         return [];
       }
       const startMatches = [];
@@ -2026,8 +2026,8 @@ var SelectionLogic = class {
             startMatches.push(match);
           }
         }
-      } catch (e) {
-        console.warn("Regex execution failed on startRegex (mobile backtracking limit):", e);
+      } catch (e2) {
+        console.warn("Regex execution failed on startRegex (mobile backtracking limit):", e2);
         return [];
       }
       try {
@@ -2036,8 +2036,8 @@ var SelectionLogic = class {
             endMatches.push(match);
           }
         }
-      } catch (e) {
-        console.warn("Regex execution failed on endRegex (mobile backtracking limit):", e);
+      } catch (e2) {
+        console.warn("Regex execution failed on endRegex (mobile backtracking limit):", e2);
         return [];
       }
       if (startMatches.length > 0 && endMatches.length > 0) {
@@ -2102,20 +2102,20 @@ var SelectionLogic = class {
       return 0;
     };
     const extractVisibleText = (startPos, endPos) => {
-      for (let i = startPos; i < endPos; i++) {
-        const skip = isFormattingMarker(text, i);
+      for (let i2 = startPos; i2 < endPos; i2++) {
+        const skip = isFormattingMarker(text, i2);
         if (skip > 0) {
-          i += skip - 1;
+          i2 += skip - 1;
           continue;
         }
-        map.push(i);
-        strippedRaw += text[i];
+        map.push(i2);
+        strippedRaw += text[i2];
       }
     };
     const addRawText = (startPos, endPos) => {
-      for (let i = startPos; i < endPos; i++) {
-        map.push(i);
-        strippedRaw += text[i];
+      for (let i2 = startPos; i2 < endPos; i2++) {
+        map.push(i2);
+        strippedRaw += text[i2];
       }
     };
     const tokenRegex = new RegExp(
@@ -2151,9 +2151,9 @@ var SelectionLogic = class {
     let match;
     try {
       while ((match = tokenRegex.exec(text)) !== null) {
-        for (let i = lastIndex; i < match.index; i++) {
-          map.push(i);
-          strippedRaw += text[i];
+        for (let i2 = lastIndex; i2 < match.index; i2++) {
+          map.push(i2);
+          strippedRaw += text[i2];
         }
         const fullMatch = match[0];
         const matchStart = match.index;
@@ -2226,21 +2226,21 @@ var SelectionLogic = class {
             }
           }
           if (decoded) {
-            for (let i = 0; i < decoded.length; i++) {
+            for (let i2 = 0; i2 < decoded.length; i2++) {
               map.push(matchStart);
-              strippedRaw += decoded[i];
+              strippedRaw += decoded[i2];
             }
           }
         }
         lastIndex = tokenRegex.lastIndex;
       }
-    } catch (e) {
-      console.warn("tokenRegex execution failed in findCandidatesStripped (mobile backtracking limit):", e);
+    } catch (e2) {
+      console.warn("tokenRegex execution failed in findCandidatesStripped (mobile backtracking limit):", e2);
       return [];
     }
-    for (let i = lastIndex; i < text.length; i++) {
-      map.push(i);
-      strippedRaw += text[i];
+    for (let i2 = lastIndex; i2 < text.length; i2++) {
+      map.push(i2);
+      strippedRaw += text[i2];
     }
     const patternSnippet = this.stripUrlsForPatternMatch(snippet.trim());
     const pattern = this.createFlexiblePattern(patternSnippet);
@@ -2250,8 +2250,8 @@ var SelectionLogic = class {
     let regex;
     try {
       regex = new RegExp(pattern, "gmu");
-    } catch (e) {
-      console.error("INVALID REGEX PATTERN in findCandidatesStripped:", e);
+    } catch (e2) {
+      console.error("INVALID REGEX PATTERN in findCandidatesStripped:", e2);
       return [];
     }
     const candidates = [];
@@ -2270,8 +2270,8 @@ var SelectionLogic = class {
           });
         }
       }
-    } catch (e) {
-      console.warn("Regex execution failed in findCandidatesStripped (mobile backtracking limit):", e);
+    } catch (e2) {
+      console.warn("Regex execution failed in findCandidatesStripped (mobile backtracking limit):", e2);
       return [];
     }
     return candidates;
@@ -2460,9 +2460,9 @@ var SelectionLogic = class {
     let normalized = "";
     const map = [];
     let offset = 0;
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      if ((char === "x" || char === "X" || char === " ") && text[i - 1] === "[" && text[i + 1] === "]") {
+    for (let i2 = 0; i2 < text.length; i2++) {
+      const char = text[i2];
+      if ((char === "x" || char === "X" || char === " ") && text[i2 - 1] === "[" && text[i2 + 1] === "]") {
         offset++;
         continue;
       }
@@ -2575,18 +2575,18 @@ var SelectionLogic = class {
       }
     }
     if (hits.length === 0) return [];
-    hits.sort((a, b) => a.offset - b.offset);
+    hits.sort((a2, b) => a2.offset - b.offset);
     const candidates = [];
     const windowSize = snippet.length * 2.5;
-    for (let i = 0; i < hits.length; i++) {
-      const startHit = hits[i];
+    for (let i2 = 0; i2 < hits.length; i2++) {
+      const startHit = hits[i2];
       const cluster = [startHit];
-      let j = i + 1;
+      let j = i2 + 1;
       while (j < hits.length && hits[j].offset - startHit.offset < windowSize) {
         cluster.push(hits[j]);
         j++;
       }
-      const uniqueWords = new Set(cluster.map((h) => h.word)).size;
+      const uniqueWords = new Set(cluster.map((h2) => h2.word)).size;
       const coverage = uniqueWords / words.length;
       if (coverage >= 0.8) {
         const clusterStart = cluster[0].offset;
@@ -2600,10 +2600,10 @@ var SelectionLogic = class {
         });
       }
     }
-    return candidates.sort((a, b) => {
+    return candidates.sort((a2, b) => {
       var _a, _b;
-      return ((_a = b.score) != null ? _a : 0) - ((_b = a.score) != null ? _b : 0);
-    }).slice(0, 3).map((c) => ({ start: c.start, end: c.end, text: c.text }));
+      return ((_a = b.score) != null ? _a : 0) - ((_b = a2.score) != null ? _b : 0);
+    }).slice(0, 3).map((c2) => ({ start: c2.start, end: c2.end, text: c2.text }));
   }
   classifyFailure(rawSnippet, cleanedSnippet, bodyContent, diagnostics) {
     var _a, _b, _c, _d;
@@ -2627,7 +2627,7 @@ var SelectionLogic = class {
     const fuzzy = diagnostics.strategies.fuzzyMatch;
     let candidates = proximity && ((_a = proximity.found) != null ? _a : 0) > 0 ? (_b = proximity.results) != null ? _b : [] : fuzzy && ((_c = fuzzy.found) != null ? _c : 0) > 0 ? (_d = fuzzy.results) != null ? _d : [] : [];
     if (candidates.length === 0) {
-      const words = cleanedSnippet.split(/\s+/).filter((w) => w.length > 3).sort((a, b) => b.length - a.length);
+      const words = cleanedSnippet.split(/\s+/).filter((w) => w.length > 3).sort((a2, b) => b.length - a2.length);
       if (words.length > 0) {
         const bestWord = words[0].toLocaleLowerCase();
         const idx = bodyContent.toLocaleLowerCase().indexOf(bestWord);
@@ -2711,20 +2711,20 @@ var TagSuggestModal = class extends import_obsidian2.Modal {
     this.suggestionEl = contentEl.createDiv({ cls: "tag-suggestions-list" });
     doneBtn.onclick = () => this.submit();
     const tagCounts = this.app.metadataCache.getTags();
-    this.allTags = Object.keys(tagCounts).map((t) => t.substring(1));
-    input.addEventListener("input", (e) => {
-      this.query = e.target.value;
+    this.allTags = Object.keys(tagCounts).map((t2) => t2.substring(1));
+    input.addEventListener("input", (e2) => {
+      this.query = e2.target.value;
       this.renderSuggestions(this.query);
     });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
+    input.addEventListener("keydown", (e2) => {
+      if (e2.key === "Enter") {
         if (this.query.trim()) {
           this.toggleTag(this.query.trim());
           this.query = "";
           input.value = "";
           this.renderSuggestions("");
         }
-      } else if (e.key === "Escape") {
+      } else if (e2.key === "Escape") {
         this.close();
       }
     });
@@ -2765,8 +2765,8 @@ var TagSuggestModal = class extends import_obsidian2.Modal {
   renderSuggestions(query) {
     this.suggestionEl.empty();
     const cleanQuery = query.toLowerCase().replace(/\s+/g, "_");
-    const matches = this.allTags.filter((t) => t.toLowerCase().includes(cleanQuery));
-    const isExact = matches.some((t) => t.toLowerCase() === cleanQuery);
+    const matches = this.allTags.filter((t2) => t2.toLowerCase().includes(cleanQuery));
+    const isExact = matches.some((t2) => t2.toLowerCase() === cleanQuery);
     if (cleanQuery && !isExact) {
       this.renderItem(cleanQuery, true);
     }
@@ -2815,14 +2815,14 @@ var TagSuggestModal = class extends import_obsidian2.Modal {
       const chip = this.selectedContainer.createDiv({ cls: "tag-chip" });
       chip.createSpan({ text: `#${tag}` });
       const close = chip.createSpan({ cls: "tag-chip-close", text: "\xD7" });
-      close.onclick = (e) => {
-        e.stopPropagation();
+      close.onclick = (e2) => {
+        e2.stopPropagation();
         this.toggleTag(tag);
       };
     });
   }
   submit() {
-    const result = Array.from(this.selectedTags).map((t) => `#${t}`).join(" ");
+    const result = Array.from(this.selectedTags).map((t2) => `#${t2}`).join(" ");
     void this.onChoose(result);
     this.close();
   }
@@ -2860,9 +2860,9 @@ var AnnotationModal = class extends import_obsidian3.Modal {
       this.comment = value;
     });
     window.setTimeout(() => textArea.inputEl.focus(), 50);
-    textArea.inputEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
+    textArea.inputEl.addEventListener("keydown", (e2) => {
+      if (e2.key === "Enter" && !e2.shiftKey) {
+        e2.preventDefault();
         this.submit();
       }
     });
@@ -2951,8 +2951,8 @@ var HighlightEditModal = class extends import_obsidian4.Modal {
       cls: "highlight-edit-tags-input"
     });
     this.tagsInput.value = this.state.tags;
-    this.tagsInput.oninput = (e) => {
-      this.state.tags = e.target.value;
+    this.tagsInput.oninput = (e2) => {
+      this.state.tags = e2.target.value;
     };
     tagsSetting.addButton(
       (btn) => btn.setButtonText("Pick").onClick(() => {
@@ -2968,8 +2968,8 @@ var HighlightEditModal = class extends import_obsidian4.Modal {
     });
     this.annotationInput.rows = 3;
     this.annotationInput.value = this.state.annotation;
-    this.annotationInput.oninput = (e) => {
-      this.state.annotation = e.target.value;
+    this.annotationInput.oninput = (e2) => {
+      this.state.annotation = e2.target.value;
     };
     const footer = contentEl.createDiv({ cls: "modal-footer highlight-edit-footer" });
     const cancelBtn = footer.createEl("button", { text: "Cancel" });
@@ -2998,16 +2998,16 @@ var HighlightEditModal = class extends import_obsidian4.Modal {
       attr: { placeholder: "Hex color like #ff0000" }
     });
     colorText.value = this.state.color || "";
-    colorText.oninput = (e) => {
-      const next = e.target.value.trim();
+    colorText.oninput = (e2) => {
+      const next = e2.target.value.trim();
       this.state.color = next;
       if (/^#[0-9a-fA-F]{6}$/.test(next)) {
         this.colorInput.value = next;
       }
     };
     this.colorTextInput = colorText;
-    this.colorInput.oninput = (e) => {
-      const next = e.target.value;
+    this.colorInput.oninput = (e2) => {
+      const next = e2.target.value;
       this.state.color = next;
       this.colorTextInput.value = next;
     };
@@ -3130,9 +3130,9 @@ var BulkRecolorModal = class extends import_obsidian5.Modal {
     const fromControl = this.fromSetting.controlEl;
     this.fromColorInput = fromControl.createEl("input", { type: "color" });
     this.fromColorInput.value = this.state.fromColor;
-    this.fromColorInput.oninput = (e) => {
+    this.fromColorInput.oninput = (e2) => {
       var _a;
-      this.state.fromColor = e.target.value;
+      this.state.fromColor = e2.target.value;
       const textInput = (_a = this.fromSetting) == null ? void 0 : _a.controlEl.querySelector("input[type='text']");
       if (textInput) textInput.value = this.state.fromColor;
     };
@@ -3149,9 +3149,9 @@ var BulkRecolorModal = class extends import_obsidian5.Modal {
     const toControl = this.toSetting.controlEl;
     this.toColorInput = toControl.createEl("input", { type: "color" });
     this.toColorInput.value = this.state.toColor;
-    this.toColorInput.oninput = (e) => {
+    this.toColorInput.oninput = (e2) => {
       var _a;
-      this.state.toColor = e.target.value;
+      this.state.toColor = e2.target.value;
       const textInput = (_a = this.toSetting) == null ? void 0 : _a.controlEl.querySelector("input[type='text']");
       if (textInput) textInput.value = this.state.toColor;
     };
@@ -3229,8 +3229,8 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       placeholder: "Search...",
       cls: "nav-search-input"
     });
-    searchInput.oninput = (e) => {
-      this.searchQuery = e.target.value.toLowerCase();
+    searchInput.oninput = (e2) => {
+      this.searchQuery = e2.target.value.toLowerCase();
       this.renderContent();
     };
     this.contentEl = container.createDiv({ cls: "highlight-navigator-content" });
@@ -3238,17 +3238,17 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     const footerBtnGroup = footer.createDiv({ cls: "highlight-navigator-footer-buttons" });
     const exportBtn = footerBtnGroup.createEl("button", { text: "Export md", cls: "mod-cta" });
     exportBtn.onclick = () => void this.exportHighlights();
-    exportBtn.oncontextmenu = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.openExportMenu(e);
+    exportBtn.oncontextmenu = (e2) => {
+      e2.preventDefault();
+      e2.stopPropagation();
+      this.openExportMenu(e2);
     };
     const canvasBtn = footerBtnGroup.createEl("button", { text: "Canvas", cls: "mod-cta" });
     canvasBtn.onclick = () => void this.exportCurrentFileToCanvas();
     const scanBtn = footerBtnGroup.createEl("button", { text: "Scan vault", cls: "mod-cta" });
     scanBtn.onclick = () => void this.plugin.activateResearchView();
     const bulkBtn = footerBtnGroup.createEl("button", { text: "Bulk", cls: "mod-cta" });
-    bulkBtn.onclick = (e) => this.openBulkMenu(e);
+    bulkBtn.onclick = (e2) => this.openBulkMenu(e2);
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         void this.refresh();
@@ -3323,13 +3323,13 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     }));
     const isGroupedNotesStyle = definedIds.has("0");
     if (isGroupedNotesStyle) {
-      footnotes = footnotes.filter((f) => f.displayNumber != null);
+      footnotes = footnotes.filter((f2) => f2.displayNumber != null);
     }
-    footnotes.sort((a, b) => {
-      if (a.displayNumber == null && b.displayNumber == null) return a.line - b.line;
-      if (a.displayNumber == null) return 1;
+    footnotes.sort((a2, b) => {
+      if (a2.displayNumber == null && b.displayNumber == null) return a2.line - b.line;
+      if (a2.displayNumber == null) return 1;
       if (b.displayNumber == null) return -1;
-      return a.displayNumber - b.displayNumber;
+      return a2.displayNumber - b.displayNumber;
     });
     return footnotes;
   }
@@ -3397,33 +3397,33 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       }
       const textSpan = el.createSpan({ cls: "highlight-text" });
       textSpan.textContent = this.stripMarkdown(item.text);
-      const openMenu = (e) => {
+      const openMenu = (e2) => {
         if (type === "highlights") {
-          this.openHighlightActionsMenu(item, e);
+          this.openHighlightActionsMenu(item, e2);
         } else {
-          this.openFootnoteActionsMenu(item, e);
+          this.openFootnoteActionsMenu(item, e2);
         }
       };
       const menuBtn = el.createEl("button", { cls: "highlight-item-menu" });
       menuBtn.setAttribute("aria-label", type === "highlights" ? "Highlight actions" : "Annotation actions");
       menuBtn.textContent = "\u22EF";
-      menuBtn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openMenu(e);
+      menuBtn.onclick = (e2) => {
+        e2.preventDefault();
+        e2.stopPropagation();
+        openMenu(e2);
       };
       if (type === "highlights") {
         const numberBadge = el.createSpan({ cls: "highlight-number" });
         numberBadge.textContent = `${index + 1}`;
       }
-      el.oncontextmenu = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openMenu(e);
+      el.oncontextmenu = (e2) => {
+        e2.preventDefault();
+        e2.stopPropagation();
+        openMenu(e2);
       };
-      el.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+      el.onclick = (e2) => {
+        e2.preventDefault();
+        e2.stopPropagation();
         if (type === "footnotes") {
           void this.jumpToFootnote(item);
         } else {
@@ -3603,9 +3603,9 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     );
     const wanted = item.displayNumber != null ? String(item.displayNumber) : null;
     if (wanted) {
-      for (const a of Array.from(anchors)) {
-        if ((a.textContent || "").replace(/\D/g, "") === wanted) {
-          return a;
+      for (const a2 of Array.from(anchors)) {
+        if ((a2.textContent || "").replace(/\D/g, "") === wanted) {
+          return a2;
         }
       }
     }
@@ -3681,8 +3681,8 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     if (!currentFile) return;
     try {
       const { exportHighlightsToCanvas: exportHighlightsToCanvas2 } = await Promise.resolve().then(() => (init_canvas(), canvas_exports));
-      const highlights = this.highlights.map((h) => ({
-        ...h,
+      const highlights = this.highlights.map((h2) => ({
+        ...h2,
         file: currentFile
       }));
       if (highlights.length === 0) {
@@ -3722,8 +3722,8 @@ var VaultScanner = class {
     const total = files.length;
     const results = [];
     const BATCH_SIZE = 20;
-    for (let i = 0; i < total; i += BATCH_SIZE) {
-      const batch = files.slice(i, i + BATCH_SIZE);
+    for (let i2 = 0; i2 < total; i2 += BATCH_SIZE) {
+      const batch = files.slice(i2, i2 + BATCH_SIZE);
       const batchPromises = batch.map(async (file) => {
         const stat = file.stat;
         const cached = this.cache.get(file.path);
@@ -3747,12 +3747,12 @@ var VaultScanner = class {
           results.push(res);
         }
       }
-      const current = Math.min(i + BATCH_SIZE, total);
+      const current = Math.min(i2 + BATCH_SIZE, total);
       const lastFileName = batch[batch.length - 1].basename;
       onProgress(current, total, lastFileName);
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     }
-    results.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
+    results.sort((a2, b) => a2.file.basename.localeCompare(b.file.basename));
     return results;
   }
   /**
@@ -3815,8 +3815,8 @@ var ResearchView = class extends import_obsidian7.ItemView {
       placeholder: "Search all highlights...",
       cls: "research-search-input"
     });
-    searchInput.oninput = (e) => {
-      this.searchQuery = e.target.value.toLowerCase();
+    searchInput.oninput = (e2) => {
+      this.searchQuery = e2.target.value.toLowerCase();
       this.renderContent();
     };
     const propertyFilterRow = header.createDiv({ cls: "research-view-property-filter" });
@@ -3824,8 +3824,8 @@ var ResearchView = class extends import_obsidian7.ItemView {
       cls: "research-property-select"
     });
     this.updatePropertySelector();
-    this.propertySelect.onchange = (e) => {
-      this.filterKey = e.target.value;
+    this.propertySelect.onchange = (e2) => {
+      this.filterKey = e2.target.value;
       this.renderContent();
     };
     const propertyInput = propertyFilterRow.createEl("input", {
@@ -3833,8 +3833,8 @@ var ResearchView = class extends import_obsidian7.ItemView {
       placeholder: "Filter by value...",
       cls: "research-property-input"
     });
-    propertyInput.oninput = (e) => {
-      this.filterValue = e.target.value.toLowerCase();
+    propertyInput.oninput = (e2) => {
+      this.filterValue = e2.target.value.toLowerCase();
       this.renderContent();
     };
     if (this.plugin.settings.enableColorPalette) {
@@ -3911,10 +3911,10 @@ var ResearchView = class extends import_obsidian7.ItemView {
     if (!this.propertySelect) return;
     const currentVal = this.filterKey;
     this.propertySelect.empty();
-    const sortedKeys = Array.from(this.allPropertyKeys).sort((a, b) => {
-      if (a === "All Properties") return -1;
+    const sortedKeys = Array.from(this.allPropertyKeys).sort((a2, b) => {
+      if (a2 === "All Properties") return -1;
       if (b === "All Properties") return 1;
-      return a.localeCompare(b);
+      return a2.localeCompare(b);
     });
     sortedKeys.forEach((key) => {
       const opt = this.propertySelect.createEl("option", { text: key, value: key });
@@ -3924,8 +3924,8 @@ var ResearchView = class extends import_obsidian7.ItemView {
   collectHighlights() {
     const allHighlights = [];
     for (const res of this.scanResults) {
-      for (const h of res.highlights) {
-        allHighlights.push({ ...h, file: res.file, frontmatter: res.frontmatter });
+      for (const h2 of res.highlights) {
+        allHighlights.push({ ...h2, file: res.file, frontmatter: res.frontmatter });
       }
     }
     return allHighlights;
@@ -3935,14 +3935,14 @@ var ResearchView = class extends import_obsidian7.ItemView {
       return highlights;
     }
     const filterVal = this.filterValue.toLowerCase().replace(/^#/, "");
-    return highlights.filter((h) => {
+    return highlights.filter((h2) => {
       var _a;
-      const val = (_a = h.frontmatter) == null ? void 0 : _a[this.filterKey];
+      const val = (_a = h2.frontmatter) == null ? void 0 : _a[this.filterKey];
       if (val === void 0 || val === null) return false;
       if (this.filterKey === "tags" || this.filterKey === "tag") {
         if (Array.isArray(val)) {
           return val.some(
-            (t) => asText3(t).toLowerCase().replace(/^#/, "").includes(filterVal)
+            (t2) => asText3(t2).toLowerCase().replace(/^#/, "").includes(filterVal)
           );
         }
         return asText3(val).toLowerCase().replace(/^#/, "").includes(filterVal);
@@ -3967,22 +3967,22 @@ var ResearchView = class extends import_obsidian7.ItemView {
     const totalHighlights = allHighlights.length;
     allHighlights = this.applyPropertyFilter(allHighlights);
     if (this.searchQuery) {
-      allHighlights = allHighlights.filter((h) => h.text.toLowerCase().includes(this.searchQuery));
+      allHighlights = allHighlights.filter((h2) => h2.text.toLowerCase().includes(this.searchQuery));
     }
     if (this.activeColors.size > 0) {
-      allHighlights = allHighlights.filter((h) => {
-        if (!h.color) return false;
-        return this.activeColors.has(h.color.toLowerCase());
+      allHighlights = allHighlights.filter((h2) => {
+        if (!h2.color) return false;
+        return this.activeColors.has(h2.color.toLowerCase());
       });
     }
     const statsRow = this.contentEl.createDiv({ cls: "research-stats" });
     if (this.searchQuery) {
       const fileMap = /* @__PURE__ */ new Map();
-      for (const h of allHighlights) {
-        if (!fileMap.has(h.file.path)) {
-          fileMap.set(h.file.path, { file: h.file, highlights: [] });
+      for (const h2 of allHighlights) {
+        if (!fileMap.has(h2.file.path)) {
+          fileMap.set(h2.file.path, { file: h2.file, highlights: [] });
         }
-        fileMap.get(h.file.path).highlights.push(h);
+        fileMap.get(h2.file.path).highlights.push(h2);
       }
       const filteredGroups = [...fileMap.values()];
       const fileCount = filteredGroups.length;
@@ -3995,16 +3995,16 @@ var ResearchView = class extends import_obsidian7.ItemView {
         headerEl.createSpan({ cls: "research-group-title", text: group.file.basename });
         headerEl.createSpan({ cls: "research-group-badge", text: `${group.highlights.length}` });
         const listEl = groupEl.createDiv({ cls: "research-highlight-list" });
-        group.highlights.forEach((h) => {
+        group.highlights.forEach((h2) => {
           const itemEl = listEl.createDiv({ cls: "research-highlight-item" });
-          if (h.color) {
+          if (h2.color) {
             const dot = itemEl.createSpan({ cls: "research-color-dot" });
-            dot.setCssStyles({ backgroundColor: h.color });
+            dot.setCssStyles({ backgroundColor: h2.color });
           }
-          itemEl.createSpan({ cls: "research-item-text", text: h.text });
-          itemEl.onclick = (e) => {
-            e.stopPropagation();
-            void this.jumpToHighlight(group.file, h.line);
+          itemEl.createSpan({ cls: "research-item-text", text: h2.text });
+          itemEl.onclick = (e2) => {
+            e2.stopPropagation();
+            void this.jumpToHighlight(group.file, h2.line);
           };
         });
       }
@@ -4012,18 +4012,18 @@ var ResearchView = class extends import_obsidian7.ItemView {
       const totalFileCount = this.scanResults.length;
       statsRow.textContent = `${totalHighlights} highlights across ${totalFileCount} files.`;
       const listEl = this.contentEl.createDiv({ cls: "research-highlight-list research-flat-list" });
-      for (const h of allHighlights) {
+      for (const h2 of allHighlights) {
         const itemEl = listEl.createDiv({ cls: "research-highlight-item" });
-        if (h.color) {
+        if (h2.color) {
           const dot = itemEl.createSpan({ cls: "research-color-dot" });
-          dot.setCssStyles({ backgroundColor: h.color });
+          dot.setCssStyles({ backgroundColor: h2.color });
         }
-        const displayText = h.text.length > 120 ? h.text.substring(0, 120) + "..." : h.text;
+        const displayText = h2.text.length > 120 ? h2.text.substring(0, 120) + "..." : h2.text;
         itemEl.createSpan({ cls: "research-item-text", text: displayText });
-        itemEl.createSpan({ cls: "research-source-badge", text: h.file.basename });
-        itemEl.onclick = (e) => {
-          e.stopPropagation();
-          void this.jumpToHighlight(h.file, h.line);
+        itemEl.createSpan({ cls: "research-source-badge", text: h2.file.basename });
+        itemEl.onclick = (e2) => {
+          e2.stopPropagation();
+          void this.jumpToHighlight(h2.file, h2.line);
         };
       }
     }
@@ -4043,12 +4043,12 @@ var ResearchView = class extends import_obsidian7.ItemView {
     let allHighlights = this.collectHighlights();
     allHighlights = this.applyPropertyFilter(allHighlights);
     if (this.searchQuery) {
-      allHighlights = allHighlights.filter((h) => h.text.toLowerCase().includes(this.searchQuery));
+      allHighlights = allHighlights.filter((h2) => h2.text.toLowerCase().includes(this.searchQuery));
     }
     if (this.activeColors.size > 0) {
-      allHighlights = allHighlights.filter((h) => {
-        if (!h.color) return false;
-        return this.activeColors.has(h.color.toLowerCase());
+      allHighlights = allHighlights.filter((h2) => {
+        if (!h2.color) return false;
+        return this.activeColors.has(h2.color.toLowerCase());
       });
     }
     if (allHighlights.length === 0) {
@@ -4063,8 +4063,8 @@ var ResearchView = class extends import_obsidian7.ItemView {
         const leaf = this.app.workspace.getLeaf("tab");
         await leaf.openFile(file);
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e2) {
+      console.error(e2);
     }
   }
 };
@@ -4185,12 +4185,12 @@ var FailureRecoveryModal = class extends import_obsidian8.Modal {
   }
   deriveRule(rawSnippet, corrected) {
     let prefixLen = 0;
-    const a = rawSnippet, b = corrected;
-    while (prefixLen < a.length && prefixLen < b.length && a[prefixLen] === b[prefixLen]) prefixLen++;
+    const a2 = rawSnippet, b = corrected;
+    while (prefixLen < a2.length && prefixLen < b.length && a2[prefixLen] === b[prefixLen]) prefixLen++;
     let suffixLen = 0;
-    while (suffixLen < a.length - prefixLen && suffixLen < b.length - prefixLen && a[a.length - 1 - suffixLen] === b[b.length - 1 - suffixLen])
+    while (suffixLen < a2.length - prefixLen && suffixLen < b.length - prefixLen && a2[a2.length - 1 - suffixLen] === b[b.length - 1 - suffixLen])
       suffixLen++;
-    const rawMiddle = a.substring(prefixLen, a.length - suffixLen);
+    const rawMiddle = a2.substring(prefixLen, a2.length - suffixLen);
     const correctedMiddle = b.substring(prefixLen, b.length - suffixLen);
     if (!rawMiddle && !correctedMiddle) return { error: "identical" };
     if (!rawMiddle) return { error: "corrected is longer than raw" };
@@ -4217,11 +4217,11 @@ function collapseWhitespace(raw, rawIndex) {
   let mapped = 0;
   let pendingGap = false;
   let seenNonSpace = false;
-  for (let i = 0; i < raw.length; i++) {
-    if (i === rawIndex) {
+  for (let i2 = 0; i2 < raw.length; i2++) {
+    if (i2 === rawIndex) {
       mapped = pendingGap && seenNonSpace ? out.length + 1 : out.length;
     }
-    const char = raw[i];
+    const char = raw[i2];
     if (/\s/.test(char)) {
       pendingGap = true;
       continue;
@@ -4271,8 +4271,8 @@ function readBlockTextAndCaret(block, range) {
       return;
     }
     if (!children) return;
-    for (let i = 0; i < children.length; i++) {
-      visit(children[i]);
+    for (let i2 = 0; i2 < children.length; i2++) {
+      visit(children[i2]);
     }
   };
   visit(block);
@@ -4295,10 +4295,10 @@ function computeOccurrenceOrdinal(blockText, caret, snippet) {
   if (positions.length === 0) return null;
   let best = 0;
   let bestDistance = Math.abs(positions[0] - caret);
-  for (let i = 1; i < positions.length; i++) {
-    const distance = Math.abs(positions[i] - caret);
+  for (let i2 = 1; i2 < positions.length; i2++) {
+    const distance = Math.abs(positions[i2] - caret);
     if (distance < bestDistance) {
-      best = i;
+      best = i2;
       bestDistance = distance;
     }
   }
@@ -4309,6 +4309,459 @@ function getSelectedOccurrence(block, range, snippet) {
   if (!read) return null;
   return computeOccurrenceOrdinal(read.text, read.caret, snippet);
 }
+
+// src/core/RoughNotationRenderer.ts
+var import_obsidian9 = require("obsidian");
+
+// node_modules/rough-notation/lib/rough-notation.esm.js
+var t = "http://www.w3.org/2000/svg";
+var e = class {
+  constructor(t2) {
+    this.seed = t2;
+  }
+  next() {
+    return this.seed ? (2 ** 31 - 1 & (this.seed = Math.imul(48271, this.seed))) / 2 ** 31 : Math.random();
+  }
+};
+function s(t2, e2, s2, i2, n2) {
+  return { type: "path", ops: c(t2, e2, s2, i2, n2) };
+}
+function i(t2, e2, i2) {
+  const n2 = (t2 || []).length;
+  if (n2 > 2) {
+    const s2 = [];
+    for (let e3 = 0; e3 < n2 - 1; e3++) s2.push(...c(t2[e3][0], t2[e3][1], t2[e3 + 1][0], t2[e3 + 1][1], i2));
+    return e2 && s2.push(...c(t2[n2 - 1][0], t2[n2 - 1][1], t2[0][0], t2[0][1], i2)), { type: "path", ops: s2 };
+  }
+  return 2 === n2 ? s(t2[0][0], t2[0][1], t2[1][0], t2[1][1], i2) : { type: "path", ops: [] };
+}
+function n(t2, e2, s2, n2, o2) {
+  return (function(t3, e3) {
+    return i(t3, true, e3);
+  })([[t2, e2], [t2 + s2, e2], [t2 + s2, e2 + n2], [t2, e2 + n2]], o2);
+}
+function o(t2, e2, s2, i2, n2) {
+  return (function(t3, e3, s3, i3) {
+    const [n3, o2] = l(i3.increment, t3, e3, i3.rx, i3.ry, 1, i3.increment * h(0.1, h(0.4, 1, s3), s3), s3);
+    let r2 = f(n3, null, s3);
+    if (!s3.disableMultiStroke) {
+      const [n4] = l(i3.increment, t3, e3, i3.rx, i3.ry, 1.5, 0, s3), o3 = f(n4, null, s3);
+      r2 = r2.concat(o3);
+    }
+    return { estimatedPoints: o2, opset: { type: "path", ops: r2 } };
+  })(t2, e2, n2, (function(t3, e3, s3) {
+    const i3 = Math.sqrt(2 * Math.PI * Math.sqrt((Math.pow(t3 / 2, 2) + Math.pow(e3 / 2, 2)) / 2)), n3 = Math.max(s3.curveStepCount, s3.curveStepCount / Math.sqrt(200) * i3), o2 = 2 * Math.PI / n3;
+    let r2 = Math.abs(t3 / 2), h2 = Math.abs(e3 / 2);
+    const c2 = 1 - s3.curveFitting;
+    return r2 += a(r2 * c2, s3), h2 += a(h2 * c2, s3), { increment: o2, rx: r2, ry: h2 };
+  })(s2, i2, n2)).opset;
+}
+function r(t2) {
+  return t2.randomizer || (t2.randomizer = new e(t2.seed || 0)), t2.randomizer.next();
+}
+function h(t2, e2, s2, i2 = 1) {
+  return s2.roughness * i2 * (r(s2) * (e2 - t2) + t2);
+}
+function a(t2, e2, s2 = 1) {
+  return h(-t2, t2, e2, s2);
+}
+function c(t2, e2, s2, i2, n2, o2 = false) {
+  const r2 = o2 ? n2.disableMultiStrokeFill : n2.disableMultiStroke, h2 = u(t2, e2, s2, i2, n2, true, false);
+  if (r2) return h2;
+  const a2 = u(t2, e2, s2, i2, n2, true, true);
+  return h2.concat(a2);
+}
+function u(t2, e2, s2, i2, n2, o2, h2) {
+  const c2 = Math.pow(t2 - s2, 2) + Math.pow(e2 - i2, 2), u2 = Math.sqrt(c2);
+  let f2 = 1;
+  f2 = u2 < 200 ? 1 : u2 > 500 ? 0.4 : -16668e-7 * u2 + 1.233334;
+  let l2 = n2.maxRandomnessOffset || 0;
+  l2 * l2 * 100 > c2 && (l2 = u2 / 10);
+  const g2 = l2 / 2, d2 = 0.2 + 0.2 * r(n2);
+  let p2 = n2.bowing * n2.maxRandomnessOffset * (i2 - e2) / 200, _2 = n2.bowing * n2.maxRandomnessOffset * (t2 - s2) / 200;
+  p2 = a(p2, n2, f2), _2 = a(_2, n2, f2);
+  const m = [], w = () => a(g2, n2, f2), v = () => a(l2, n2, f2);
+  return o2 && (h2 ? m.push({ op: "move", data: [t2 + w(), e2 + w()] }) : m.push({ op: "move", data: [t2 + a(l2, n2, f2), e2 + a(l2, n2, f2)] })), h2 ? m.push({ op: "bcurveTo", data: [p2 + t2 + (s2 - t2) * d2 + w(), _2 + e2 + (i2 - e2) * d2 + w(), p2 + t2 + 2 * (s2 - t2) * d2 + w(), _2 + e2 + 2 * (i2 - e2) * d2 + w(), s2 + w(), i2 + w()] }) : m.push({ op: "bcurveTo", data: [p2 + t2 + (s2 - t2) * d2 + v(), _2 + e2 + (i2 - e2) * d2 + v(), p2 + t2 + 2 * (s2 - t2) * d2 + v(), _2 + e2 + 2 * (i2 - e2) * d2 + v(), s2 + v(), i2 + v()] }), m;
+}
+function f(t2, e2, s2) {
+  const i2 = t2.length, n2 = [];
+  if (i2 > 3) {
+    const o2 = [], r2 = 1 - s2.curveTightness;
+    n2.push({ op: "move", data: [t2[1][0], t2[1][1]] });
+    for (let e3 = 1; e3 + 2 < i2; e3++) {
+      const s3 = t2[e3];
+      o2[0] = [s3[0], s3[1]], o2[1] = [s3[0] + (r2 * t2[e3 + 1][0] - r2 * t2[e3 - 1][0]) / 6, s3[1] + (r2 * t2[e3 + 1][1] - r2 * t2[e3 - 1][1]) / 6], o2[2] = [t2[e3 + 1][0] + (r2 * t2[e3][0] - r2 * t2[e3 + 2][0]) / 6, t2[e3 + 1][1] + (r2 * t2[e3][1] - r2 * t2[e3 + 2][1]) / 6], o2[3] = [t2[e3 + 1][0], t2[e3 + 1][1]], n2.push({ op: "bcurveTo", data: [o2[1][0], o2[1][1], o2[2][0], o2[2][1], o2[3][0], o2[3][1]] });
+    }
+    if (e2 && 2 === e2.length) {
+      const t3 = s2.maxRandomnessOffset;
+      n2.push({ op: "lineTo", data: [e2[0] + a(t3, s2), e2[1] + a(t3, s2)] });
+    }
+  } else 3 === i2 ? (n2.push({ op: "move", data: [t2[1][0], t2[1][1]] }), n2.push({ op: "bcurveTo", data: [t2[1][0], t2[1][1], t2[2][0], t2[2][1], t2[2][0], t2[2][1]] })) : 2 === i2 && n2.push(...c(t2[0][0], t2[0][1], t2[1][0], t2[1][1], s2));
+  return n2;
+}
+function l(t2, e2, s2, i2, n2, o2, r2, h2) {
+  const c2 = [], u2 = [], f2 = a(0.5, h2) - Math.PI / 2;
+  u2.push([a(o2, h2) + e2 + 0.9 * i2 * Math.cos(f2 - t2), a(o2, h2) + s2 + 0.9 * n2 * Math.sin(f2 - t2)]);
+  for (let r3 = f2; r3 < 2 * Math.PI + f2 - 0.01; r3 += t2) {
+    const t3 = [a(o2, h2) + e2 + i2 * Math.cos(r3), a(o2, h2) + s2 + n2 * Math.sin(r3)];
+    c2.push(t3), u2.push(t3);
+  }
+  return u2.push([a(o2, h2) + e2 + i2 * Math.cos(f2 + 2 * Math.PI + 0.5 * r2), a(o2, h2) + s2 + n2 * Math.sin(f2 + 2 * Math.PI + 0.5 * r2)]), u2.push([a(o2, h2) + e2 + 0.98 * i2 * Math.cos(f2 + r2), a(o2, h2) + s2 + 0.98 * n2 * Math.sin(f2 + r2)]), u2.push([a(o2, h2) + e2 + 0.9 * i2 * Math.cos(f2 + 0.5 * r2), a(o2, h2) + s2 + 0.9 * n2 * Math.sin(f2 + 0.5 * r2)]), [u2, c2];
+}
+function g(t2, e2) {
+  return { maxRandomnessOffset: 2, roughness: "highlight" === t2 ? 3 : 1.5, bowing: 1, stroke: "#000", strokeWidth: 1.5, curveTightness: 0, curveFitting: 0.95, curveStepCount: 9, fillStyle: "hachure", fillWeight: -1, hachureAngle: -41, hachureGap: -1, dashOffset: -1, dashGap: -1, zigzagOffset: -1, combineNestedSvgPaths: false, disableMultiStroke: "double" !== t2, disableMultiStrokeFill: false, seed: e2 };
+}
+function d(e2, r2, h2, a2, c2, u2) {
+  const f2 = [];
+  let l2 = h2.strokeWidth || 2;
+  const d2 = (function(t2) {
+    const e3 = t2.padding;
+    if (e3 || 0 === e3) {
+      if ("number" == typeof e3) return [e3, e3, e3, e3];
+      if (Array.isArray(e3)) {
+        const t3 = e3;
+        if (t3.length) switch (t3.length) {
+          case 4:
+            return [...t3];
+          case 1:
+            return [t3[0], t3[0], t3[0], t3[0]];
+          case 2:
+            return [...t3, ...t3];
+          case 3:
+            return [...t3, t3[1]];
+          default:
+            return [t3[0], t3[1], t3[2], t3[3]];
+        }
+      }
+    }
+    return [5, 5, 5, 5];
+  })(h2), p2 = void 0 === h2.animate || !!h2.animate, _2 = h2.iterations || 2, m = h2.rtl ? 1 : 0, w = g("single", u2);
+  switch (h2.type) {
+    case "underline": {
+      const t2 = r2.y + r2.h + d2[2];
+      for (let e3 = m; e3 < _2 + m; e3++) e3 % 2 ? f2.push(s(r2.x + r2.w, t2, r2.x, t2, w)) : f2.push(s(r2.x, t2, r2.x + r2.w, t2, w));
+      break;
+    }
+    case "strike-through": {
+      const t2 = r2.y + r2.h / 2;
+      for (let e3 = m; e3 < _2 + m; e3++) e3 % 2 ? f2.push(s(r2.x + r2.w, t2, r2.x, t2, w)) : f2.push(s(r2.x, t2, r2.x + r2.w, t2, w));
+      break;
+    }
+    case "box": {
+      const t2 = r2.x - d2[3], e3 = r2.y - d2[0], s2 = r2.w + (d2[1] + d2[3]), i2 = r2.h + (d2[0] + d2[2]);
+      for (let o2 = 0; o2 < _2; o2++) f2.push(n(t2, e3, s2, i2, w));
+      break;
+    }
+    case "bracket": {
+      const t2 = Array.isArray(h2.brackets) ? h2.brackets : h2.brackets ? [h2.brackets] : ["right"], e3 = r2.x - 2 * d2[3], s2 = r2.x + r2.w + 2 * d2[1], n2 = r2.y - 2 * d2[0], o2 = r2.y + r2.h + 2 * d2[2];
+      for (const h3 of t2) {
+        let t3;
+        switch (h3) {
+          case "bottom":
+            t3 = [[e3, r2.y + r2.h], [e3, o2], [s2, o2], [s2, r2.y + r2.h]];
+            break;
+          case "top":
+            t3 = [[e3, r2.y], [e3, n2], [s2, n2], [s2, r2.y]];
+            break;
+          case "left":
+            t3 = [[r2.x, n2], [e3, n2], [e3, o2], [r2.x, o2]];
+            break;
+          case "right":
+            t3 = [[r2.x + r2.w, n2], [s2, n2], [s2, o2], [r2.x + r2.w, o2]];
+        }
+        t3 && f2.push(i(t3, false, w));
+      }
+      break;
+    }
+    case "crossed-off": {
+      const t2 = r2.x, e3 = r2.y, i2 = t2 + r2.w, n2 = e3 + r2.h;
+      for (let o2 = m; o2 < _2 + m; o2++) o2 % 2 ? f2.push(s(i2, n2, t2, e3, w)) : f2.push(s(t2, e3, i2, n2, w));
+      for (let o2 = m; o2 < _2 + m; o2++) o2 % 2 ? f2.push(s(t2, n2, i2, e3, w)) : f2.push(s(i2, e3, t2, n2, w));
+      break;
+    }
+    case "circle": {
+      const t2 = g("double", u2), e3 = r2.w + (d2[1] + d2[3]), s2 = r2.h + (d2[0] + d2[2]), i2 = r2.x - d2[3] + e3 / 2, n2 = r2.y - d2[0] + s2 / 2, h3 = Math.floor(_2 / 2), a3 = _2 - 2 * h3;
+      for (let r3 = 0; r3 < h3; r3++) f2.push(o(i2, n2, e3, s2, t2));
+      for (let t3 = 0; t3 < a3; t3++) f2.push(o(i2, n2, e3, s2, w));
+      break;
+    }
+    case "highlight": {
+      const t2 = g("highlight", u2);
+      l2 = 0.95 * r2.h;
+      const e3 = r2.y + r2.h / 2;
+      for (let i2 = m; i2 < _2 + m; i2++) i2 % 2 ? f2.push(s(r2.x + r2.w, e3, r2.x, e3, t2)) : f2.push(s(r2.x, e3, r2.x + r2.w, e3, t2));
+      break;
+    }
+  }
+  if (f2.length) {
+    const s2 = (function(t2) {
+      const e3 = [];
+      for (const s3 of t2) {
+        let t3 = "";
+        for (const i3 of s3.ops) {
+          const s4 = i3.data;
+          switch (i3.op) {
+            case "move":
+              t3.trim() && e3.push(t3.trim()), t3 = `M${s4[0]} ${s4[1]} `;
+              break;
+            case "bcurveTo":
+              t3 += `C${s4[0]} ${s4[1]}, ${s4[2]} ${s4[3]}, ${s4[4]} ${s4[5]} `;
+              break;
+            case "lineTo":
+              t3 += `L${s4[0]} ${s4[1]} `;
+          }
+        }
+        t3.trim() && e3.push(t3.trim());
+      }
+      return e3;
+    })(f2), i2 = [], n2 = [];
+    let o2 = 0;
+    const r3 = (t2, e3, s3) => t2.setAttribute(e3, s3);
+    for (const a3 of s2) {
+      const s3 = document.createElementNS(t, "path");
+      if (r3(s3, "d", a3), r3(s3, "fill", "none"), r3(s3, "stroke", h2.color || "currentColor"), r3(s3, "stroke-width", "" + l2), p2) {
+        const t2 = s3.getTotalLength();
+        i2.push(t2), o2 += t2;
+      }
+      e2.appendChild(s3), n2.push(s3);
+    }
+    if (p2) {
+      let t2 = 0;
+      for (let e3 = 0; e3 < n2.length; e3++) {
+        const s3 = n2[e3], r4 = i2[e3], h3 = o2 ? c2 * (r4 / o2) : 0, u3 = a2 + t2, f3 = s3.style;
+        f3.strokeDashoffset = "" + r4, f3.strokeDasharray = "" + r4, f3.animation = `rough-notation-dash ${h3}ms ease-out ${u3}ms forwards`, t2 += h3;
+      }
+    }
+  }
+}
+var p = class {
+  constructor(t2, e2) {
+    this._state = "unattached", this._resizing = false, this._seed = Math.floor(Math.random() * 2 ** 31), this._lastSizes = [], this._animationDelay = 0, this._resizeListener = () => {
+      this._resizing || (this._resizing = true, setTimeout(() => {
+        this._resizing = false, "showing" === this._state && this.haveRectsChanged() && this.show();
+      }, 400));
+    }, this._e = t2, this._config = JSON.parse(JSON.stringify(e2)), this.attach();
+  }
+  get animate() {
+    return this._config.animate;
+  }
+  set animate(t2) {
+    this._config.animate = t2;
+  }
+  get animationDuration() {
+    return this._config.animationDuration;
+  }
+  set animationDuration(t2) {
+    this._config.animationDuration = t2;
+  }
+  get iterations() {
+    return this._config.iterations;
+  }
+  set iterations(t2) {
+    this._config.iterations = t2;
+  }
+  get color() {
+    return this._config.color;
+  }
+  set color(t2) {
+    this._config.color !== t2 && (this._config.color = t2, this.refresh());
+  }
+  get strokeWidth() {
+    return this._config.strokeWidth;
+  }
+  set strokeWidth(t2) {
+    this._config.strokeWidth !== t2 && (this._config.strokeWidth = t2, this.refresh());
+  }
+  get padding() {
+    return this._config.padding;
+  }
+  set padding(t2) {
+    this._config.padding !== t2 && (this._config.padding = t2, this.refresh());
+  }
+  attach() {
+    if ("unattached" === this._state && this._e.parentElement) {
+      !(function() {
+        if (!window.__rno_kf_s) {
+          const t2 = window.__rno_kf_s = document.createElement("style");
+          t2.textContent = "@keyframes rough-notation-dash { to { stroke-dashoffset: 0; } }", document.head.appendChild(t2);
+        }
+      })();
+      const e2 = this._svg = document.createElementNS(t, "svg");
+      e2.setAttribute("class", "rough-annotation");
+      const s2 = e2.style;
+      s2.position = "absolute", s2.top = "0", s2.left = "0", s2.overflow = "visible", s2.pointerEvents = "none", s2.width = "100px", s2.height = "100px";
+      const i2 = "highlight" === this._config.type;
+      if (this._e.insertAdjacentElement(i2 ? "beforebegin" : "afterend", e2), this._state = "not-showing", i2) {
+        const t2 = window.getComputedStyle(this._e).position;
+        (!t2 || "static" === t2) && (this._e.style.position = "relative");
+      }
+      this.attachListeners();
+    }
+  }
+  detachListeners() {
+    window.removeEventListener("resize", this._resizeListener), this._ro && this._ro.unobserve(this._e);
+  }
+  attachListeners() {
+    this.detachListeners(), window.addEventListener("resize", this._resizeListener, { passive: true }), !this._ro && "ResizeObserver" in window && (this._ro = new window.ResizeObserver((t2) => {
+      for (const e2 of t2) e2.contentRect && this._resizeListener();
+    })), this._ro && this._ro.observe(this._e);
+  }
+  haveRectsChanged() {
+    if (this._lastSizes.length) {
+      const t2 = this.rects();
+      if (t2.length !== this._lastSizes.length) return true;
+      for (let e2 = 0; e2 < t2.length; e2++) if (!this.isSameRect(t2[e2], this._lastSizes[e2])) return true;
+    }
+    return false;
+  }
+  isSameRect(t2, e2) {
+    const s2 = (t3, e3) => Math.round(t3) === Math.round(e3);
+    return s2(t2.x, e2.x) && s2(t2.y, e2.y) && s2(t2.w, e2.w) && s2(t2.h, e2.h);
+  }
+  isShowing() {
+    return "not-showing" !== this._state;
+  }
+  refresh() {
+    this.isShowing() && !this.pendingRefresh && (this.pendingRefresh = Promise.resolve().then(() => {
+      this.isShowing() && this.show(), delete this.pendingRefresh;
+    }));
+  }
+  show() {
+    switch (this._state) {
+      case "unattached":
+        break;
+      case "showing":
+        this.hide(), this._svg && this.render(this._svg, true);
+        break;
+      case "not-showing":
+        this.attach(), this._svg && this.render(this._svg, false);
+    }
+  }
+  hide() {
+    if (this._svg) for (; this._svg.lastChild; ) this._svg.removeChild(this._svg.lastChild);
+    this._state = "not-showing";
+  }
+  remove() {
+    this._svg && this._svg.parentElement && this._svg.parentElement.removeChild(this._svg), this._svg = void 0, this._state = "unattached", this.detachListeners();
+  }
+  render(t2, e2) {
+    let s2 = this._config;
+    e2 && (s2 = JSON.parse(JSON.stringify(this._config)), s2.animate = false);
+    const i2 = this.rects();
+    let n2 = 0;
+    i2.forEach((t3) => n2 += t3.w);
+    const o2 = s2.animationDuration || 800;
+    let r2 = 0;
+    for (let e3 = 0; e3 < i2.length; e3++) {
+      const h2 = o2 * (i2[e3].w / n2);
+      d(t2, i2[e3], s2, r2 + this._animationDelay, h2, this._seed), r2 += h2;
+    }
+    this._lastSizes = i2, this._state = "showing";
+  }
+  rects() {
+    const t2 = [];
+    if (this._svg) if (this._config.multiline) {
+      const e2 = this._e.getClientRects();
+      for (let s2 = 0; s2 < e2.length; s2++) t2.push(this.svgRect(this._svg, e2[s2]));
+    } else t2.push(this.svgRect(this._svg, this._e.getBoundingClientRect()));
+    return t2;
+  }
+  svgRect(t2, e2) {
+    const s2 = t2.getBoundingClientRect(), i2 = e2;
+    return { x: (i2.x || i2.left) - (s2.x || s2.left), y: (i2.y || i2.top) - (s2.y || s2.top), w: i2.width, h: i2.height };
+  }
+};
+function _(t2, e2) {
+  return new p(t2, e2);
+}
+
+// src/core/RoughNotationRenderer.ts
+init_notations();
+var TARGET_CLASS = "fp-rough-notation-target";
+var TRANSPARENT_COLORS = /* @__PURE__ */ new Set(["transparent", "rgba(0, 0, 0, 0)", "rgba(0,0,0,0)"]);
+var MAX_ATTACHMENT_FRAMES = 5;
+function elementWindow(element) {
+  return element.ownerDocument.defaultView;
+}
+function resolveNotationColor(element) {
+  var _a;
+  const explicitColor = (_a = element.dataset.fpColor) == null ? void 0 : _a.trim();
+  if (explicitColor) return explicitColor;
+  const inlineColor = element.style.backgroundColor.trim();
+  if (inlineColor && !TRANSPARENT_COLORS.has(inlineColor)) return inlineColor;
+  const win = elementWindow(element);
+  const computedColor = win == null ? void 0 : win.getComputedStyle(element).backgroundColor.trim();
+  if (computedColor && !TRANSPARENT_COLORS.has(computedColor)) return computedColor;
+  return "currentColor";
+}
+function createRoughNotationConfig(element) {
+  return {
+    type: normalizeNotationType(element.dataset.fpNotation),
+    color: resolveNotationColor(element),
+    animate: false,
+    multiline: true
+  };
+}
+var RoughNotationRenderer = class extends import_obsidian9.MarkdownRenderChild {
+  constructor(containerEl, annotateElement = _) {
+    super(containerEl);
+    this.annotations = /* @__PURE__ */ new Map();
+    this.animationFrame = null;
+    this.attachmentFrames = 0;
+    this.disposed = false;
+    this.annotateElement = annotateElement;
+  }
+  onload() {
+    this.disposed = false;
+    this.attachmentFrames = 0;
+    this.scheduleRender();
+  }
+  scheduleRender() {
+    const win = elementWindow(this.containerEl);
+    if (!win || typeof win.requestAnimationFrame !== "function") {
+      if (this.containerEl.isConnected) this.renderTargets();
+      return;
+    }
+    this.animationFrame = win.requestAnimationFrame(() => {
+      this.animationFrame = null;
+      if (this.disposed) return;
+      if (!this.containerEl.isConnected) {
+        this.attachmentFrames += 1;
+        if (this.attachmentFrames < MAX_ATTACHMENT_FRAMES) this.scheduleRender();
+        return;
+      }
+      this.renderTargets();
+    });
+  }
+  renderTargets() {
+    var _a;
+    const targets = Array.from(this.containerEl.querySelectorAll("mark"));
+    if (this.containerEl.matches("mark")) {
+      targets.unshift(this.containerEl);
+    }
+    for (const target of targets) {
+      if (target.hasClass(TARGET_CLASS) || !((_a = target.textContent) == null ? void 0 : _a.trim())) continue;
+      const config = createRoughNotationConfig(target);
+      const annotation = this.annotateElement(target, config);
+      target.addClass(TARGET_CLASS);
+      this.annotations.set(target, annotation);
+      annotation.show();
+    }
+  }
+  onunload() {
+    this.disposed = true;
+    const win = elementWindow(this.containerEl);
+    if (this.animationFrame !== null && win) {
+      win.cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = null;
+    }
+    for (const [target, annotation] of this.annotations) {
+      annotation.remove();
+      target.removeClass(TARGET_CLASS);
+    }
+    this.annotations.clear();
+  }
+};
 
 // src/main.ts
 var SMART_SELECTION_TAGS = /* @__PURE__ */ new Set(["P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TD", "TH"]);
@@ -4363,7 +4816,7 @@ function toDisplayString(value) {
   const primitive = value;
   return String(primitive);
 }
-var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
+var ReadingHighlighterPlugin = class extends import_obsidian10.Plugin {
   constructor() {
     super(...arguments);
     this.lastModification = null;
@@ -4377,6 +4830,9 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
     this.registerView(RESEARCH_VIEW, (leaf) => new ResearchView(leaf, this));
     this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
     this.registerCommands();
+    this.registerMarkdownPostProcessor((el, ctx) => {
+      ctx.addChild(new RoughNotationRenderer(el));
+    });
     this.registerDomEvent(activeDocument, "selectionchange", () => {
       this.floatingManager.handleSelection();
     });
@@ -4392,11 +4848,11 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
         }
       })
     );
-    if (import_obsidian9.Platform.isMobile) {
+    if (import_obsidian10.Platform.isMobile) {
       const btn = this.addRibbonIcon("highlighter", "Highlight selection", () => {
         const view = this.getActiveReadingView();
         if (view) void this.highlightSelection(view);
-        else new import_obsidian9.Notice("Open a note in reading view first.");
+        else new import_obsidian10.Notice("Open a note in reading view first.");
       });
       this.register(() => btn.remove());
     }
@@ -4432,7 +4888,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       id: "extract-all-pdf-text",
       name: "Extract all text from current PDF",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian9.View);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian10.View);
         if (view && view.getViewType() === "pdf") {
           if (!checking) {
             void this.extractAllPdfText(view);
@@ -4511,7 +4967,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       id: "export-highlights-json",
       name: "Export highlights to JSON",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.exportHighlightsJSON(view);
@@ -4522,7 +4978,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       id: "export-highlights-csv",
       name: "Export highlights to CSV",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.exportHighlightsCSV(view);
@@ -4544,7 +5000,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       id: "remove-all-annotations",
       name: "Remove all annotations from note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.removeAllAnnotations(view.file);
@@ -4555,7 +5011,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       id: "merge-adjacent-highlights",
       name: "Merge adjacent highlights in note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.mergeAdjacentHighlightsInFile(view.file);
@@ -4566,7 +5022,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       id: "recolor-mark-highlights",
       name: "Recolor <mark> highlights in note\u2026",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         new BulkRecolorModal(this, view.file).open();
@@ -4577,7 +5033,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       id: "migrate-span-highlights",
       name: "Migrate <span> highlights to <mark> in note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.migrateSpanHighlightsInFile(view.file);
@@ -4595,16 +5051,16 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
         return true;
       }
     });
-    for (let i = 0; i < 9; i++) {
+    for (let i2 = 0; i2 < 9; i2++) {
       this.addCommand({
-        id: `apply-color-${i + 1}`,
-        name: `Apply highlight color ${i + 1}`,
+        id: `apply-color-${i2 + 1}`,
+        name: `Apply highlight color ${i2 + 1}`,
         checkCallback: (checking) => {
           if (!this.settings.enableColorPalette) return false;
           const view = this.getActiveReadingView();
           if (!view) return false;
           if (checking) return true;
-          void this.applyColorByIndex(view, i);
+          void this.applyColorByIndex(view, i2);
           return true;
         }
       });
@@ -4637,7 +5093,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
     this.floatingManager.refresh();
   }
   getActiveReadingView() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
     return view && view.getMode() === "preview" ? view : null;
   }
   getSelectionContext(selectionSnapshot) {
@@ -4681,7 +5137,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       if (!text) return false;
       try {
         return range.intersectsNode(element);
-      } catch (e) {
+      } catch (e2) {
         return false;
       }
     });
@@ -4741,8 +5197,8 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
     const allElements = view.contentEl.querySelectorAll(tagName);
     let count = 0;
     let foundIndex = 0;
-    for (let i = 0; i < allElements.length; i++) {
-      const el = allElements[i];
+    for (let i2 = 0; i2 < allElements.length; i2++) {
+      const el = allElements[i2];
       if (el.innerText.trim() === contextText) {
         if (el === contextElement) {
           foundIndex = count;
@@ -4761,15 +5217,15 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
   }
   async undoLastHighlight() {
     if (!this.lastModification) {
-      new import_obsidian9.Notice("Nothing to undo.");
+      new import_obsidian10.Notice("Nothing to undo.");
       return;
     }
     try {
       await this.app.vault.modify(this.lastModification.file, this.lastModification.original);
-      new import_obsidian9.Notice("Undone last highlight.");
+      new import_obsidian10.Notice("Undone last highlight.");
       this.lastModification = null;
     } catch (err) {
-      new import_obsidian9.Notice("Failed to undo.");
+      new import_obsidian10.Notice("Failed to undo.");
       console.error(err);
     }
   }
@@ -4789,7 +5245,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
         blockRange.setEnd(range.endContainer, range.endOffset);
       }
       return blockRange.collapsed ? null : blockRange;
-    } catch (e) {
+    } catch (e2) {
       return null;
     }
   }
@@ -4830,12 +5286,12 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
     if (!request.range || !view.file) return false;
     const blocks = request.blocks;
     let head = null;
-    for (let i = 0; i < blocks.length && !head; i++) {
-      head = await this.locateBlockPortion(view, request.range, blocks[i]);
+    for (let i2 = 0; i2 < blocks.length && !head; i2++) {
+      head = await this.locateBlockPortion(view, request.range, blocks[i2]);
     }
     let tail = null;
-    for (let i = blocks.length - 1; i >= 0 && !tail; i--) {
-      tail = await this.locateBlockPortion(view, request.range, blocks[i]);
+    for (let i2 = blocks.length - 1; i2 >= 0 && !tail; i2--) {
+      tail = await this.locateBlockPortion(view, request.range, blocks[i2]);
     }
     if (!head || !tail || head.file.path !== tail.file.path) return false;
     const start = Math.min(head.start, tail.start);
@@ -4850,7 +5306,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
     const sel = window.getSelection();
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian9.Notice("No text selected.");
+      new import_obsidian10.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -4868,7 +5324,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
       }
       this.restoreScroll(view, scrollPos);
       sel == null ? void 0 : sel.removeAllRanges();
-      new import_obsidian9.Notice("Highlighted!");
+      new import_obsidian10.Notice("Highlighted!");
       return;
     }
     const result = await this.logic.locateSelection(
@@ -4889,10 +5345,10 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
     await this.applyMarkdownModification(targetFile, "", result.start, result.end, mode, payload);
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
-    if (this.settings.enableHaptics && import_obsidian9.Platform.isMobile) {
+    if (this.settings.enableHaptics && import_obsidian10.Platform.isMobile) {
       (_a = navigator.vibrate) == null ? void 0 : _a.call(navigator, 10);
     }
-    new import_obsidian9.Notice("Highlighted!");
+    new import_obsidian10.Notice("Highlighted!");
   }
   async applyColorByIndex(view, index, selectionSnapshot) {
     if (index < 0 || index >= this.settings.semanticColors.length) return;
@@ -4904,7 +5360,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
     if (!view.file) return;
     let snippet = (selectionSnapshot == null ? void 0 : selectionSnapshot.text) || ((_a = window.getSelection()) == null ? void 0 : _a.toString()) || "";
     if (!snippet.trim()) {
-      new import_obsidian9.Notice("No text selected.");
+      new import_obsidian10.Notice("No text selected.");
       return;
     }
     snippet = this.sanitizePdfText(snippet);
@@ -4935,7 +5391,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
 
 `;
     try {
-      if (fileExists instanceof import_obsidian9.TFile) {
+      if (fileExists instanceof import_obsidian10.TFile) {
         const fileContent = await this.app.vault.read(fileExists);
         await this.app.vault.modify(fileExists, fileContent + "\n" + appendString);
       } else {
@@ -4944,14 +5400,14 @@ var ReadingHighlighterPlugin = class extends import_obsidian9.Plugin {
 ${appendString}`;
         await this.app.vault.create(companionFile, fileContent);
       }
-      new import_obsidian9.Notice("Saved to " + pdfName + " - Highlights");
+      new import_obsidian10.Notice("Saved to " + pdfName + " - Highlights");
       (_c = window.getSelection()) == null ? void 0 : _c.removeAllRanges();
-      if (this.settings.enableHaptics && import_obsidian9.Platform.isMobile) {
+      if (this.settings.enableHaptics && import_obsidian10.Platform.isMobile) {
         (_d = navigator.vibrate) == null ? void 0 : _d.call(navigator, 10);
       }
-    } catch (e) {
-      console.error("Failed to save PDF highlight", e);
-      new import_obsidian9.Notice("Failed to save PDF highlight");
+    } catch (e2) {
+      console.error("Failed to save PDF highlight", e2);
+      new import_obsidian10.Notice("Failed to save PDF highlight");
     }
   }
   sanitizePdfText(text) {
@@ -4970,18 +5426,18 @@ ${appendString}`;
   }
   async extractAllPdfText(view) {
     if (!view || view.getViewType() !== "pdf" || !view.file) {
-      new import_obsidian9.Notice("Please open a PDF file first.");
+      new import_obsidian10.Notice("Please open a PDF file first.");
       return;
     }
-    const notice = new import_obsidian9.Notice("Extracting all PDF text...", 0);
+    const notice = new import_obsidian10.Notice("Extracting all PDF text...", 0);
     try {
-      const pdfjs = await (0, import_obsidian9.loadPdfJs)();
+      const pdfjs = await (0, import_obsidian10.loadPdfJs)();
       const buffer = await this.app.vault.readBinary(view.file);
       const loadingTask = pdfjs.getDocument({ data: buffer });
       const pdf = await loadingTask.promise;
       let fullText = "";
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
+      for (let i2 = 1; i2 <= pdf.numPages; i2++) {
+        const page = await pdf.getPage(i2);
         const content = await page.getTextContent();
         let lastY = -1;
         let pageText = "";
@@ -4995,7 +5451,7 @@ ${appendString}`;
           lastY = item.transform[5];
         }
         fullText += pageText + "\n\n";
-        if (i % 10 === 0) notice.setMessage(`Extracting text... Page ${i}/${pdf.numPages}`);
+        if (i2 % 10 === 0) notice.setMessage(`Extracting text... Page ${i2}/${pdf.numPages}`);
       }
       const dummySnapshot = {
         text: fullText,
@@ -5003,17 +5459,17 @@ ${appendString}`;
       };
       await this.savePdfHighlight(view, dummySnapshot, "action", "highlightSelection");
       notice.hide();
-      new import_obsidian9.Notice(`Successfully extracted ${pdf.numPages} pages.`);
-    } catch (e) {
-      console.error("Full PDF extraction failed", e);
+      new import_obsidian10.Notice(`Successfully extracted ${pdf.numPages} pages.`);
+    } catch (e2) {
+      console.error("Full PDF extraction failed", e2);
       notice.hide();
-      new import_obsidian9.Notice("Failed to extract PDF text.");
+      new import_obsidian10.Notice("Failed to extract PDF text.");
     }
   }
   async tagSelection(view, selectionSnapshot) {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian9.Notice("No text selected.");
+      new import_obsidian10.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -5044,7 +5500,7 @@ ${appendString}`;
         request.contextKind
       );
       if (!newResult) {
-        new import_obsidian9.Notice("Selection lost - file may have changed.");
+        new import_obsidian10.Notice("Selection lost - file may have changed.");
         return;
       }
       if (tag && this.settings.enableSmartTagSuggestions) {
@@ -5058,7 +5514,7 @@ ${appendString}`;
   addRecentTag(tag) {
     const cleanTag = tag.replace(/^#/, "").trim();
     if (!cleanTag) return;
-    this.settings.recentTags = this.settings.recentTags.filter((t) => t !== cleanTag);
+    this.settings.recentTags = this.settings.recentTags.filter((t2) => t2 !== cleanTag);
     this.settings.recentTags.unshift(cleanTag);
     if (this.settings.recentTags.length > this.settings.maxRecentTags) {
       this.settings.recentTags = this.settings.recentTags.slice(0, this.settings.maxRecentTags);
@@ -5068,7 +5524,7 @@ ${appendString}`;
   async annotateSelection(view, selectionSnapshot) {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian9.Notice("No text selected.");
+      new import_obsidian10.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -5099,14 +5555,14 @@ ${appendString}`;
         request.contextKind
       );
       if (!newResult) {
-        new import_obsidian9.Notice("Selection lost - file may have changed.");
+        new import_obsidian10.Notice("Selection lost - file may have changed.");
         return;
       }
       const currentRaw = await this.app.vault.read(targetFile);
       await this.applyAnnotation(targetFile, currentRaw, newResult.start, newResult.end, comment);
       this.restoreScroll(view, scrollPos);
       (_a = window.getSelection()) == null ? void 0 : _a.removeAllRanges();
-      new import_obsidian9.Notice("Annotation added!");
+      new import_obsidian10.Notice("Annotation added!");
     }).open();
   }
   async applyAnnotation(file, raw, start, end, comment) {
@@ -5135,7 +5591,7 @@ ${appendString}`;
     const sel = window.getSelection();
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian9.Notice("Select highlighted text to remove.");
+      new import_obsidian10.Notice("Select highlighted text to remove.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -5155,7 +5611,7 @@ ${appendString}`;
     const targetFile = result.file;
     await this.saveUndoState(targetFile);
     await this.applyMarkdownModification(targetFile, "", result.start, result.end, "remove");
-    new import_obsidian9.Notice("Highlighting removed.");
+    new import_obsidian10.Notice("Highlighting removed.");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
   }
@@ -5165,104 +5621,104 @@ ${appendString}`;
     raw = raw.replace(/==(.*?)==/gs, "$1");
     raw = raw.replace(/<mark[^>]*>(.*?)<\/mark>/gs, "$1");
     await this.app.vault.modify(view.file, raw);
-    new import_obsidian9.Notice("All highlights removed.");
+    new import_obsidian10.Notice("All highlights removed.");
   }
   async removeAnnotationById(file, footnoteId) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = removeFootnoteFromRaw(raw, footnoteId);
     if (!result.changed) {
-      new import_obsidian9.Notice("Annotation not found.");
+      new import_obsidian10.Notice("Annotation not found.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian9.Notice("Annotation removed.");
+    new import_obsidian10.Notice("Annotation removed.");
   }
   async removeAllAnnotations(file) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = removeAllFootnotesFromRaw(raw);
     if (!result.removedCount) {
-      new import_obsidian9.Notice("No annotations to remove.");
+      new import_obsidian10.Notice("No annotations to remove.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian9.Notice(`Removed ${result.removedCount} annotation${result.removedCount === 1 ? "" : "s"}.`);
+    new import_obsidian10.Notice(`Removed ${result.removedCount} annotation${result.removedCount === 1 ? "" : "s"}.`);
   }
   async mergeAdjacentHighlightsInFile(file) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = mergeAdjacentHighlightsInRaw(raw);
     if (!result.mergedCount) {
-      new import_obsidian9.Notice("No adjacent highlights to merge.");
+      new import_obsidian10.Notice("No adjacent highlights to merge.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian9.Notice(`Merged ${result.mergedCount} highlight${result.mergedCount === 1 ? "" : "s"}.`);
+    new import_obsidian10.Notice(`Merged ${result.mergedCount} highlight${result.mergedCount === 1 ? "" : "s"}.`);
   }
   async recolorMarkHighlightsInFile(file, fromColor, toColor) {
     const targetColor = String(toColor || "").trim();
     if (!targetColor) {
-      new import_obsidian9.Notice("Choose a target color first.");
+      new import_obsidian10.Notice("Choose a target color first.");
       return;
     }
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = recolorMarkHighlightsInRaw(raw, { fromColor, toColor: targetColor });
     if (!result.changedCount) {
-      new import_obsidian9.Notice("No matching <mark> highlights to recolor.");
+      new import_obsidian10.Notice("No matching <mark> highlights to recolor.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian9.Notice(`Recolored ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"}.`);
+    new import_obsidian10.Notice(`Recolored ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"}.`);
   }
   async migrateSpanHighlightsInFile(file) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = migrateSpanHighlightsInRaw(raw);
     if (!result.changedCount) {
-      new import_obsidian9.Notice("No <span> background highlights found to migrate.");
+      new import_obsidian10.Notice("No <span> background highlights found to migrate.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian9.Notice(`Migrated ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"} to <mark>.`);
+    new import_obsidian10.Notice(`Migrated ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"} to <mark>.`);
   }
   async exportHighlights(view) {
     try {
       const exportPath = await exportHighlightsToMD(this.app, view.file);
-      new import_obsidian9.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian10.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian9.TFile) {
+      if (exportFile instanceof import_obsidian10.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian9.Notice("Failed to export highlights.");
+      new import_obsidian10.Notice("Failed to export highlights.");
       console.error(err);
     }
   }
   async exportHighlightsJSON(view) {
     try {
       const exportPath = await exportHighlightsToJSON(this.app, view.file);
-      new import_obsidian9.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian10.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian9.TFile) {
+      if (exportFile instanceof import_obsidian10.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian9.Notice("Failed to export highlights to JSON.");
+      new import_obsidian10.Notice("Failed to export highlights to JSON.");
       console.error(err);
     }
   }
   async exportHighlightsCSV(view) {
     try {
       const exportPath = await exportHighlightsToCSV(this.app, view.file);
-      new import_obsidian9.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian10.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian9.TFile) {
+      if (exportFile instanceof import_obsidian10.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian9.Notice("Failed to export highlights to CSV.");
+      new import_obsidian10.Notice("Failed to export highlights to CSV.");
       console.error(err);
     }
   }
@@ -5271,7 +5727,7 @@ ${appendString}`;
     const sel = window.getSelection();
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian9.Notice("No text selected.");
+      new import_obsidian10.Notice("No text selected.");
       return;
     }
     const quotedText = request.snippet.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
@@ -5279,10 +5735,10 @@ ${appendString}`;
     const quote = this.expandQuoteTemplate(view.file, quotedText, frontmatter);
     const copied = await this.writeClipboardText(quote);
     if (!copied) {
-      new import_obsidian9.Notice("Failed to copy quote.");
+      new import_obsidian10.Notice("Failed to copy quote.");
       return;
     }
-    new import_obsidian9.Notice("Copied as quote!");
+    new import_obsidian10.Notice("Copied as quote!");
     sel == null ? void 0 : sel.removeAllRanges();
   }
   async applyColorHighlight(view, color, autoTag = "", selectionSnapshot) {
@@ -5308,7 +5764,7 @@ ${appendString}`;
     await this.applyMarkdownModification(targetFile, result.raw, result.start, result.end, "color", color, autoTag);
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
-    new import_obsidian9.Notice("Highlighted!");
+    new import_obsidian10.Notice("Highlighted!");
   }
   saveReadingProgress() {
     const view = this.getActiveReadingView();
@@ -5323,9 +5779,9 @@ ${appendString}`;
     const pos = this.settings.readingPositions[view.file.path];
     if (pos) {
       applyScroll(view, { x: 0, y: pos });
-      new import_obsidian9.Notice("Resumed reading position.");
+      new import_obsidian10.Notice("Resumed reading position.");
     } else {
-      new import_obsidian9.Notice("No saved position for this file.");
+      new import_obsidian10.Notice("No saved position for this file.");
     }
   }
   async activateNavigatorView() {
@@ -5368,8 +5824,8 @@ ${appendString}`;
     try {
       await navigator.clipboard.writeText(text);
       return true;
-    } catch (e) {
-      console.error("Failed to write to clipboard", e);
+    } catch (e2) {
+      console.error("Failed to write to clipboard", e2);
       return false;
     }
   }
@@ -5397,7 +5853,7 @@ ${appendString}`;
         }
       }
       return hostParts.slice(-2).join(".");
-    } catch (e) {
+    } catch (e2) {
       return "";
     }
   }
@@ -5472,14 +5928,14 @@ ${appendString}`;
   splitTableCells(line) {
     const cells = [];
     let cursor = 0;
-    for (let i = 0; i < line.length; i++) {
-      if (line[i] === "\\") {
-        i++;
+    for (let i2 = 0; i2 < line.length; i2++) {
+      if (line[i2] === "\\") {
+        i2++;
         continue;
       }
-      if (line[i] === "|") {
-        cells.push({ start: cursor, end: i });
-        cursor = i + 1;
+      if (line[i2] === "|") {
+        cells.push({ start: cursor, end: i2 });
+        cursor = i2 + 1;
       }
     }
     cells.push({ start: cursor, end: line.length });
@@ -5595,10 +6051,10 @@ ${appendString}`;
       runningOffset += line.length + newline.length;
     }
     let fullTag = "";
-    const sanitizeTag = (t) => t.trim().replace(/^#/, "").replace(/\s+/g, "_");
+    const sanitizeTag = (t2) => t2.trim().replace(/^#/, "").replace(/\s+/g, "_");
     if (mode === "tag" && payload) {
       const prefix = this.settings.defaultTagPrefix ? sanitizeTag(this.settings.defaultTagPrefix) : "";
-      const cleanPayload = payload.split(/\s+/).map(sanitizeTag).filter((t) => t).map((t) => `#${t}`).join(" ");
+      const cleanPayload = payload.split(/\s+/).map(sanitizeTag).filter((t2) => t2).map((t2) => `#${t2}`).join(" ");
       if (prefix) {
         fullTag = `#${sanitizeTag(prefix)} ${cleanPayload}`;
       } else {
@@ -5672,7 +6128,7 @@ ${appendString}`;
                 frontmatter.tags.push(targetTag);
               }
             } else if (typeof frontmatter.tags === "string") {
-              const existingTags = frontmatter.tags.includes(",") ? frontmatter.tags.split(",").map((t) => t.trim()) : frontmatter.tags.split(/\s+/).map((t) => t.trim());
+              const existingTags = frontmatter.tags.includes(",") ? frontmatter.tags.split(",").map((t2) => t2.trim()) : frontmatter.tags.split(/\s+/).map((t2) => t2.trim());
               const cleanTags = existingTags.filter(
                 (tag) => this.normalizeTagForComparison(tag) !== this.normalizeTagForComparison(targetTag) && tag !== ""
               );
@@ -5681,8 +6137,8 @@ ${appendString}`;
               }
             }
           });
-        } catch (e) {
-          console.error("Reader Highlighter Tags: Failed to inject frontmatter tag.", e);
+        } catch (e2) {
+          console.error("Reader Highlighter Tags: Failed to inject frontmatter tag.", e2);
         }
       }
     }
@@ -5695,18 +6151,18 @@ ${appendString}`;
   handleSelectionFailure(view, request, actionType, payload = null) {
     const report = this.logic.lastFailureReport;
     if (!report) {
-      new import_obsidian9.Notice("Selection failed, but no diagnostic report was generated.");
+      new import_obsidian10.Notice("Selection failed, but no diagnostic report was generated.");
       return;
     }
     new FailureRecoveryModal(this.app, report, async (correctedText, learnedRule) => {
       if (learnedRule && learnedRule.stripPattern) {
         const existing = this.settings.learnedNormRules.find(
-          (r) => r.stripPattern === learnedRule.stripPattern
+          (r2) => r2.stripPattern === learnedRule.stripPattern
         );
         if (!existing) {
           this.settings.learnedNormRules.push({ stripPattern: learnedRule.stripPattern });
           await this.saveSettings();
-          new import_obsidian9.Notice("Normalization rule learned for future selections!");
+          new import_obsidian10.Notice("Normalization rule learned for future selections!");
         }
       }
       const mockSnapshot = { text: correctedText, range: null };
@@ -5724,7 +6180,7 @@ ${appendString}`;
     }).open();
   }
 };
-var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingTab {
+var ReadingHighlighterSettingTab = class extends import_obsidian10.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -5747,8 +6203,8 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
    * other.
    */
   getSettingDefinitions() {
-    const s = this.plugin.settings;
-    const colourMeanings = s.semanticColors.map((item, index) => ({
+    const s2 = this.plugin.settings;
+    const colourMeanings = s2.semanticColors.map((item, index) => ({
       name: `Color ${index + 1}`,
       desc: item.color,
       aliases: item.meaning ? [item.meaning] : [],
@@ -5863,13 +6319,13 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
           },
           {
             name: "Clear reading positions",
-            desc: `Currently tracking ${Object.keys(s.readingPositions).length} file(s).`,
+            desc: `Currently tracking ${Object.keys(s2.readingPositions).length} file(s).`,
             action: (el) => {
-              new import_obsidian9.Setting(el).addButton(
+              new import_obsidian10.Setting(el).addButton(
                 (button) => button.setButtonText("Clear all").onClick(async () => {
                   this.plugin.settings.readingPositions = {};
                   await this.plugin.saveSettings();
-                  new import_obsidian9.Notice("Reading positions cleared.");
+                  new import_obsidian10.Notice("Reading positions cleared.");
                   this.refreshDefinitions();
                 })
               );
@@ -5922,16 +6378,16 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
       {
         type: "group",
         heading: "Learned normalization rules",
-        items: s.learnedNormRules.length ? [
-          ...s.learnedNormRules.map((rule, index) => ({
+        items: s2.learnedNormRules.length ? [
+          ...s2.learnedNormRules.map((rule, index) => ({
             name: `Rule ${index + 1}`,
             desc: `Ignore: "${rule.stripPattern}"`,
             action: (el) => {
-              new import_obsidian9.Setting(el).addButton((btn) => {
+              new import_obsidian10.Setting(el).addButton((btn) => {
                 btn.setButtonText("Delete").onClick(async () => {
                   this.plugin.settings.learnedNormRules.splice(index, 1);
                   await this.plugin.saveSettings();
-                  new import_obsidian9.Notice("Rule deleted.");
+                  new import_obsidian10.Notice("Rule deleted.");
                   this.refreshDefinitions();
                 });
                 btn.buttonEl.addClass("mod-warning");
@@ -5941,11 +6397,11 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
           {
             name: "Clear all rules",
             action: (el) => {
-              new import_obsidian9.Setting(el).addButton((btn) => {
+              new import_obsidian10.Setting(el).addButton((btn) => {
                 btn.setButtonText("Clear all rules").onClick(async () => {
                   this.plugin.settings.learnedNormRules = [];
                   await this.plugin.saveSettings();
-                  new import_obsidian9.Notice("All rules cleared.");
+                  new import_obsidian10.Notice("All rules cleared.");
                   this.refreshDefinitions();
                 });
                 btn.buttonEl.addClass("mod-warning");
@@ -5994,14 +6450,14 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
     const { containerEl } = this;
     containerEl.empty();
     this.sectionHeading("Reader Highlighter Tags Settings", "h2");
-    new import_obsidian9.Setting(containerEl).setName("Toolbar position").setDesc("Choose where the floating toolbar should appear.").addDropdown(
+    new import_obsidian10.Setting(containerEl).setName("Toolbar position").setDesc("Choose where the floating toolbar should appear.").addDropdown(
       (dropdown) => dropdown.addOption("text", "Next to text").addOption("top", "Fixed at top center").addOption("bottom", "Fixed at bottom center").addOption("left", "Fixed left side").addOption("right", "Fixed right side (default)").setValue(this.plugin.settings.toolbarPosition).onChange(async (value) => {
         this.plugin.settings.toolbarPosition = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Highlighting", "h3");
-    new import_obsidian9.Setting(containerEl).setName("Enable color highlighting").setDesc("Use HTML <mark> tags with specific colors instead of == syntax.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Enable color highlighting").setDesc("Use HTML <mark> tags with specific colors instead of == syntax.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableColorHighlighting).onChange(async (value) => {
         this.plugin.settings.enableColorHighlighting = value;
         await this.plugin.saveSettings();
@@ -6009,14 +6465,14 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
       })
     );
     if (this.plugin.settings.enableColorHighlighting) {
-      new import_obsidian9.Setting(containerEl).setName("Highlight color").setDesc("Hex code for the default highlight color.").addColorPicker(
+      new import_obsidian10.Setting(containerEl).setName("Highlight color").setDesc("Hex code for the default highlight color.").addColorPicker(
         (color) => color.setValue(this.plugin.settings.highlightColor || "#FFEE58").onChange(async (value) => {
           this.plugin.settings.highlightColor = value;
           await this.plugin.saveSettings();
         })
       );
     }
-    new import_obsidian9.Setting(containerEl).setName("Enable color palette").setDesc("Show the semantic colour palette in the toolbar for quick selection.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Enable color palette").setDesc("Show the semantic colour palette in the toolbar for quick selection.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableColorPalette).onChange(async (value) => {
         this.plugin.settings.enableColorPalette = value;
         await this.plugin.saveSettings();
@@ -6024,7 +6480,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
       })
     );
     if (this.plugin.settings.enableColorPalette) {
-      new import_obsidian9.Setting(containerEl).setName("Only show colours with a meaning").setDesc(
+      new import_obsidian10.Setting(containerEl).setName("Only show colours with a meaning").setDesc(
         "Hide palette colours that have no meaning assigned below, so the toolbar shows only the ones you actually use. Turn this off to show all of them."
       ).addToggle(
         (toggle) => toggle.setValue(this.plugin.settings.showOnlyAssignedColors).onChange(async (value) => {
@@ -6034,7 +6490,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
       );
       this.sectionHeading("Semantic colour meanings", "h4");
       this.plugin.settings.semanticColors.forEach((item, index) => {
-        const setting = new import_obsidian9.Setting(containerEl).setName(`Color ${index + 1}`);
+        const setting = new import_obsidian10.Setting(containerEl).setName(`Color ${index + 1}`);
         const colorPreview = setting.controlEl.createDiv({ cls: "rht-color-swatch" });
         colorPreview.setCssStyles({ backgroundColor: item.color });
         setting.addText(
@@ -6046,26 +6502,26 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
       });
     }
     this.sectionHeading("Tags", "h3");
-    new import_obsidian9.Setting(containerEl).setName("Default tag prefix").setDesc("Automatically add this tag to every highlight (e.g., 'book').").addText(
+    new import_obsidian10.Setting(containerEl).setName("Default tag prefix").setDesc("Automatically add this tag to every highlight (e.g., 'book').").addText(
       (text) => text.setPlaceholder("Book").setValue(this.plugin.settings.defaultTagPrefix).onChange(async (value) => {
         this.plugin.settings.defaultTagPrefix = value.replace(/\s+/g, "_").replace(/^#/, "");
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Smart tag suggestions").setDesc("Suggest tags based on recent usage, folder, and frontmatter.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Smart tag suggestions").setDesc("Suggest tags based on recent usage, folder, and frontmatter.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableSmartTagSuggestions).onChange(async (value) => {
         this.plugin.settings.enableSmartTagSuggestions = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Enable smart paragraph selection").setDesc("Snap selections inside a paragraph, list item, heading, or blockquote to the entire block.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Enable smart paragraph selection").setDesc("Snap selections inside a paragraph, list item, heading, or blockquote to the entire block.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableSmartParagraphSelection).onChange(async (value) => {
         this.plugin.settings.enableSmartParagraphSelection = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Quote Template", "h3");
-    new import_obsidian9.Setting(containerEl).setName("Quote format").setDesc(
+    new import_obsidian10.Setting(containerEl).setName("Quote format").setDesc(
       "Template for copying text as quote. Variables: {{text}}, {{file}}, {{path}}, {{date}}, {{time}}, {{domain}}, {{author}}"
     ).addTextArea(
       (text) => text.setValue(this.plugin.settings.quoteTemplate).onChange(async (value) => {
@@ -6074,60 +6530,60 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
       })
     );
     this.sectionHeading("Annotations", "h3");
-    new import_obsidian9.Setting(containerEl).setName("Enable annotations").setDesc("Add comments to selections as footnotes.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Enable annotations").setDesc("Add comments to selections as footnotes.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableAnnotations).onChange(async (value) => {
         this.plugin.settings.enableAnnotations = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Show annotation button").setDesc("Show the annotation button in the toolbar.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Show annotation button").setDesc("Show the annotation button in the toolbar.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showAnnotationButton).onChange(async (value) => {
         this.plugin.settings.showAnnotationButton = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Reading Progress", "h3");
-    new import_obsidian9.Setting(containerEl).setName("Track reading progress").setDesc("Remember scroll position when leaving a file.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Track reading progress").setDesc("Remember scroll position when leaving a file.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableReadingProgress).onChange(async (value) => {
         this.plugin.settings.enableReadingProgress = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Clear reading positions").setDesc(`Currently tracking ${Object.keys(this.plugin.settings.readingPositions).length} file(s).`).addButton(
+    new import_obsidian10.Setting(containerEl).setName("Clear reading positions").setDesc(`Currently tracking ${Object.keys(this.plugin.settings.readingPositions).length} file(s).`).addButton(
       (button) => button.setButtonText("Clear all").onClick(async () => {
         this.plugin.settings.readingPositions = {};
         await this.plugin.saveSettings();
-        new import_obsidian9.Notice("Reading positions cleared.");
+        new import_obsidian10.Notice("Reading positions cleared.");
         this.render();
       })
     );
     this.sectionHeading("Toolbar Buttons", "h3");
-    new import_obsidian9.Setting(containerEl).setName("Show tag button").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Show tag button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showTagButton).onChange(async (value) => {
         this.plugin.settings.showTagButton = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Show quote button").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Show quote button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showQuoteButton).onChange(async (value) => {
         this.plugin.settings.showQuoteButton = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Show remove button").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Show remove button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showRemoveButton).onChange(async (value) => {
         this.plugin.settings.showRemoveButton = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Mobile & UX", "h3");
-    new import_obsidian9.Setting(containerEl).setName("Haptic feedback").setDesc("Vibrate slightly on success (mobile only).").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Haptic feedback").setDesc("Vibrate slightly on success (mobile only).").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableHaptics).onChange(async (value) => {
         this.plugin.settings.enableHaptics = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Show button tooltips").setDesc("Show tooltips when hovering over toolbar buttons.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Show button tooltips").setDesc("Show tooltips when hovering over toolbar buttons.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showTooltips).onChange(async (value) => {
         this.plugin.settings.showTooltips = value;
         await this.plugin.saveSettings();
@@ -6135,7 +6591,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
     );
     this.sectionHeading("Frontmatter Integration", "h3");
     let tagSetting;
-    new import_obsidian9.Setting(containerEl).setName("Auto-tag highlight in frontmatter").setDesc("Automatically inject a specific tag into the note's frontmatter whenever you highlight text.").addToggle(
+    new import_obsidian10.Setting(containerEl).setName("Auto-tag highlight in frontmatter").setDesc("Automatically inject a specific tag into the note's frontmatter whenever you highlight text.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableFrontmatterTag).onChange(async (value) => {
         this.plugin.settings.enableFrontmatterTag = value;
         await this.plugin.saveSettings();
@@ -6144,7 +6600,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
         }
       })
     );
-    tagSetting = new import_obsidian9.Setting(containerEl).setName("Frontmatter highlight tag").setDesc("The tag to add (e.g. 'resaltados'). Do not include the # symbol.").addText(
+    tagSetting = new import_obsidian10.Setting(containerEl).setName("Frontmatter highlight tag").setDesc("The tag to add (e.g. 'resaltados'). Do not include the # symbol.").addText(
       (text) => text.setPlaceholder("Resaltados").setValue(this.plugin.settings.frontmatterTag).onChange(async (value) => {
         this.plugin.settings.frontmatterTag = value.replace(/^#/, "");
         await this.plugin.saveSettings();
@@ -6156,22 +6612,22 @@ var ReadingHighlighterSettingTab = class extends import_obsidian9.PluginSettingT
       containerEl.createEl("p", { text: "No rules learned yet.", cls: "setting-item-description" });
     } else {
       this.plugin.settings.learnedNormRules.forEach((rule, index) => {
-        new import_obsidian9.Setting(containerEl).setName(`Rule ${index + 1}`).setDesc(`Ignore: "${rule.stripPattern}"`).addButton((btn) => {
+        new import_obsidian10.Setting(containerEl).setName(`Rule ${index + 1}`).setDesc(`Ignore: "${rule.stripPattern}"`).addButton((btn) => {
           btn.setButtonText("Delete").onClick(async () => {
             this.plugin.settings.learnedNormRules.splice(index, 1);
             await this.plugin.saveSettings();
             this.render();
-            new import_obsidian9.Notice("Rule deleted.");
+            new import_obsidian10.Notice("Rule deleted.");
           });
           btn.buttonEl.addClass("mod-warning");
         });
       });
-      new import_obsidian9.Setting(containerEl).addButton((btn) => {
+      new import_obsidian10.Setting(containerEl).addButton((btn) => {
         btn.setButtonText("Clear all rules").onClick(async () => {
           this.plugin.settings.learnedNormRules = [];
           await this.plugin.saveSettings();
           this.render();
-          new import_obsidian9.Notice("All rules cleared.");
+          new import_obsidian10.Notice("All rules cleared.");
         });
         btn.buttonEl.addClass("mod-warning");
       });
