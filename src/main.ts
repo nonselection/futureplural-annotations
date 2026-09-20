@@ -34,6 +34,25 @@ import { getSelectedOccurrence, type SelectionHint } from "./utils/blockOccurren
 import { kindForTag, type BlockKind } from "./utils/sourceBlocks";
 import { BulkRecolorModal } from "./modals/BulkRecolorModal";
 import { RoughNotationRenderer } from "./core/RoughNotationRenderer";
+import {
+    beginHighlightTiming,
+    selectionEvent,
+    timingRenderingShown,
+    timingStep,
+    timingWriteStarted,
+    type TimingTrace,
+} from "./utils/timing";
+import {
+    createNotationOpenTag,
+    createNotationGroupId,
+    DEFAULT_NOTATION_OPACITY,
+    NOTATION_TYPES,
+    normalizeOpacity,
+    DEFAULT_NOTATION_TYPE,
+    normalizeNotationType,
+    type NotationSpec,
+    type NotationType,
+} from "./models/notations";
 
 export interface SemanticColor {
     color: string;
@@ -43,6 +62,8 @@ export interface SemanticColor {
 interface LearnedNormRule {
     stripPattern: string;
 }
+
+type SelectionScope = "configured" | "exact" | "block";
 
 interface ReadingHighlighterSettings {
     toolbarPosition: string;
@@ -70,6 +91,9 @@ interface ReadingHighlighterSettings {
     frontmatterTag: string;
     enableSmartParagraphSelection: boolean;
     learnedNormRules: LearnedNormRule[];
+    lastNotationType: NotationType;
+    autoGroupMultiBlock: boolean;
+    notationOpacity: Record<NotationType, number>;
 }
 
 const SMART_SELECTION_TAGS = new Set(["P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TD", "TH"]);
@@ -119,6 +143,9 @@ const DEFAULT_SETTINGS: ReadingHighlighterSettings = {
     frontmatterTag: "resaltados",
     enableSmartParagraphSelection: false,
     learnedNormRules: [],
+    lastNotationType: DEFAULT_NOTATION_TYPE,
+    autoGroupMultiBlock: true,
+    notationOpacity: { ...DEFAULT_NOTATION_OPACITY },
 };
 
 // Stringify an unknown frontmatter value the same way `String(value || "")`
@@ -135,6 +162,7 @@ interface LocatedRange {
     file: TFile;
     start: number;
     end: number;
+    raw: string;
 }
 
 interface SelectionRequest {
@@ -187,10 +215,19 @@ export default class ReadingHighlighterPlugin extends Plugin {
         this.registerCommands();
 
         this.registerMarkdownPostProcessor((el, ctx) => {
-            ctx.addChild(new RoughNotationRenderer(el));
+            ctx.addChild(
+                new RoughNotationRenderer(
+                    el,
+                    undefined,
+                    () => timingRenderingShown(ctx.sourcePath),
+                    ctx.sourcePath,
+                    this.settings.notationOpacity
+                )
+            );
         });
 
         this.registerDomEvent(activeDocument, "selectionchange", () => {
+            selectionEvent();
             this.floatingManager.handleSelection();
         });
 
@@ -469,7 +506,19 @@ export default class ReadingHighlighterPlugin extends Plugin {
         const loaded = ((await this.loadData()) as Partial<ReadingHighlighterSettings>) || {};
         this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
             semanticColors: loaded.semanticColors?.length ? loaded.semanticColors : DEFAULT_SETTINGS.semanticColors,
+            lastNotationType: normalizeNotationType(loaded.lastNotationType),
+            notationOpacity: Object.fromEntries(
+                NOTATION_TYPES.map((type) => [
+                    type,
+                    normalizeOpacity(loaded.notationOpacity?.[type]) ?? DEFAULT_NOTATION_OPACITY[type],
+                ])
+            ) as Record<NotationType, number>,
         });
+    }
+
+    async rememberNotationType(notationType: NotationType) {
+        this.settings.lastNotationType = normalizeNotationType(notationType);
+        await this.saveData(this.settings);
     }
 
     async saveSettings() {
@@ -482,7 +531,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
         return view && view.getMode() === "preview" ? view : null;
     }
 
-    getSelectionContext(selectionSnapshot: SelectionSnapshot | null) {
+    getSelectionContext(selectionSnapshot: SelectionSnapshot | null, scope: SelectionScope = "configured") {
         const view = this.getActiveReadingView();
         const range = this.getSelectionRange(selectionSnapshot);
         if (!view || !range) return null;
@@ -493,7 +542,9 @@ export default class ReadingHighlighterPlugin extends Plugin {
         const rawSnippet = selectionSnapshot?.text || window.getSelection()?.toString() || "";
 
         let snippet = rawSnippet;
-        if (this.settings.enableSmartParagraphSelection && blocks.length === 1) {
+        const expandBlock =
+            scope === "block" || (scope === "configured" && this.settings.enableSmartParagraphSelection);
+        if (expandBlock && blocks.length === 1) {
             const blockText = this.getElementText(blocks[0]);
             if (blockText) {
                 snippet = blockText;
@@ -551,9 +602,13 @@ export default class ReadingHighlighterPlugin extends Plugin {
         return (element?.innerText || element?.textContent || "").replace(/\s+/g, " ").trim();
     }
 
-    buildSelectionRequest(view: MarkdownView, selectionSnapshot: SelectionSnapshot | null) {
+    buildSelectionRequest(
+        view: MarkdownView,
+        selectionSnapshot: SelectionSnapshot | null,
+        scope: SelectionScope = "configured"
+    ) {
         const sel = window.getSelection();
-        const selectionContext = this.getSelectionContext(selectionSnapshot);
+        const selectionContext = this.getSelectionContext(selectionSnapshot, scope);
         const snippet = selectionContext?.snippet || selectionSnapshot?.text || sel?.toString() || "";
         if (!snippet.trim()) {
             return null;
@@ -611,10 +666,10 @@ export default class ReadingHighlighterPlugin extends Plugin {
         return foundIndex;
     }
 
-    async saveUndoState(file: TFile) {
+    async saveUndoState(file: TFile, original?: string) {
         this.lastModification = {
             file: file,
-            original: await this.app.vault.read(file),
+            original: original ?? (await this.app.vault.read(file)),
         };
     }
 
@@ -688,7 +743,15 @@ export default class ReadingHighlighterPlugin extends Plugin {
      * outside its highlight. Locating every block instead would be O(blocks)
      * whole-file scans — minutes of frozen UI on a long article.
      */
-    async highlightSpanningBlocks(view: MarkdownView, request: SelectionRequest, mode: string, payload: string) {
+    async highlightSpanningBlocks(
+        view: MarkdownView,
+        request: SelectionRequest,
+        mode: string,
+        payload: string,
+        notationType: NotationType = DEFAULT_NOTATION_TYPE,
+        groupId: string | null = null,
+        timing: TimingTrace | null = null
+    ) {
         if (!request.range || !view.file) return false;
         const blocks = request.blocks;
 
@@ -706,14 +769,41 @@ export default class ReadingHighlighterPlugin extends Plugin {
         const end = Math.max(head.end, tail.end);
         if (end <= start) return false;
 
-        await this.saveUndoState(head.file);
-        await this.applyMarkdownModification(head.file, "", start, end, mode, payload);
+        // The legacy multi-line writer unwraps marks inside the replaced lines.
+        // For gesture groups, refuse that rewrite until an explicit regroup
+        // action can preserve the existing marks and their metadata.
+        if (mode === "color") {
+            const lineStart = this.getLineStart(head.raw, start);
+            const lineEnd = this.getLineEnd(head.raw, end);
+            if (parseHighlights(head.raw).highlights.some((mark) => mark.start < lineEnd && mark.end > lineStart)) {
+                new Notice(
+                    "This passage already has marks. Annotating it would replace them; select unmarked text for now."
+                );
+                return "overlap";
+            }
+        }
+
+        await this.saveUndoState(head.file, head.raw);
+        await this.applyMarkdownModification(
+            head.file,
+            head.raw,
+            start,
+            end,
+            mode,
+            payload,
+            "",
+            notationType,
+            timing,
+            groupId
+        );
         return true;
     }
 
     async highlightSelection(view: MarkdownView, selectionSnapshot?: SelectionSnapshot | null) {
+        const timing = beginHighlightTiming(view.file.path, "standard highlight");
         const sel = window.getSelection();
         const request = this.buildSelectionRequest(view, selectionSnapshot);
+        timingStep(timing, "selection request built");
         if (!request) {
             new Notice("No text selected.");
             return;
@@ -752,8 +842,10 @@ export default class ReadingHighlighterPlugin extends Plugin {
             request.contextText,
             request.occurrenceIndex,
             request.withinBlock,
-            request.contextKind
+            request.contextKind,
+            timing
         );
+        timingStep(timing, "source match located");
 
         if (!result) {
             this.handleSelectionFailure(view, request, "highlightSelection");
@@ -761,9 +853,21 @@ export default class ReadingHighlighterPlugin extends Plugin {
         }
 
         const targetFile = result.file;
-        await this.saveUndoState(targetFile);
+        await this.saveUndoState(targetFile, result.raw);
+        timingStep(timing, "undo state saved");
 
-        await this.applyMarkdownModification(targetFile, "", result.start, result.end, mode, payload);
+        await this.applyMarkdownModification(
+            targetFile,
+            result.raw,
+            result.start,
+            result.end,
+            mode,
+            payload,
+            "",
+            DEFAULT_NOTATION_TYPE,
+            timing
+        );
+        timingStep(timing, "write and optional frontmatter completed");
         this.restoreScroll(view, scrollPos);
         sel?.removeAllRanges();
 
@@ -773,10 +877,15 @@ export default class ReadingHighlighterPlugin extends Plugin {
         new Notice("Highlighted!");
     }
 
-    async applyColorByIndex(view: MarkdownView, index: number, selectionSnapshot?: SelectionSnapshot | null) {
+    async applyColorByIndex(
+        view: MarkdownView,
+        index: number,
+        selectionSnapshot?: SelectionSnapshot | null,
+        notationType: NotationType = DEFAULT_NOTATION_TYPE
+    ) {
         if (index < 0 || index >= this.settings.semanticColors.length) return;
         const palette = this.settings.semanticColors[index];
-        await this.applyColorHighlight(view, palette.color, "", selectionSnapshot);
+        await this.applyColorHighlight(view, palette.color, "", selectionSnapshot, notationType);
     }
 
     async savePdfHighlight(
@@ -891,10 +1000,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
                 if (i % 10 === 0) notice.setMessage(`Extracting text... Page ${i}/${pdf.numPages}`);
             }
 
-            const dummySnapshot: SelectionSnapshot = {
-                text: fullText,
-                range: null,
-            };
+            const dummySnapshot: SelectionSnapshot = { text: fullText, range: null };
             await this.savePdfHighlight(view, dummySnapshot, "action", "highlightSelection");
             notice.hide();
             new Notice(`Successfully extracted ${pdf.numPages} pages.`);
@@ -929,7 +1035,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
         }
 
         const targetFile = result.file;
-        await this.saveUndoState(targetFile);
+        await this.saveUndoState(targetFile, result.raw);
 
         new TagSuggestModal(this, async (tag) => {
             const newResult = await this.logic.locateSelection(
@@ -991,7 +1097,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
         }
 
         const targetFile = result.file;
-        await this.saveUndoState(targetFile);
+        await this.saveUndoState(targetFile, result.raw);
 
         new AnnotationModal(this.app, async (comment) => {
             const newResult = await this.logic.locateSelection(
@@ -1062,8 +1168,8 @@ export default class ReadingHighlighterPlugin extends Plugin {
         }
 
         const targetFile = result.file;
-        await this.saveUndoState(targetFile);
-        await this.applyMarkdownModification(targetFile, "", result.start, result.end, "remove");
+        await this.saveUndoState(targetFile, result.raw);
+        await this.applyMarkdownModification(targetFile, result.raw, result.start, result.end, "remove");
         new Notice("Highlighting removed.");
         this.restoreScroll(view, scrollPos);
         sel?.removeAllRanges();
@@ -1219,12 +1325,32 @@ export default class ReadingHighlighterPlugin extends Plugin {
         view: MarkdownView,
         color: string,
         autoTag = "",
-        selectionSnapshot?: SelectionSnapshot | null
+        selectionSnapshot?: SelectionSnapshot | null,
+        notationType: NotationType = DEFAULT_NOTATION_TYPE
     ) {
+        const timing = beginHighlightTiming(view.file.path, `palette ${notationType}`);
         const sel = window.getSelection();
-        const request = this.buildSelectionRequest(view, selectionSnapshot);
+        const request = this.buildSelectionRequest(view, selectionSnapshot, "exact");
+        timingStep(timing, "selection request built");
         if (!request) return;
         const scrollPos = getScroll(view);
+
+        // One multi-block Reading View selection is one logical annotation.
+        // Each selected source line still gets its own Markdown-safe wrapper.
+        if (request.blocks.length > 1) {
+            const groupId = this.settings.autoGroupMultiBlock ? createNotationGroupId() : null;
+            const ok = await this.highlightSpanningBlocks(view, request, "color", color, notationType, groupId, timing);
+            if (ok === "overlap") return;
+            if (!ok) {
+                this.handleSelectionFailure(view, request, "applyColorHighlight", { color, notationType });
+                return;
+            }
+            timingStep(timing, "grouped source written");
+            this.restoreScroll(view, scrollPos);
+            sel?.removeAllRanges();
+            new Notice(groupId ? "Annotated grouped passage!" : "Annotated passage!");
+            return;
+        }
 
         const result = await this.logic.locateSelection(
             view.file,
@@ -1233,16 +1359,30 @@ export default class ReadingHighlighterPlugin extends Plugin {
             request.contextText,
             request.occurrenceIndex,
             request.withinBlock,
-            request.contextKind
+            request.contextKind,
+            timing
         );
+        timingStep(timing, "source match located");
         if (!result) {
-            this.handleSelectionFailure(view, request, "applyColorHighlight", color);
+            this.handleSelectionFailure(view, request, "applyColorHighlight", { color, notationType });
             return;
         }
 
         const targetFile = result.file;
-        await this.saveUndoState(targetFile);
-        await this.applyMarkdownModification(targetFile, result.raw, result.start, result.end, "color", color, autoTag);
+        await this.saveUndoState(targetFile, result.raw);
+        timingStep(timing, "undo state saved");
+        await this.applyMarkdownModification(
+            targetFile,
+            result.raw,
+            result.start,
+            result.end,
+            "color",
+            color,
+            autoTag,
+            notationType,
+            timing
+        );
+        timingStep(timing, "write and optional frontmatter completed");
         this.restoreScroll(view, scrollPos);
         sel?.removeAllRanges();
         new Notice("Highlighted!");
@@ -1462,7 +1602,9 @@ export default class ReadingHighlighterPlugin extends Plugin {
         selectionStart: number,
         selectionEnd: number,
         mode: string,
-        payload: string
+        payload: string,
+        notationType: NotationType = DEFAULT_NOTATION_TYPE,
+        groupId: string | null = null
     ): string {
         const cells = this.splitTableCells(line);
         const pieces: string[] = [];
@@ -1498,7 +1640,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
             let wrapped: string;
             if (mode === "color" || (this.settings.enableColorHighlighting && this.settings.highlightColor)) {
                 const color = mode === "color" ? payload : this.settings.highlightColor;
-                wrapped = `<mark style="background: ${color}; color: black;">${trimmed}</mark>`;
+                wrapped = `${createNotationOpenTag({ notationType, color, opacity: this.settings.notationOpacity[notationType] }, groupId)}${trimmed}</mark>`;
             } else {
                 wrapped = `==${trimmed}==`;
             }
@@ -1526,7 +1668,10 @@ export default class ReadingHighlighterPlugin extends Plugin {
         end: number,
         mode: string,
         payload = "",
-        autoTag = ""
+        autoTag = "",
+        notationType: NotationType = DEFAULT_NOTATION_TYPE,
+        timing: TimingTrace | null = null,
+        groupId: string | null = null
     ) {
         if (!raw) {
             raw = await this.app.vault.read(file);
@@ -1638,7 +1783,16 @@ export default class ReadingHighlighterPlugin extends Plugin {
             let cleanLine = line.replace(/<mark[^>]*>/g, "").replace(/<\/mark>/g, "");
             if (this.isTableAlignmentRow(line)) return line;
             if (this.isTableDataRow(line)) {
-                return this.applyToTableRow(line, lineOffsets[lineIndex], selectionStart, selectionEnd, mode, payload);
+                return this.applyToTableRow(
+                    line,
+                    lineOffsets[lineIndex],
+                    selectionStart,
+                    selectionEnd,
+                    mode,
+                    payload,
+                    notationType,
+                    groupId
+                );
             }
             if (mode === "highlight" || mode === "color" || mode === "tag" || mode === "remove") {
                 cleanLine = cleanLine.split("==").join("");
@@ -1668,7 +1822,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
                     wrappedContent = `==${actualContent}==`;
                 }
             } else if (mode === "color") {
-                wrappedContent = `<mark style="background: ${payload}; color: black;">${actualContent}</mark>`;
+                wrappedContent = `${createNotationOpenTag({ notationType, color: payload, opacity: this.settings.notationOpacity[notationType] }, groupId)}${actualContent}</mark>`;
             } else if (mode === "bold") {
                 wrappedContent = `**${actualContent}**`;
             } else if (mode === "italic") {
@@ -1679,7 +1833,9 @@ export default class ReadingHighlighterPlugin extends Plugin {
         });
         const replaceBlock = processedLines.join(newline);
         const newContent = raw.substring(0, expandedStart) + replaceBlock + raw.substring(expandedEnd);
+        timingWriteStarted(timing);
         await this.app.vault.modify(file, newContent);
+        timingStep(timing, "vault.modify resolved");
         if (mode !== "remove" && this.settings.enableFrontmatterTag && this.settings.frontmatterTag) {
             const targetTag = this.formatFrontmatterTag(this.settings.frontmatterTag);
             if (targetTag) {
@@ -1727,7 +1883,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
         view: MarkdownView,
         request: SelectionRequest,
         actionType: string,
-        payload: string | null = null
+        payload: string | NotationSpec | null = null
     ) {
         const report = this.logic.lastFailureReport;
         if (!report) {
@@ -1747,7 +1903,14 @@ export default class ReadingHighlighterPlugin extends Plugin {
             }
             const mockSnapshot = { text: correctedText, range: null };
             if (actionType === "applyColorHighlight") {
-                await this.applyColorHighlight(view, payload ?? "", "", mockSnapshot);
+                const spec = typeof payload === "object" && payload ? payload : null;
+                await this.applyColorHighlight(
+                    view,
+                    spec?.color ?? (typeof payload === "string" ? payload : ""),
+                    "",
+                    mockSnapshot,
+                    spec?.notationType ?? DEFAULT_NOTATION_TYPE
+                );
             } else if (actionType === "highlightSelection") {
                 await this.highlightSelection(view, mockSnapshot);
             } else if (actionType === "tagSelection") {
@@ -1761,7 +1924,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
     }
 }
 
-class ReadingHighlighterSettingTab extends PluginSettingTab {
+export class ReadingHighlighterSettingTab extends PluginSettingTab {
     plugin: ReadingHighlighterPlugin;
     constructor(app: App, plugin: ReadingHighlighterPlugin) {
         super(app, plugin);
@@ -1774,6 +1937,18 @@ class ReadingHighlighterSettingTab extends PluginSettingTab {
             text,
             cls: `rht-settings-heading rht-settings-heading--${variant}`,
         });
+    }
+
+    addOpacitySlider(setting: Setting, type: NotationType) {
+        setting.addSlider((slider) =>
+            slider
+                .setLimits(20, 100, 5)
+                .setValue(Math.round(this.plugin.settings.notationOpacity[type] * 100))
+                .onChange(async (value) => {
+                    this.plugin.settings.notationOpacity[type] = value / 100;
+                    await this.plugin.saveSettings();
+                })
+        );
     }
     /**
      * Declarative settings, so every option is reachable from Obsidian's
@@ -1794,6 +1969,15 @@ class ReadingHighlighterSettingTab extends PluginSettingTab {
         }));
 
         return [
+            {
+                type: "group",
+                heading: "Gesture opacity",
+                items: NOTATION_TYPES.map((type) => ({
+                    name: `${type} opacity`,
+                    desc: "Saved on new marks. Earlier marks without an opacity value use this setting when rendered.",
+                    render: (setting: Setting) => this.addOpacitySlider(setting, type),
+                })),
+            },
             {
                 type: "group",
                 heading: "Highlighting",
@@ -1828,6 +2012,11 @@ class ReadingHighlighterSettingTab extends PluginSettingTab {
                         name: "Enable color palette",
                         desc: "Show the semantic colour palette in the toolbar for quick selection.",
                         control: { type: "toggle", key: "enableColorPalette" },
+                    },
+                    {
+                        name: "Automatically group multi-block selections",
+                        desc: "One selection across list items or paragraphs appears as one Navigator entry. Turn off to keep the marks separate for later grouping.",
+                        control: { type: "toggle", key: "autoGroupMultiBlock" },
                     },
                     {
                         name: "Only show colours with a meaning",
@@ -2060,6 +2249,21 @@ class ReadingHighlighterSettingTab extends PluginSettingTab {
                     })
             );
         this.sectionHeading("Highlighting", "h3");
+        new Setting(containerEl)
+            .setName("Automatically group multi-block selections")
+            .setDesc("Turn off to keep each selected item separate; group chosen marks later in the navigator.")
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.autoGroupMultiBlock).onChange(async (value) => {
+                    this.plugin.settings.autoGroupMultiBlock = value;
+                    await this.plugin.saveSettings();
+                })
+            );
+        this.sectionHeading("Gesture opacity", "h4");
+        for (const type of NOTATION_TYPES) {
+            const wrapper = containerEl.createDiv();
+            wrapper.createSpan({ text: `${type} opacity` });
+            this.addOpacitySlider(new Setting(wrapper), type);
+        }
         new Setting(containerEl)
             .setName("Enable color highlighting")
             .setDesc("Use HTML <mark> tags with specific colors instead of == syntax.")

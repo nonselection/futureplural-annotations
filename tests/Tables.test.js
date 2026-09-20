@@ -1,7 +1,7 @@
 // Tables: a `==` pair must never span a `|`, escaped pipes are content rather
 // than column boundaries, and only the cells the user selected get highlighted.
 import { describe, it, expect } from "vitest";
-import { setup, textNodes, highlightRange } from "./WritePath.test.js";
+import { setup, textNodes, highlightRange, notationRange } from "./WritePath.test.js";
 
 const raw = [
     "# Tabla",
@@ -77,5 +77,16 @@ describe("table cells", () => {
         const cell = cellOf(ctx, 2, 2);
         await highlightCells(ctx, cell, cell);
         expect(lineWith(ctx.out(), "A2")).toBe("| A2 | Lorem ipsum | ==Dolor sit== |");
+    });
+
+    it("writes FuturePlural notation metadata inside a table cell", async () => {
+        const ctx = await setup(raw, html);
+        const nodes = textNodes(cellOf(ctx, 2, 1));
+
+        await notationRange(ctx, nodes[0], 0, nodes[0], nodes[0].nodeValue.length, "box", "#ed9275");
+
+        expect(lineWith(ctx.out(), "A2")).toBe(
+            '| A2 | <mark data-fp-notation="box" data-fp-color="#ed9275" data-fp-opacity="0.68">Lorem ipsum</mark> | Dolor sit |'
+        );
     });
 });

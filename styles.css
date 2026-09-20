@@ -522,6 +522,54 @@ body .highlight-navigator-container .nav-search-input {
     border-bottom: 1px solid var(--background-modifier-border);
 }
 
+.fp-navigator-selection-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 8px 10px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+}
+
+.fp-navigator-selection-controls.is-hidden {
+    display: none;
+}
+
+.fp-navigator-selection-controls button {
+    font-size: 0.82em;
+    padding: 5px 8px;
+}
+
+.fp-navigator-selected-count,
+.fp-navigator-group-count {
+    font-size: 0.72em;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.fp-navigator-selected-count {
+    margin-right: auto;
+}
+
+.fp-navigator-select {
+    flex-shrink: 0;
+    margin-top: 3px;
+}
+
+.highlight-navigator-item.is-selected {
+    background: var(--background-modifier-hover);
+}
+
+.fp-navigator-mixed-group .highlight-color-dot.highlight-default {
+    background: conic-gradient(var(--text-muted) 0 50%, var(--background-secondary) 0 100%);
+}
+
+.fp-research-mixed-dot {
+    background: conic-gradient(var(--text-muted) 0 50%, var(--background-secondary) 0 100%);
+}
+
 body .highlight-navigator-container .highlight-navigator-list {
     display: flex;
     flex-direction: column;
@@ -1373,11 +1421,62 @@ body .reading-highlighter-float-container.is-pdf-view button.pdf-only-btn {
     margin-right: 10px;
     flex-shrink: 0;
 }
-
-/* Rough Notation supplies the visible gesture.
-   Keep the semantic <mark> wrapper in the DOM
-   without painting a second rectangular background. */
-
+/* Rough Notation supplies the visible gesture. Keep the semantic <mark>
+   wrapper in the DOM without painting a second rectangular background. */
 .markdown-rendered mark.fp-rough-notation-target {
     background: transparent !important;
+}
+
+/* FuturePlural annotation gesture selector. Choosing a gesture does not write
+   yet; the semantic colour buttons below it perform the annotation. */
+.reading-highlighter-float-container:has(.fp-notation-selector) {
+    flex-wrap: wrap;
+    justify-content: center;
+    width: max-content;
+    max-width: calc(100vw - 20px);
+}
+
+.fp-notation-selector {
+    display: flex;
+    flex: 0 0 100%;
+    justify-content: center;
+    gap: 4px;
+}
+
+.fp-notation-btn.reading-highlighter-btn {
+    width: 34px;
+    height: 34px;
+    padding: 7px;
+    opacity: 0.72;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+
+.fp-notation-btn.reading-highlighter-btn.is-active {
+    opacity: 1;
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
+    border-color: var(--interactive-accent);
+    box-shadow:
+        0 0 0 2px var(--background-primary),
+        0 0 0 4px var(--interactive-accent);
+}
+
+.reading-highlighter-vertical .fp-notation-selector {
+    flex: 0 0 auto;
+    flex-direction: column;
+}
+
+.reading-highlighter-float-container.is-pdf-view .fp-notation-selector {
+    display: none;
+}
+
+.tooltip.fp-annotation-tooltip {
+    z-index: 10001;
+}
+
+@media (max-width: 768px) {
+    .fp-notation-btn.reading-highlighter-btn {
+        width: 38px;
+        height: 38px;
+    }
 }

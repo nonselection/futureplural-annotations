@@ -3,7 +3,7 @@
  * Finds all ==text== and <mark>text</mark> elements and creates a summary.
  */
 import { App, TFile } from "obsidian";
-import { parseHighlights, type Highlight } from "./highlights";
+import { groupHighlights, parseHighlights, type Highlight } from "./highlights";
 import { formatDate } from "./time";
 
 function detectNewline(raw: string): string {
@@ -71,51 +71,20 @@ function parentPath(file: TFile): string {
 
 export async function exportHighlightsToMD(app: App, file: TFile): Promise<string> {
     const raw = await app.vault.read(file);
-    let changed = false;
-
-    const lines = raw.split("\n");
-    const highlights: { text: string }[] = [];
-
-    const markdownPattern = /==(.*?)==/g;
-    const htmlPattern = /<mark[^>]*>(.*?)<\/mark>/g;
-
-    lines.forEach((line, lineIdx) => {
-        let hasHighlight = false;
-
-        // reset regex state if not creating new ones per line
-        const mdRegex = new RegExp(markdownPattern);
-        while (mdRegex.exec(line) !== null) {
-            hasHighlight = true;
-        }
-
-        const htmlRegex = new RegExp(htmlPattern);
-        while (htmlRegex.exec(line) !== null) {
-            hasHighlight = true;
-        }
-
-        if (hasHighlight) {
-            const blockMatch = lines[lineIdx].match(/\s(\^[a-zA-Z0-9-]+)$/);
-            let blockId = "";
-            if (blockMatch) {
-                blockId = blockMatch[1];
-            } else {
-                blockId = "^" + Math.random().toString(36).substring(2, 8);
-                lines[lineIdx] = lines[lineIdx] + " " + blockId;
-                changed = true;
-            }
-
-            highlights.push({
-                text: `![[${file.basename}#${blockId}]]`,
-            });
-        }
-    });
+    const parsed = parseHighlights(raw);
+    const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
+    const highlights = groupHighlights(parsed.highlights).map((highlight) => ({
+        text: (highlight.members ?? [highlight])
+            .map((part) => `![[${file.basename}#${ensured.lineToBlockId.get(part.line)}]]`)
+            .join("\n   "),
+    }));
 
     if (highlights.length === 0) {
         throw new Error("No highlights found in this file.");
     }
 
-    if (changed) {
-        await app.vault.modify(file, lines.join("\n"));
+    if (ensured.changed) {
+        await app.vault.modify(file, ensured.raw);
     }
 
     // Get current date
@@ -157,7 +126,7 @@ ${highlights.map((h, i) => `${i + 1}. ${h.text}`).join("\n\n")}
  */
 export function getHighlightsFromContent(raw: string): Highlight[] {
     const parsed = parseHighlights(raw);
-    return parsed.highlights;
+    return groupHighlights(parsed.highlights);
 }
 
 export async function exportHighlightsToJSON(app: App, file: TFile): Promise<string> {
@@ -178,13 +147,15 @@ export async function exportHighlightsToJSON(app: App, file: TFile): Promise<str
     const exportData = {
         exported: date,
         source: { path: file.path, basename: file.basename },
-        total: parsed.highlights.length,
-        highlights: parsed.highlights.map((h) => {
+        total: getHighlightsFromContent(raw).length,
+        highlights: groupHighlights(parsed.highlights).map((h) => {
             const blockId = ensured.lineToBlockId.get(h.line) || null;
             return {
                 id: h.id,
                 text: h.text,
                 type: h.type,
+                notationType: h.notationType,
+                groupId: h.groupId,
                 color: h.color ?? null,
                 tagsText: h.tagsText ?? "",
                 tags: (h.tagsText || "").split(/\s+/).filter(Boolean),
@@ -193,6 +164,17 @@ export async function exportHighlightsToJSON(app: App, file: TFile): Promise<str
                 line: h.line,
                 blockId,
                 blockEmbed: blockId ? `![[${file.basename}#${blockId}]]` : null,
+                ...(h.members
+                    ? {
+                          parts: h.members.map((part) => ({
+                              text: part.text,
+                              line: part.line,
+                              notationType: part.notationType,
+                              color: part.color,
+                              opacity: part.opacity,
+                          })),
+                      }
+                    : {}),
             };
         }),
     };
@@ -226,6 +208,8 @@ export async function exportHighlightsToCSV(app: App, file: TFile): Promise<stri
         "source_basename",
         "highlight_id",
         "type",
+        "notation_type",
+        "group_id",
         "color",
         "tags",
         "annotation",
@@ -236,7 +220,7 @@ export async function exportHighlightsToCSV(app: App, file: TFile): Promise<stri
         "text",
     ].join(",");
 
-    const rows = parsed.highlights.map((h) => {
+    const rows = groupHighlights(parsed.highlights).map((h) => {
         const blockId = ensured.lineToBlockId.get(h.line) || "";
         const blockEmbed = blockId ? `![[${file.basename}#${blockId}]]` : "";
         return [
@@ -244,6 +228,8 @@ export async function exportHighlightsToCSV(app: App, file: TFile): Promise<stri
             csvEscape(file.basename),
             csvEscape(h.id),
             csvEscape(h.type),
+            csvEscape(h.notationType),
+            csvEscape(h.groupId ?? ""),
             csvEscape(h.color ?? ""),
             csvEscape((h.tagsText || "").trim()),
             csvEscape(h.annotation ?? ""),

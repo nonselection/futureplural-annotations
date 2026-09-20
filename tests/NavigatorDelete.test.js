@@ -51,6 +51,17 @@ describe("remove a single highlight from the navigator", () => {
         expect(out()).toBe("Start inner end.");
     });
 
+    it("removes all fragments of a selected grouped passage in one action", async () => {
+        const raw = [
+            '- <mark data-fp-group="list-a">One</mark>',
+            '- <mark data-fp-group="list-a">Two</mark>',
+            '- <mark data-fp-group="other">Keep</mark>',
+        ].join("\n");
+        const { ctx, out } = harness(raw);
+        await removeSingle.call(ctx, parseHighlights(raw).highlights[0]);
+        expect(out()).toBe('- One\n- Two\n- <mark data-fp-group="other">Keep</mark>');
+    });
+
     it("leaves the note alone when the highlight has since moved", async () => {
         const raw = "Alpha ==one== beta.";
         const target = parseHighlights(raw).highlights[0];

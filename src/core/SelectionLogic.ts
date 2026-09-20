@@ -1,6 +1,7 @@
 import { App, TFile, MarkdownView } from "obsidian";
 import { BlockKind, SourceBlock, splitSourceBlocks, findBlockAt } from "../utils/sourceBlocks";
 import type { SelectionHint } from "../utils/blockOccurrence";
+import { timingStep, type TimingTrace } from "../utils/timing";
 
 interface LearnedRule {
     stripPattern?: string;
@@ -21,6 +22,7 @@ interface Virtual {
 interface OpContext {
     cache: Map<string, Virtual>;
     visited: Set<string>;
+    rawByPath: Map<string, string>;
 }
 
 interface Candidate {
@@ -173,7 +175,8 @@ export class SelectionLogic {
         context: string | null = null,
         occurrenceIndex = 0,
         withinBlock: SelectionHint | null = null,
-        contextKind: BlockKind | null = null
+        contextKind: BlockKind | null = null,
+        timing: TimingTrace | null = null
     ): Promise<PhysicalResult | null> {
         this.lastFailureReport = null; // Note 2: Reset at top of call
 
@@ -209,10 +212,12 @@ export class SelectionLogic {
 
         const activeFile = view.file;
         const opContext: OpContext = {
-            cache: new Map(),
-            visited: new Set(),
+            cache: /* @__PURE__ */ new Map(),
+            visited: /* @__PURE__ */ new Set(),
+            rawByPath: /* @__PURE__ */ new Map(),
         };
         const virtual = await this.resolveVirtualContent(activeFile, 0, opContext);
+        timingStep(timing, "virtual source read and normalized");
         const fullRaw = virtual.text;
 
         let firstSegmentBodyStart = 0;
@@ -295,9 +300,12 @@ export class SelectionLogic {
 
         if (candidates.length === 0) {
             // Classification & failure recording (Bug 1: return null)
+            timingStep(timing, "all matching strategies exhausted");
             this.lastFailureReport = this.classifyFailure(selectionSnippet, snippet, bodyContent, diagnostics);
             return null;
         }
+
+        timingStep(timing, "source candidates found");
 
         candidates = this.offsetCandidates(candidates, firstSegmentBodyStart);
 
@@ -314,17 +322,18 @@ export class SelectionLogic {
             splitSourceBlocks(bodyContent, firstSegmentBodyStart),
             contextKind
         );
+        timingStep(timing, "source candidate resolved");
         if (!result) {
             return null;
         }
 
-        return this.mapVirtualToPhysical(result.start, result.end, virtual.segments);
+        return this.mapVirtualToPhysical(result.start, result.end, virtual.segments, opContext.rawByPath);
     }
 
     async resolveVirtualContent(
         file: TFile,
         depth = 0,
-        opContext: OpContext = { cache: new Map(), visited: new Set() },
+        opContext: OpContext = { cache: new Map(), visited: new Set(), rawByPath: new Map() },
         fragment: string | null = null
     ): Promise<Virtual> {
         if (depth > 5) {
@@ -340,6 +349,7 @@ export class SelectionLogic {
         }
         opContext.visited.add(file.path);
         let raw = await this.app.vault.read(file);
+        opContext.rawByPath.set(file.path, raw);
         let fmOffset = 0;
         if (depth > 0 && raw.startsWith("---")) {
             const originalLength = raw.length;
@@ -655,7 +665,12 @@ export class SelectionLogic {
         return { text: currentText, segments: currentSegments };
     }
 
-    mapVirtualToPhysical(vStart: number, vEnd: number, segments: Segment[]): PhysicalResult | null {
+    mapVirtualToPhysical(
+        vStart: number,
+        vEnd: number,
+        segments: Segment[],
+        rawByPath: Map<string, string> = new Map()
+    ): PhysicalResult | null {
         const startSeg = segments.find((s) => vStart >= s.vStart && vStart < s.vEnd);
         const endSeg = segments.find((s) => vEnd > s.vStart && vEnd <= s.vEnd);
         if (!startSeg || !endSeg) return null;
@@ -665,7 +680,7 @@ export class SelectionLogic {
             file: startSeg.file,
             start: pStart,
             end: pEnd,
-            raw: "",
+            raw: rawByPath.get(startSeg.file.path) ?? "",
         };
     }
 

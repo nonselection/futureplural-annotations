@@ -22,11 +22,15 @@ function makeManager(colors, showOnlyAssignedColors) {
             showAnnotationButton: false,
             enableReadingProgress: false,
             toolbarPosition: "right",
+            lastNotationType: "highlight",
         },
-        applyColorByIndex: (_v, index) => applied.push(index),
+        applyColorByIndex: (_v, index, _selection, notationType) => applied.push({ index, notationType }),
+        rememberNotationType: async (notationType) => {
+            plugin.settings.lastNotationType = notationType;
+        },
         savePdfHighlight: () => {},
     };
-    return { manager: new FloatingManager(plugin), applied, window };
+    return { manager: new FloatingManager(plugin), applied, plugin, window };
 }
 
 const palette = (meanings) => meanings.map((meaning, i) => ({ color: `#00000${i}`, meaning }));
@@ -64,6 +68,7 @@ describe("toolbar palette filtering", () => {
         expect(buttons).toHaveLength(3);
         expect(buttons.map((b) => b.getAttribute("data-color-index"))).toEqual(["0", "2", "5"]);
         expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(["Disagreement", "Key point", "Definition"]);
+        expect(buttons.every((button) => button.dataset.testTooltipPlacement === "top")).toBe(true);
     });
 
     it("applies the colour the button represents, not its position", () => {
@@ -72,7 +77,7 @@ describe("toolbar palette filtering", () => {
         const buttons = [...manager.paletteContainer.querySelectorAll("button")];
         // Third visible button is semanticColors[5], not semanticColors[2].
         buttons[2].dispatchEvent(new window.Event("mousedown", { bubbles: true, cancelable: true }));
-        expect(applied).toEqual([5]);
+        expect(applied).toEqual([{ index: 5, notationType: "highlight" }]);
     });
 
     it("still applies the right colour with filtering off", () => {
@@ -80,6 +85,48 @@ describe("toolbar palette filtering", () => {
         manager.load();
         const buttons = [...manager.paletteContainer.querySelectorAll("button")];
         buttons[5].dispatchEvent(new window.Event("mousedown", { bubbles: true, cancelable: true }));
-        expect(applied).toEqual([5]);
+        expect(applied).toEqual([{ index: 5, notationType: "highlight" }]);
+    });
+
+    it("renders every notation gesture and marks the remembered gesture active", () => {
+        const { manager } = makeManager(full, true);
+        manager.activeNotationType = "circle";
+        manager.createElements();
+
+        expect(manager.notationButtons.map((button) => button.dataset.fpNotation)).toEqual([
+            "highlight",
+            "underline",
+            "box",
+            "circle",
+            "strike-through",
+            "crossed-off",
+        ]);
+        expect(manager.notationButtons.find((button) => button.dataset.fpNotation === "circle")?.ariaPressed).toBe(
+            "true"
+        );
+        expect(manager.notationButtons.map((button) => button.dataset.testTooltip)).toEqual([
+            "Highlight",
+            "Underline",
+            "Box",
+            "Circle",
+            "Strike through",
+            "Cross out",
+        ]);
+        expect(manager.notationButtons.every((button) => button.dataset.testTooltipPlacement === "top")).toBe(true);
+    });
+
+    it("selects a gesture without writing, then applies it when a colour is tapped", () => {
+        const { manager, applied, plugin, window } = makeManager(full, true);
+        manager.load();
+
+        const underline = manager.notationButtons.find((button) => button.dataset.fpNotation === "underline");
+        underline.dispatchEvent(new window.Event("mousedown", { bubbles: true, cancelable: true }));
+
+        expect(applied).toEqual([]);
+        expect(plugin.settings.lastNotationType).toBe("underline");
+        expect(underline.getAttribute("aria-pressed")).toBe("true");
+
+        manager.colorButtons[0].dispatchEvent(new window.Event("mousedown", { bubbles: true, cancelable: true }));
+        expect(applied).toEqual([{ index: 0, notationType: "underline" }]);
     });
 });

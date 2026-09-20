@@ -87,6 +87,10 @@ Notice.messages = [];
 
 export const Platform = { isMobile: false, isDesktop: true, isIosApp: false };
 export function setIcon() {}
+export function setTooltip(el, tooltip, options = {}) {
+    el.dataset.testTooltip = tooltip;
+    el.dataset.testTooltipPlacement = options.placement || "";
+}
 export async function loadPdfJs() {
     return {};
 }

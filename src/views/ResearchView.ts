@@ -237,6 +237,24 @@ export class ResearchView extends ItemView {
         return allHighlights;
     }
 
+    private matchesActiveColor(highlight: ResearchHighlight): boolean {
+        return (highlight.members ?? [highlight]).some((part) =>
+            part.color ? this.activeColors.has(part.color.toLowerCase()) : false
+        );
+    }
+
+    private addColorIndicator(itemEl: HTMLElement, highlight: ResearchHighlight) {
+        if (highlight.color) {
+            const dot = itemEl.createSpan({ cls: "research-color-dot" });
+            dot.setCssStyles({ backgroundColor: highlight.color });
+        } else if (highlight.members && new Set(highlight.members.map((part) => part.color)).size > 1) {
+            itemEl.createSpan({
+                cls: "research-color-dot fp-research-mixed-dot",
+                attr: { "aria-label": "Mixed colors" },
+            });
+        }
+    }
+
     private applyPropertyFilter(highlights: ResearchHighlight[]): ResearchHighlight[] {
         if (!(this.filterKey && this.filterKey !== "All Properties" && this.filterValue)) {
             return highlights;
@@ -293,10 +311,7 @@ export class ResearchView extends ItemView {
 
         // Apply color filter
         if (this.activeColors.size > 0) {
-            allHighlights = allHighlights.filter((h) => {
-                if (!h.color) return false;
-                return this.activeColors.has(h.color.toLowerCase());
-            });
+            allHighlights = allHighlights.filter((h) => this.matchesActiveColor(h));
         }
 
         // Stats summary
@@ -333,10 +348,7 @@ export class ResearchView extends ItemView {
                 group.highlights.forEach((h) => {
                     const itemEl = listEl.createDiv({ cls: "research-highlight-item" });
 
-                    if (h.color) {
-                        const dot = itemEl.createSpan({ cls: "research-color-dot" });
-                        dot.setCssStyles({ backgroundColor: h.color });
-                    }
+                    this.addColorIndicator(itemEl, h);
 
                     itemEl.createSpan({ cls: "research-item-text", text: h.text });
 
@@ -357,10 +369,7 @@ export class ResearchView extends ItemView {
                 const itemEl = listEl.createDiv({ cls: "research-highlight-item" });
 
                 // Color dot
-                if (h.color) {
-                    const dot = itemEl.createSpan({ cls: "research-color-dot" });
-                    dot.setCssStyles({ backgroundColor: h.color });
-                }
+                this.addColorIndicator(itemEl, h);
 
                 // Highlight text (truncated for readability)
                 const displayText = h.text.length > 120 ? h.text.substring(0, 120) + "..." : h.text;
@@ -402,10 +411,7 @@ export class ResearchView extends ItemView {
         }
 
         if (this.activeColors.size > 0) {
-            allHighlights = allHighlights.filter((h) => {
-                if (!h.color) return false;
-                return this.activeColors.has(h.color.toLowerCase());
-            });
+            allHighlights = allHighlights.filter((h) => this.matchesActiveColor(h));
         }
 
         if (allHighlights.length === 0) {

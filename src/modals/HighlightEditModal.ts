@@ -4,7 +4,8 @@ import { TagSuggestModal } from "./TagSuggestModal";
 import {
     parseHighlights,
     findHighlightById,
-    removeHighlightFromRaw,
+    groupHighlights,
+    removeHighlightGroupFromRaw,
     updateHighlightAnnotationInRaw,
     updateHighlightColorInRaw,
     updateHighlightTagsInRaw,
@@ -68,7 +69,7 @@ export class HighlightEditModal extends Modal {
         }
 
         const parsed = parseHighlights(raw);
-        const highlight = findHighlightById(parsed, this.highlightId);
+        const highlight = groupHighlights(parsed.highlights).find((item) => item.id === this.highlightId);
         if (!highlight) {
             contentEl.createDiv({ cls: "highlight-edit-error", text: "Highlight not found (it may have moved)." });
             return;
@@ -87,7 +88,7 @@ export class HighlightEditModal extends Modal {
             .setName("Style")
             .setDesc("Default uses == ==. Colored uses <mark>.")
             .addDropdown((drop) => {
-                drop.addOption("default", "Default (==)");
+                if (!highlight.groupId) drop.addOption("default", "Default (==)");
                 drop.addOption("color", "Colored (<mark>)");
                 drop.setValue(this.state.style);
                 drop.onChange((value) => {
@@ -221,7 +222,7 @@ export class HighlightEditModal extends Modal {
                 }
 
                 if (remove) {
-                    raw = removeHighlightFromRaw(raw, highlight);
+                    raw = removeHighlightGroupFromRaw(raw, highlight);
                     return raw;
                 }
 
@@ -243,10 +244,17 @@ export class HighlightEditModal extends Modal {
                         raw.slice(updatedHighlight.closeTagEnd);
                 } else if (this.state.style === "color") {
                     const color = String(this.state.color || "").trim();
-                    if (!color) {
+                    if (!color && !highlight.groupId) {
                         throw new Error("Choose a color first.");
                     }
-                    raw = updateHighlightColorInRaw(raw, updatedHighlight, color);
+                    if (color) {
+                        const parts = highlight.groupId
+                            ? updatedParsed.highlights.filter((part) => part.groupId === highlight.groupId)
+                            : [updatedHighlight];
+                        for (const part of parts.sort((a, b) => b.openTagStart - a.openTagStart)) {
+                            raw = updateHighlightColorInRaw(raw, part, color);
+                        }
+                    }
                 }
 
                 updatedParsed = parseHighlights(raw);

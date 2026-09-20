@@ -1,4 +1,4 @@
-import { normalizeNotationType, type NotationSpec } from "../models/notations";
+import { normalizeNotationType, normalizeOpacity, type NotationSpec } from "../models/notations";
 
 export type HighlightType = "markdown" | "html";
 export type FootnotePlacement = "after" | "inside";
@@ -19,6 +19,8 @@ export interface Highlight extends NotationSpec {
     closeTagEnd: number;
     openTag?: string;
     groupId: string | null;
+    /** Source-safe marks comprising one passage; present only on logical entries. */
+    members?: Highlight[];
     tagsText: string;
     tagsStart: number | null;
     tagsEnd: number | null;
@@ -106,10 +108,8 @@ function extractBackgroundFromStyle(styleValue: string | null | undefined): stri
 
 function extractAttribute(openTag: string, attributeName: string): string | null {
     const pattern = new RegExp(`\\s${escapeRegex(attributeName)}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i");
-
     const match = openTag.match(pattern);
     const value = match?.[2]?.trim();
-
     return value || null;
 }
 
@@ -186,6 +186,7 @@ export function parseHighlights(raw: string): ParsedHighlights {
                 line: lineIdx,
                 type: "markdown",
                 notationType: "highlight",
+                opacity: null,
                 color: null,
                 groupId: null,
                 start,
@@ -226,11 +227,9 @@ export function parseHighlights(raw: string): ParsedHighlights {
 
             const styleAttr = extractStyleAttribute(openTag);
             const styleColor = styleAttr ? extractBackgroundFromStyle(styleAttr.value) : null;
-
             const color = extractAttribute(openTag, "data-fp-color") ?? styleColor;
-
             const notationType = normalizeNotationType(extractAttribute(openTag, "data-fp-notation"));
-
+            const opacity = normalizeOpacity(extractAttribute(openTag, "data-fp-opacity"));
             const groupId = extractAttribute(openTag, "data-fp-group");
 
             const { tagsText, tagsStart, tagsEnd } = extractLeadingTagsRange(line, lineOffset, match.index);
@@ -248,6 +247,7 @@ export function parseHighlights(raw: string): ParsedHighlights {
                 line: lineIdx,
                 type: "html",
                 notationType,
+                opacity,
                 color: color ? color.trim() : null,
                 groupId,
                 start,
@@ -352,6 +352,93 @@ export function findHighlightById(parsed: ParsedHighlights, id: string): Highlig
     return parsed.highlights.find((h) => h.id === id) || null;
 }
 
+/** Present source wrappers carrying the same group ID as one item, even across gaps. */
+export function groupHighlights(highlights: Highlight[]): Highlight[] {
+    const grouped = new Map<string, Highlight[]>();
+    for (const highlight of highlights) {
+        if (!highlight.groupId) continue;
+        const members = grouped.get(highlight.groupId) ?? [];
+        members.push(highlight);
+        grouped.set(highlight.groupId, members);
+    }
+
+    const seen = new Set<string>();
+    return highlights.flatMap((highlight) => {
+        if (!highlight.groupId) return [highlight];
+        if (seen.has(highlight.groupId)) return [];
+        seen.add(highlight.groupId);
+        const members = grouped.get(highlight.groupId) ?? [highlight];
+        return [
+            {
+                ...highlight,
+                color: members.every((member) => member.color === highlight.color) ? highlight.color : null,
+                text: members.map((member) => member.text).join("\n"),
+                end: members[members.length - 1].end,
+                members,
+            },
+        ];
+    });
+}
+
+/** Update group membership without touching each mark's ink, tags or text. */
+export function regroupHighlightsInRaw(
+    raw: string,
+    selected: Pick<Highlight, "id" | "text" | "groupId">[],
+    groupId: string | null
+): string {
+    if (!selected.length || (groupId && selected.length < 2)) {
+        throw new Error("Select at least two annotations to group.");
+    }
+    if (groupId !== null && !/^[A-Za-z0-9-]+$/.test(groupId)) {
+        throw new Error("Invalid group ID.");
+    }
+    const logical = groupHighlights(parseHighlights(raw).highlights);
+    const chosen = selected.map((item) => {
+        const current = logical.find((entry) => entry.id === item.id);
+        if (!current || current.text !== item.text || current.groupId !== item.groupId) {
+            throw new Error("Annotations changed while you were selecting them. Select them again.");
+        }
+        return current;
+    });
+    if (!groupId && chosen.some((entry) => !entry.groupId)) {
+        throw new Error("Select grouped annotations to ungroup.");
+    }
+
+    const parts = [
+        ...new Map(chosen.flatMap((entry) => entry.members ?? [entry]).map((part) => [part.id, part])).values(),
+    ];
+    if (groupId && parts.length < 2) throw new Error("Select at least two distinct annotations to group.");
+    return parts
+        .sort((a, b) => b.openTagStart - a.openTagStart)
+        .reduce((content, part) => {
+            if (part.type === "markdown") {
+                if (groupId === null) throw new Error("Cannot ungroup an ungrouped Markdown highlight.");
+                // Markdown == == has nowhere to keep membership. Preserve its
+                // visible text while converting only this wrapper to HTML.
+                const text = content.slice(part.innerStart, part.innerEnd);
+                const openTag = `<mark data-fp-notation="highlight" data-fp-group="${groupId}">`;
+                return content.slice(0, part.start) + openTag + text + "</mark>" + content.slice(part.end);
+            }
+            const openTag = content.slice(part.openTagStart, part.openTagEnd);
+            const withoutGroup = openTag.replace(/\sdata-fp-group\s*=\s*(["'])[^"']*\1/i, "");
+            const updated = groupId ? withoutGroup.replace(/>$/, ` data-fp-group="${groupId}">`) : withoutGroup;
+            return content.slice(0, part.openTagStart) + updated + content.slice(part.openTagEnd);
+        }, raw);
+}
+
+/** Unwrap every source fragment of a logical passage in one atomic edit. */
+export function removeHighlightGroupFromRaw(raw: string, highlight: Highlight | null): string {
+    if (!highlight) return raw;
+    const members = highlight.groupId
+        ? parseHighlights(raw).highlights.filter((member) => member.groupId === highlight.groupId)
+        : [highlight];
+    return members
+        .sort((a, b) => b.start - a.start)
+        .reduce((content, member) => {
+            return removeHighlightFromRaw(content, member);
+        }, raw);
+}
+
 export function removeHighlightFromRaw(raw: string, highlight: Highlight | null): string {
     if (!highlight) return raw;
     const before = raw.slice(0, highlight.openTagStart);
@@ -421,8 +508,17 @@ export function updateHighlightColorInRaw(raw: string, highlight: Highlight | nu
 
     if (highlight.type === "html") {
         const openTag = raw.slice(highlight.openTagStart, highlight.openTagEnd);
-        const updatedOpenTag = buildUpdatedOpenTag(openTag, newColor);
-        return raw.slice(0, highlight.openTagStart) + updatedOpenTag + raw.slice(highlight.openTagEnd);
+        const updatedOpenTag = /\sdata-fp-color\s*=/i.test(openTag)
+            ? openTag.replace(
+                  /(\sdata-fp-color\s*=\s*["'])[^"']*(["'])/i,
+                  (_match, before: string, after: string) =>
+                      `${before}${newColor.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}${after}`
+              )
+            : buildUpdatedOpenTag(openTag, newColor);
+        const finalOpenTag = /\sstyle\s*=/i.test(updatedOpenTag)
+            ? buildUpdatedOpenTag(updatedOpenTag, newColor)
+            : updatedOpenTag;
+        return raw.slice(0, highlight.openTagStart) + finalOpenTag + raw.slice(highlight.openTagEnd);
     }
 
     // Markdown highlight -> convert to HTML mark

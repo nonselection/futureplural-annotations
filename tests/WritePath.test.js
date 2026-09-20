@@ -4,6 +4,8 @@ import ReadingHighlighterPlugin from "../src/main";
 import { SelectionLogic } from "../src/core/SelectionLogic";
 import { TFile } from "./obsidian-stub.js";
 import { createObsidianWindow } from "./dom-helpers.js";
+import { getHighlightsFromContent } from "../src/utils/export";
+import { parseHighlights, removeHighlightGroupFromRaw } from "../src/utils/highlights";
 
 export async function setup(raw, html) {
     const window = createObsidianWindow();
@@ -13,6 +15,7 @@ export async function setup(raw, html) {
 
     const file = new TFile("note.md");
     let current = raw;
+    let readCount = 0;
     const view = {
         file,
         contentEl: content,
@@ -22,7 +25,10 @@ export async function setup(raw, html) {
     };
     const app = {
         vault: {
-            read: async () => current,
+            read: async () => {
+                readCount += 1;
+                return current;
+            },
             modify: async (_f, c) => {
                 current = c;
             },
@@ -41,7 +47,7 @@ export async function setup(raw, html) {
     plugin.settings.defaultTagPrefix = "";
     plugin.settings.learnedNormRules = [];
     plugin.logic = new SelectionLogic(app, () => []);
-    return { window, doc, content, plugin, view, out: () => current };
+    return { window, doc, content, plugin, view, out: () => current, reads: () => readCount };
 }
 
 /** Text nodes of the rendered container, in document order. */
@@ -63,6 +69,16 @@ export async function highlightRange(ctx, startNode, startOff, endNode, endOff) 
     sel.removeAllRanges();
     sel.addRange(range);
     await ctx.plugin.highlightSelection(ctx.view, { text: range.toString(), range });
+}
+
+export async function notationRange(ctx, startNode, startOff, endNode, endOff, notationType, color = "#8fa58f") {
+    const range = ctx.doc.createRange();
+    range.setStart(startNode, startOff);
+    range.setEnd(endNode, endOff);
+    const sel = ctx.window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    await ctx.plugin.applyColorHighlight(ctx.view, color, "", { text: range.toString(), range }, notationType);
 }
 
 describe("issue 3: list marker must stay outside the highlight", () => {
@@ -123,5 +139,74 @@ describe("issue 4: extending an existing highlight", () => {
         expect((out.match(/==/g) || []).length).toBe(2);
         expect(out.startsWith("==Nació")).toBe(true);
         expect(out.trimEnd().endsWith("lejano.==")).toBe(true);
+    });
+});
+
+describe("FuturePlural notation write path", () => {
+    it("writes a multi-item reading selection as one logical annotation with separate visible marks", async () => {
+        const ctx = await setup(
+            "- Alpha one\n- Beta two\n- Gamma three",
+            "<ul><li>Alpha one</li><li>Beta two</li><li>Gamma three</li></ul>"
+        );
+        const items = ctx.content.querySelectorAll("li");
+        const first = textNodes(items[0])[0];
+        const last = textNodes(items[2])[0];
+
+        await notationRange(ctx, first, 0, last, last.nodeValue.length, "underline");
+
+        const parts = parseHighlights(ctx.out()).highlights;
+        expect(parts).toHaveLength(3);
+        expect(parts.every((part) => part.notationType === "underline")).toBe(true);
+        expect(parts.map((part) => part.groupId)).toEqual([parts[0].groupId, parts[0].groupId, parts[0].groupId]);
+        expect(parts[0].groupId).toMatch(/^fp-/);
+        const [logical] = getHighlightsFromContent(ctx.out());
+        expect(logical.text).toBe("Alpha one\nBeta two\nGamma three");
+        expect(logical.members).toHaveLength(3);
+        expect(removeHighlightGroupFromRaw(ctx.out(), logical)).toBe("- Alpha one\n- Beta two\n- Gamma three");
+    });
+
+    it("does not replace existing marks when grouping a passage", async () => {
+        const raw = '- <mark data-fp-notation="circle" data-fp-color="#f3c969">Alpha</mark> one\n- Beta two';
+        const ctx = await setup(raw, "<ul><li><mark>Alpha</mark> one</li><li>Beta two</li></ul>");
+        const first = textNodes(ctx.content.querySelectorAll("li")[0])[0];
+        const last = textNodes(ctx.content.querySelectorAll("li")[1])[0];
+        await notationRange(ctx, first, 0, last, last.nodeValue.length, "underline");
+        expect(ctx.out()).toBe(raw);
+    });
+
+    it("can leave multi-block marks separate for later Navigator grouping", async () => {
+        const ctx = await setup("- Alpha one\n- Beta two", "<ul><li>Alpha one</li><li>Beta two</li></ul>");
+        ctx.plugin.settings.autoGroupMultiBlock = false;
+        const items = ctx.content.querySelectorAll("li");
+        const first = textNodes(items[0])[0];
+        const last = textNodes(items[1])[0];
+        await notationRange(ctx, first, 0, last, last.nodeValue.length, "highlight");
+
+        expect(parseHighlights(ctx.out()).highlights.map((part) => part.groupId)).toEqual([null, null]);
+        expect(getHighlightsFromContent(ctx.out())).toHaveLength(2);
+    });
+
+    it("writes the selected notation type and semantic colour", async () => {
+        const ctx = await setup("Alpha beta gamma.", "<p>Alpha beta gamma.</p>");
+        const node = textNodes(ctx.content)[0];
+
+        await notationRange(ctx, node, 6, node, 10, "underline");
+
+        expect(ctx.out()).toBe(
+            'Alpha <mark data-fp-notation="underline" data-fp-color="#8fa58f" data-fp-opacity="0.8">beta</mark> gamma.'
+        );
+        expect(ctx.reads()).toBe(1);
+    });
+
+    it("keeps gesture annotations exact when legacy smart paragraph selection is enabled", async () => {
+        const ctx = await setup("Alpha beta gamma.", "<p>Alpha beta gamma.</p>");
+        ctx.plugin.settings.enableSmartParagraphSelection = true;
+        const node = textNodes(ctx.content)[0];
+
+        await notationRange(ctx, node, 6, node, 10, "highlight", "#f3c969");
+
+        expect(ctx.out()).toBe(
+            'Alpha <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-opacity="0.6">beta</mark> gamma.'
+        );
     });
 });

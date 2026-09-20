@@ -1,6 +1,17 @@
-import { setIcon, MarkdownView, Platform, View, App } from "obsidian";
+import { setIcon, setTooltip, MarkdownView, Platform, View, App } from "obsidian";
 import type ReadingHighlighterPlugin from "../main";
 import type { SemanticColor } from "../main";
+import { DEFAULT_NOTATION_TYPE, normalizeNotationType, type NotationType } from "../models/notations";
+import { toolbarShown } from "../utils/timing";
+
+const NOTATION_BUTTONS: { type: NotationType; icon: string; label: string }[] = [
+    { type: "highlight", icon: "highlighter", label: "Highlight" },
+    { type: "underline", icon: "underline", label: "Underline" },
+    { type: "box", icon: "square", label: "Box" },
+    { type: "circle", icon: "circle", label: "Circle" },
+    { type: "strike-through", icon: "strikethrough", label: "Strike through" },
+    { type: "crossed-off", icon: "x", label: "Cross out" },
+];
 
 type ActionName =
     | "highlightSelection"
@@ -26,6 +37,9 @@ export class FloatingManager {
     extractAllBtn: HTMLButtonElement | null;
     colorButtons: HTMLButtonElement[];
     paletteContainer: HTMLDivElement | null;
+    notationButtons: HTMLButtonElement[];
+    notationContainer: HTMLDivElement | null;
+    activeNotationType: NotationType;
     _handlers: (() => void)[];
     longPressTimer: number | null;
     _selectionDebounceTimer: number | null;
@@ -43,6 +57,9 @@ export class FloatingManager {
         this.extractAllBtn = null;
         this.colorButtons = [];
         this.paletteContainer = null;
+        this.notationButtons = [];
+        this.notationContainer = null;
+        this.activeNotationType = normalizeNotationType(plugin.settings.lastNotationType ?? DEFAULT_NOTATION_TYPE);
         this._handlers = [];
 
         // Mobile gesture state
@@ -82,6 +99,8 @@ export class FloatingManager {
             this.containerEl = null;
         }
         this.colorButtons = [];
+        this.notationButtons = [];
+        this.notationContainer = null;
         this.createElements();
         this.registerEvents();
         // Deliberately not shown here. Visibility belongs to `selectionchange`,
@@ -134,11 +153,26 @@ export class FloatingManager {
         // in the window holding the note rather than whichever has focus.
         this.containerEl = doc.body.createDiv({ cls: "reading-highlighter-float-container" });
 
-        // Main highlight button
-        this.highlightBtn = this.createButton("highlighter", "Highlight selection");
-
-        // Semantic Color palette (only if enabled)
+        // With the semantic palette enabled, notation type and colour become a
+        // two-stage action: choose a gesture, then tap the colour that writes it.
+        // Without the palette, preserve the upstream one-tap highlight button.
         if (this.plugin.settings.enableColorPalette) {
+            this.notationContainer = this.containerEl.createDiv({ cls: "fp-notation-selector" });
+            for (const item of NOTATION_BUTTONS) {
+                const button = this.createButton(item.icon, item.label, this.notationContainer);
+                button.addClass("fp-notation-btn");
+                button.dataset.fpNotation = item.type;
+                button.setAttribute("aria-label", item.label);
+                setTooltip(button, item.label, {
+                    placement: "top",
+                    gap: 8,
+                    delay: 250,
+                    classes: ["fp-annotation-tooltip"],
+                });
+                this.notationButtons.push(button);
+            }
+            this.updateNotationButtonState();
+
             this.paletteContainer = this.containerEl.createDiv({ cls: "reading-highlighter-palette" });
 
             for (const { item, index } of this.visiblePaletteColors()) {
@@ -146,10 +180,19 @@ export class FloatingManager {
                     cls: "reading-highlighter-color-btn",
                 });
                 colorBtn.setCssStyles({ backgroundColor: item.color });
-                colorBtn.setAttribute("aria-label", item.meaning || "Color " + (index + 1));
+                const label = item.meaning || "Color " + (index + 1);
+                colorBtn.setAttribute("aria-label", label);
+                setTooltip(colorBtn, label, {
+                    placement: "top",
+                    gap: 8,
+                    delay: 250,
+                    classes: ["fp-annotation-tooltip"],
+                });
                 colorBtn.setAttribute("data-color-index", index.toString());
                 this.colorButtons.push(colorBtn);
             }
+        } else {
+            this.highlightBtn = this.createButton("highlighter", "Highlight selection");
         }
 
         // Tag button
@@ -178,10 +221,10 @@ export class FloatingManager {
         this.extractAllBtn.addClass("pdf-only-btn");
     }
 
-    createButton(iconName: string, label: string): HTMLButtonElement {
+    createButton(iconName: string, label: string, parent?: HTMLElement): HTMLButtonElement {
         // Parented to the toolbar, so the element is created in the same
         // document the toolbar lives in.
-        const btn = (this.containerEl ?? this.targetDocument().body).createEl("button");
+        const btn = (parent ?? this.containerEl ?? this.targetDocument().body).createEl("button");
         setIcon(btn, iconName);
         // Only add tooltip if enabled in settings
         if (this.plugin.settings.showTooltips) {
@@ -189,6 +232,21 @@ export class FloatingManager {
         }
         btn.addClass("reading-highlighter-btn");
         return btn;
+    }
+
+    selectNotationType(notationType: NotationType) {
+        this.activeNotationType = normalizeNotationType(notationType);
+        this.plugin.settings.lastNotationType = this.activeNotationType;
+        this.updateNotationButtonState();
+        void this.plugin.rememberNotationType(this.activeNotationType);
+    }
+
+    updateNotationButtonState() {
+        for (const button of this.notationButtons) {
+            const isActive = button.dataset.fpNotation === this.activeNotationType;
+            button.toggleClass("is-active", isActive);
+            button.setAttribute("aria-pressed", String(isActive));
+        }
     }
 
     registerEvents() {
@@ -235,6 +293,18 @@ export class FloatingManager {
         attachAction(this.annotateBtn, "annotateSelection");
         attachAction(this.removeBtn, "removeHighlightSelection");
 
+        // Selecting a notation changes toolbar state only. The cached text
+        // selection remains live; the following colour tap performs the write.
+        this.notationButtons.forEach((button) => {
+            const handler = (evt: Event) => {
+                preventFocus(evt);
+                this.selectNotationType(normalizeNotationType(button.dataset.fpNotation));
+            };
+
+            button.addEventListener("mousedown", handler);
+            button.addEventListener("touchstart", handler, { passive: false });
+        });
+
         // Special: Extract All PDF
         if (this.extractAllBtn) {
             const handler = (evt: Event) => {
@@ -272,7 +342,12 @@ export class FloatingManager {
                 if (isPdf) {
                     void this.plugin.savePdfHighlight(view, this._selectionSnapshot, "color", index);
                 } else {
-                    void this.plugin.applyColorByIndex(view as MarkdownView, index, this._selectionSnapshot);
+                    void this.plugin.applyColorByIndex(
+                        view as MarkdownView,
+                        index,
+                        this._selectionSnapshot,
+                        this.activeNotationType
+                    );
                 }
 
                 this.hide();
@@ -395,6 +470,7 @@ export class FloatingManager {
             };
 
             this.show(rect);
+            toolbarShown();
         } else {
             this._selectionSnapshot = null;
             this.hide();
@@ -417,8 +493,9 @@ export class FloatingManager {
         const pos = this.plugin.settings.toolbarPosition || "text";
 
         if (pos === "text") {
-            const containerHeight = 50;
-            const containerWidth = this.plugin.settings.enableColorPalette ? 320 : 180;
+            const bounds = this.containerEl.getBoundingClientRect();
+            const containerHeight = bounds.height || (this.plugin.settings.enableColorPalette ? 92 : 50);
+            const containerWidth = bounds.width || (this.plugin.settings.enableColorPalette ? 360 : 180);
 
             if (Platform.isAndroidApp) {
                 // ── Android: place toolbar BELOW the selection ──

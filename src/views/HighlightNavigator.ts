@@ -12,7 +12,13 @@ import {
 import type ReadingHighlighterPlugin from "../main";
 import { getHighlightsFromContent } from "../utils/export";
 import type { Highlight } from "../utils/highlights";
-import { parseHighlights, findHighlightById, removeHighlightFromRaw } from "../utils/highlights";
+import {
+    parseHighlights,
+    findHighlightById,
+    removeHighlightGroupFromRaw,
+    regroupHighlightsInRaw,
+} from "../utils/highlights";
+import { createNotationGroupId } from "../models/notations";
 import type { HighlightWithFile } from "../utils/canvas";
 import { HighlightEditModal } from "../modals/HighlightEditModal";
 import { BulkRecolorModal } from "../modals/BulkRecolorModal";
@@ -41,6 +47,12 @@ export class HighlightNavigatorView extends ItemView {
     currentFile: TFile | null;
     viewMode: string;
     searchQuery: string;
+    selectionMode: boolean;
+    selectedIds: Set<string>;
+    selectionCountEl: HTMLElement | null = null;
+    groupButton: HTMLButtonElement | null = null;
+    ungroupButton: HTMLButtonElement | null = null;
+    selectionBarEl: HTMLElement | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: ReadingHighlighterPlugin) {
         super(leaf);
@@ -50,6 +62,8 @@ export class HighlightNavigatorView extends ItemView {
         this.currentFile = null;
         this.viewMode = "highlights"; // 'highlights', 'footnotes', or 'split'
         this.searchQuery = ""; // Search filter
+        this.selectionMode = false;
+        this.selectedIds = new Set();
     }
 
     getViewType() {
@@ -88,6 +102,7 @@ export class HighlightNavigatorView extends ItemView {
                 btnGroup.querySelectorAll(".nav-btn").forEach((el) => el.removeClass("is-active"));
                 btn.addClass("is-active");
                 this.viewMode = m.value;
+                this.selectedIds.clear();
                 this.renderContent();
             };
         });
@@ -101,8 +116,12 @@ export class HighlightNavigatorView extends ItemView {
         });
         searchInput.oninput = (e) => {
             this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
+            this.selectedIds.clear();
             this.renderContent();
         };
+
+        // Keep selection actions outside the scrolling lists, including in split view.
+        this.selectionBarEl = container.createDiv({ cls: "fp-navigator-selection-controls" });
 
         // Content area
         this.contentEl = container.createDiv({ cls: "highlight-navigator-content" });
@@ -175,6 +194,7 @@ export class HighlightNavigatorView extends ItemView {
             targetFile = view.file;
         }
 
+        if (this.currentFile?.path !== targetFile.path || force) this.selectedIds.clear();
         this.currentFile = targetFile;
 
         try {
@@ -272,6 +292,8 @@ export class HighlightNavigatorView extends ItemView {
         this.contentEl.empty();
         this.contentEl.removeClass("split-view");
 
+        this.renderSelectionControls();
+
         if (this.viewMode === "highlights") {
             this.renderList(this.contentEl, this.highlights, "highlights");
         } else if (this.viewMode === "footnotes") {
@@ -282,6 +304,67 @@ export class HighlightNavigatorView extends ItemView {
             const bottomHalf = this.contentEl.createDiv({ cls: "split-half split-bottom" });
             this.renderList(topHalf, this.highlights, "highlights");
             this.renderList(bottomHalf, this.footnotes, "footnotes");
+        }
+    }
+
+    renderSelectionControls() {
+        const controls = this.selectionBarEl;
+        if (!controls) return;
+        controls.empty();
+        controls.toggleClass("is-hidden", this.viewMode === "footnotes");
+        if (this.viewMode === "footnotes") return;
+        const toggle = controls.createEl("button", { text: this.selectionMode ? "Done" : "Select marks" });
+        toggle.setAttribute("aria-pressed", String(this.selectionMode));
+        toggle.onclick = () => {
+            this.selectionMode = !this.selectionMode;
+            this.selectedIds.clear();
+            this.renderContent();
+        };
+
+        this.selectionCountEl = null;
+        this.groupButton = null;
+        this.ungroupButton = null;
+        if (!this.selectionMode) return;
+
+        this.selectionCountEl = controls.createSpan({ cls: "fp-navigator-selected-count" });
+        this.groupButton = controls.createEl("button", { text: "Group" });
+        this.groupButton.setAttribute("aria-label", "Group selected marks");
+        this.groupButton.onclick = () => void this.regroupSelected(createNotationGroupId());
+        this.ungroupButton = controls.createEl("button", { text: "Ungroup" });
+        this.ungroupButton.setAttribute("aria-label", "Ungroup selected groups");
+        this.ungroupButton.onclick = () => void this.regroupSelected(null);
+        this.updateSelectionControls();
+    }
+
+    updateSelectionControls() {
+        if (!this.selectionMode) return;
+        const selected = this.highlights.filter((highlight) => this.selectedIds.has(highlight.id));
+        this.selectionCountEl?.setText(`${selected.length} selected`);
+        if (this.groupButton) this.groupButton.disabled = selected.length < 2;
+        if (this.ungroupButton) this.ungroupButton.disabled = !selected.some((highlight) => highlight.groupId);
+    }
+
+    async regroupSelected(groupId: string | null) {
+        const file = this.currentFile;
+        if (!file) return;
+        const selected = this.highlights.filter(
+            (highlight) => this.selectedIds.has(highlight.id) && (groupId !== null || highlight.groupId)
+        );
+        if ((groupId && selected.length < 2) || (!groupId && !selected.some((highlight) => highlight.groupId))) {
+            return;
+        }
+        try {
+            // Preflight before saving undo or writing. vault.process validates
+            // again against the current version of the note, inside its lock.
+            regroupHighlightsInRaw(await this.app.vault.read(file), selected, groupId);
+            await this.plugin.saveUndoState(file);
+            await this.app.vault.process(file, (raw) => regroupHighlightsInRaw(raw, selected, groupId));
+            this.selectedIds.clear();
+            this.selectionMode = false;
+            await this.refresh(true);
+            new Notice(groupId ? "Marks grouped." : "Groups separated.");
+        } catch (err) {
+            new Notice(err instanceof Error ? err.message : "Could not change groups.");
         }
     }
 
@@ -316,6 +399,22 @@ export class HighlightNavigatorView extends ItemView {
         filteredItems.forEach((item, index) => {
             const el = fragment.createDiv({ cls: "highlight-navigator-item" });
 
+            if (type === "highlights" && this.selectionMode) {
+                const highlight = item as Highlight;
+                const checkbox = el.createEl("input", { cls: "fp-navigator-select" });
+                checkbox.type = "checkbox";
+                checkbox.checked = this.selectedIds.has(highlight.id);
+                checkbox.setAttribute("aria-label", `Select mark: ${highlight.text.slice(0, 80)}`);
+                checkbox.onchange = () => {
+                    if (checkbox.checked) this.selectedIds.add(highlight.id);
+                    else this.selectedIds.delete(highlight.id);
+                    el.toggleClass("is-selected", checkbox.checked);
+                    this.updateSelectionControls();
+                };
+                checkbox.onclick = (e) => e.stopPropagation();
+                el.toggleClass("is-selected", checkbox.checked);
+            }
+
             if (type === "highlights") {
                 const highlight = item as Highlight;
                 // Color indicator
@@ -324,6 +423,9 @@ export class HighlightNavigatorView extends ItemView {
                     colorDot.setCssStyles({ backgroundColor: highlight.color });
                 } else {
                     el.createSpan({ cls: "highlight-color-dot highlight-default" });
+                }
+                if (highlight.members && new Set(highlight.members.map((part) => part.color)).size > 1) {
+                    el.addClass("fp-navigator-mixed-group");
                 }
             } else {
                 const footnote = item as NavFootnote;
@@ -341,6 +443,12 @@ export class HighlightNavigatorView extends ItemView {
 
             const textSpan = el.createSpan({ cls: "highlight-text" });
             textSpan.textContent = this.stripMarkdown(item.text);
+            if (type === "highlights" && (item as Highlight).members?.length) {
+                el.createSpan({
+                    cls: "fp-navigator-group-count",
+                    text: `${(item as Highlight).members?.length} marks`,
+                });
+            }
 
             // Actions menu (hidden until hover on desktop; always available on mobile).
             // Available for both highlights and footnote annotations.
@@ -381,6 +489,9 @@ export class HighlightNavigatorView extends ItemView {
                 e.stopPropagation();
                 if (type === "footnotes") {
                     void this.jumpToFootnote(item as NavFootnote);
+                } else if (this.selectionMode) {
+                    const checkbox = el.querySelector<HTMLInputElement>(".fp-navigator-select");
+                    if (checkbox) checkbox.click();
                 } else {
                     void this.jumpToLine((item as Highlight).line);
                 }
@@ -420,6 +531,18 @@ export class HighlightNavigatorView extends ItemView {
                     }).open();
                 });
         });
+
+        if (item.groupId) {
+            menu.addItem((mi: MenuItem) => {
+                mi.setTitle("Ungroup marks")
+                    .setIcon("ungroup")
+                    .onClick(() => {
+                        this.selectedIds.clear();
+                        this.selectedIds.add(item.id);
+                        void this.regroupSelected(null);
+                    });
+            });
+        }
 
         menu.addSeparator();
 
@@ -468,7 +591,7 @@ export class HighlightNavigatorView extends ItemView {
                 const highlight = findHighlightById(parseHighlights(data), item.id);
                 if (!highlight) return data;
                 found = true;
-                return removeHighlightFromRaw(data, highlight);
+                return removeHighlightGroupFromRaw(data, highlight);
             });
             if (!found) {
                 new Notice("Highlight not found (it may have moved).");
