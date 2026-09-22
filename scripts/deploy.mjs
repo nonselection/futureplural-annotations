@@ -37,7 +37,6 @@ const deployFiles = ["main.js", "manifest.json", "styles.css"];
 
 for (const filename of deployFiles) {
     const sourcePath = join(repositoryRoot, filename);
-
     try {
         const sourceStat = await stat(sourcePath);
         if (!sourceStat.isFile()) throw new Error("not a file");

@@ -45,7 +45,9 @@
     /* Standard Shadow */
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     color: var(--text-normal);
-    transition: transform 0.1s ease-in-out, background-color 0.15s;
+    transition:
+        transform 0.1s ease-in-out,
+        background-color 0.15s;
 }
 
 .reading-highlighter-btn svg,
@@ -114,7 +116,9 @@ body.theme-light .reading-highlighter-remove-btn:hover {
     border-radius: var(--button-radius);
     border: 2px solid rgba(255, 255, 255, 0.4);
     cursor: pointer;
-    transition: transform 0.1s, box-shadow 0.15s;
+    transition:
+        transform 0.1s,
+        box-shadow 0.15s;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
@@ -448,22 +452,65 @@ body .highlight-navigator-container .highlight-navigator-btn-group {
     background: var(--background-modifier-hover);
 }
 
-.nav-btn.is-active {
+/* Obsidian adds .mobile-tap on click/tap, and its
+   `button:not(.clickable-icon).mobile-tap` rule (0,2,1) outranks a plain
+   `.nav-btn.is-active` (0,2,0). That replaced the selected segment's
+   background with --interactive-hover while the text kept --text-on-accent,
+   giving dark-on-dark in dark mode and white-on-white in light mode, and on
+   touch it held for as long as the finger was down. Naming .mobile-tap here
+   takes the specificity back. */
+.nav-btn.is-active,
+.nav-btn.is-active.mobile-tap {
     background: var(--interactive-accent);
     color: var(--text-on-accent);
 }
 
 body .highlight-navigator-container .highlight-navigator-search {
     padding: 0 0 12px;
+    width: calc(100% - 16px);
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    box-sizing: border-box;
 }
 
 body .highlight-navigator-container .nav-search-input {
-    width: calc(100% - 16px);
-    margin: 0 auto;
-    display: block;
+    flex: 1;
+    min-width: 0;
     border-radius: var(--input-radius);
     padding: 6px 10px;
     box-sizing: border-box;
+}
+
+body .highlight-navigator-container .fp-navigator-overflow,
+body .highlight-navigator-container .fp-navigator-source-link,
+.research-view-container .fp-manager-source-link,
+.research-view-container .fp-manager-edit-link,
+.research-view-container .fp-manager-row-disclosure,
+.research-view-container .fp-manager-note-actions {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    box-shadow: none;
+}
+
+body .highlight-navigator-container .fp-navigator-overflow:hover,
+body .highlight-navigator-container .fp-navigator-source-link:hover,
+.research-view-container .fp-manager-source-link:hover,
+.research-view-container .fp-manager-edit-link:hover,
+.research-view-container .fp-manager-row-disclosure:hover,
+.research-view-container .fp-manager-note-actions:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+    border-color: var(--background-modifier-border);
 }
 
 .highlight-navigator-content {
@@ -510,6 +557,54 @@ body .highlight-navigator-container .nav-search-input {
     border-bottom: 1px solid var(--background-modifier-border);
 }
 
+.fp-navigator-selection-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 8px 10px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+}
+
+.fp-navigator-selection-controls.is-hidden {
+    display: none;
+}
+
+.fp-navigator-selection-controls button {
+    font-size: 0.82em;
+    padding: 5px 8px;
+}
+
+.fp-navigator-selected-count,
+.fp-navigator-group-count {
+    font-size: 0.72em;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.fp-navigator-selected-count {
+    margin-right: auto;
+}
+
+.fp-navigator-select {
+    flex-shrink: 0;
+    margin-top: 3px;
+}
+
+.highlight-navigator-item.is-selected {
+    background: var(--background-modifier-hover);
+}
+
+.fp-navigator-mixed-group .highlight-color-dot.highlight-default {
+    background: conic-gradient(var(--text-muted) 0 50%, var(--background-secondary) 0 100%);
+}
+
+.fp-research-mixed-dot {
+    background: conic-gradient(var(--text-muted) 0 50%, var(--background-secondary) 0 100%);
+}
+
 body .highlight-navigator-container .highlight-navigator-list {
     display: flex;
     flex-direction: column;
@@ -524,7 +619,7 @@ body .highlight-navigator-container .highlight-navigator-list {
     gap: 10px;
     padding: 10px 12px;
     border-radius: var(--radius-s);
-    cursor: pointer;
+    cursor: default;
     transition: background-color 0.1s;
 }
 
@@ -558,6 +653,15 @@ body .highlight-navigator-container .highlight-navigator-list {
     word-break: break-word;
 }
 
+body .highlight-navigator-container .fp-navigator-source-link {
+    opacity: 0.68;
+    flex-shrink: 0;
+}
+
+body .highlight-navigator-container .fp-navigator-source-link:hover {
+    opacity: 1;
+}
+
 body .highlight-navigator-container .highlight-navigator-item .highlight-item-menu {
     width: 26px;
     height: 26px;
@@ -573,7 +677,11 @@ body .highlight-navigator-container .highlight-navigator-item .highlight-item-me
     font-size: 18px;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.12s ease, background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    transition:
+        opacity 0.12s ease,
+        background-color 0.12s ease,
+        border-color 0.12s ease,
+        color 0.12s ease;
 }
 
 body .highlight-navigator-container .highlight-navigator-item:hover .highlight-item-menu {
@@ -1023,11 +1131,11 @@ body.is-mobile .research-view-container {
     .research-view-header {
         padding: 12px;
     }
-    
+
     .research-view-color-filters {
         gap: 4px;
     }
-    
+
     .research-color-chip {
         padding: 4px 8px;
         font-size: 0.75em;
@@ -1114,15 +1222,32 @@ body.is-mobile .research-view-container {
 .research-group-header {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    cursor: pointer;
+    gap: 4px;
+    padding: 4px 8px 4px 4px;
     background: var(--background-secondary);
     transition: background-color 0.15s;
 }
 
-.research-group-header:hover {
+.research-group-header:has(.fp-manager-group-toggle:hover) {
     background: var(--background-modifier-hover);
+}
+
+.fp-manager-group-toggle {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    gap: 10px;
+    padding: 6px 10px;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    color: inherit;
+    text-align: left;
+}
+
+.fp-manager-group-toggle:hover {
+    background: transparent;
 }
 
 .research-expand-icon {
@@ -1159,14 +1284,22 @@ body.is-mobile .research-view-container {
     background: var(--background-primary);
 }
 
+.research-highlight-list.is-collapsed {
+    display: none;
+}
+
 .research-highlight-item {
     display: flex;
     align-items: flex-start;
     gap: 12px;
-    padding: 12px 14px 12px 36px;
+    padding: 12px 14px;
     cursor: pointer;
     border-bottom: 1px solid var(--background-modifier-border-alt);
     transition: background-color 0.15s;
+}
+
+.research-highlight-item.is-expanded {
+    background: var(--background-secondary);
 }
 
 .research-highlight-item:last-child {
@@ -1187,11 +1320,40 @@ body.is-mobile .research-view-container {
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
 }
 
+.fp-manager-item-body {
+    flex: 1;
+    min-width: 0;
+}
+
 .research-item-text {
+    display: block;
     font-size: 0.9em;
     line-height: 1.5;
     color: var(--text-normal);
-    flex: 1;
+}
+
+.fp-manager-item-details {
+    margin-top: 5px;
+    color: var(--text-muted);
+    font-size: 0.76em;
+    line-height: 1.35;
+}
+
+.fp-manager-item-details.is-hidden {
+    display: none;
+}
+
+.research-view-container .fp-manager-source-link,
+.research-view-container .fp-manager-edit-link,
+.research-view-container .fp-manager-row-disclosure,
+.research-view-container .fp-manager-note-actions {
+    flex-shrink: 0;
+}
+
+.research-view-container .fp-manager-row-disclosure {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
 }
 
 .research-flat-list {
@@ -1229,24 +1391,24 @@ body.is-mobile .research-view-container {
 }
 
 /* --- Failure Recovery Modal --- */
-.recovery-desc { 
-    margin-bottom: 20px; 
-    color: var(--text-muted); 
+.recovery-desc {
+    margin-bottom: 20px;
+    color: var(--text-muted);
     font-size: 0.95em;
 }
 
-.recovery-info-box { 
-    background: var(--background-secondary); 
-    padding: 12px; 
-    border-radius: var(--radius-m); 
-    margin-bottom: 20px; 
-    border: 1px solid var(--background-modifier-border); 
+.recovery-info-box {
+    background: var(--background-secondary);
+    padding: 12px;
+    border-radius: var(--radius-m);
+    margin-bottom: 20px;
+    border: 1px solid var(--background-modifier-border);
 }
 
-.recovery-snippet-preview { 
-    font-family: var(--font-monospace); 
-    font-size: 0.85em; 
-    margin-top: 8px; 
+.recovery-snippet-preview {
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+    margin-top: 8px;
     color: var(--text-accent);
     padding: 6px;
     background: var(--background-primary);
@@ -1254,20 +1416,20 @@ body.is-mobile .research-view-container {
     word-break: break-all;
 }
 
-.recovery-rule-preview { 
-    margin-top: 15px; 
+.recovery-rule-preview {
+    margin-top: 15px;
     padding: 10px;
     border-radius: var(--radius-s);
-    font-weight: 500; 
+    font-weight: 500;
     min-height: 24px;
     background: var(--background-secondary-alt);
     font-size: 0.9em;
 }
 
-.recovery-instruction { 
-    margin-top: 20px; 
-    margin-bottom: 8px; 
-    font-weight: bold; 
+.recovery-instruction {
+    margin-top: 20px;
+    margin-bottom: 8px;
+    font-weight: bold;
     color: var(--text-normal);
 }
 
@@ -1356,4 +1518,85 @@ body .reading-highlighter-float-container.is-pdf-view button.pdf-only-btn {
     border-radius: 4px;
     margin-right: 10px;
     flex-shrink: 0;
+}
+/* Rough Notation supplies the visible gesture. Keep the semantic <mark>
+   wrapper in the DOM without painting a second rectangular background. */
+.markdown-rendered mark.fp-rough-notation-target {
+    background: transparent !important;
+}
+
+/* FuturePlural annotation gesture selector. Choosing a gesture does not write
+   yet; the semantic colour buttons below it perform the annotation. */
+.reading-highlighter-float-container:has(.fp-notation-selector) {
+    flex-wrap: wrap;
+    justify-content: center;
+    width: max-content;
+    max-width: calc(100vw - 20px);
+}
+
+.fp-notation-selector {
+    display: flex;
+    flex: 0 0 100%;
+    justify-content: center;
+    gap: 4px;
+}
+
+.fp-notation-btn.reading-highlighter-btn {
+    width: 34px;
+    height: 34px;
+    padding: 7px;
+    opacity: 0.72;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+
+.fp-notation-btn.reading-highlighter-btn.is-active {
+    opacity: 1;
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
+    border-color: var(--interactive-accent);
+    box-shadow:
+        0 0 0 2px var(--background-primary),
+        0 0 0 4px var(--interactive-accent);
+}
+
+.reading-highlighter-vertical .fp-notation-selector {
+    flex: 0 0 auto;
+    flex-direction: column;
+}
+
+.reading-highlighter-float-container.is-pdf-view .fp-notation-selector {
+    display: none;
+}
+
+.tooltip.fp-annotation-tooltip {
+    z-index: 10001;
+}
+
+@media (max-width: 768px) {
+    .fp-notation-btn.reading-highlighter-btn {
+        width: 38px;
+        height: 38px;
+    }
+}
+.fp-research-file-options {
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.fp-research-file-options label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    overflow-wrap: anywhere;
+}
+.fp-research-files {
+    margin-block: 8px;
+}
+.fp-maintenance-preview {
+    max-height: 280px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }

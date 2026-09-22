@@ -8,6 +8,8 @@ import {
     WorkspaceLeaf,
     TFile,
     TAbstractFile,
+    setIcon,
+    setTooltip,
 } from "obsidian";
 import type ReadingHighlighterPlugin from "../main";
 import { getHighlightsFromContent } from "../utils/export";
@@ -19,9 +21,8 @@ import {
     regroupHighlightsInRaw,
 } from "../utils/highlights";
 import { createNotationGroupId } from "../models/notations";
-import type { HighlightWithFile } from "../utils/canvas";
+import { defaultCanvasPath, MAX_CANVAS_ASSOCIATIONS } from "../utils/canvas";
 import { HighlightEditModal } from "../modals/HighlightEditModal";
-import { BulkRecolorModal } from "../modals/BulkRecolorModal";
 
 export const HIGHLIGHT_NAVIGATOR_VIEW = "highlight-navigator";
 
@@ -53,6 +54,7 @@ export class HighlightNavigatorView extends ItemView {
     groupButton: HTMLButtonElement | null = null;
     ungroupButton: HTMLButtonElement | null = null;
     selectionBarEl: HTMLElement | null = null;
+    canvasButton: HTMLButtonElement | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: ReadingHighlighterPlugin) {
         super(leaf);
@@ -71,7 +73,7 @@ export class HighlightNavigatorView extends ItemView {
     }
 
     getDisplayText() {
-        return "Highlights";
+        return "Annotation navigator";
     }
 
     getIcon() {
@@ -102,6 +104,7 @@ export class HighlightNavigatorView extends ItemView {
                 btnGroup.querySelectorAll(".nav-btn").forEach((el) => el.removeClass("is-active"));
                 btn.addClass("is-active");
                 this.viewMode = m.value;
+                this.selectionMode = false;
                 this.selectedIds.clear();
                 this.renderContent();
             };
@@ -119,6 +122,11 @@ export class HighlightNavigatorView extends ItemView {
             this.selectedIds.clear();
             this.renderContent();
         };
+        const overflowBtn = searchContainer.createEl("button", { cls: "fp-navigator-overflow" });
+        setIcon(overflowBtn, "more-vertical");
+        overflowBtn.setAttribute("aria-label", "Navigator actions");
+        setTooltip(overflowBtn, "Navigator actions", { placement: "top" });
+        overflowBtn.onclick = (event) => this.openNavigatorMenu(event);
 
         // Keep selection actions outside the scrolling lists, including in split view.
         this.selectionBarEl = container.createDiv({ cls: "fp-navigator-selection-controls" });
@@ -126,26 +134,17 @@ export class HighlightNavigatorView extends ItemView {
         // Content area
         this.contentEl = container.createDiv({ cls: "highlight-navigator-content" });
 
-        // Footer with Export + Scan Vault
+        // Keep only the two primary destinations/actions persistent. Selection
+        // and export remain available from the search-row actions menu.
         const footer = container.createDiv({ cls: "highlight-navigator-footer" });
         const footerBtnGroup = footer.createDiv({ cls: "highlight-navigator-footer-buttons" });
 
-        const exportBtn = footerBtnGroup.createEl("button", { text: "Export md", cls: "mod-cta" });
-        exportBtn.onclick = () => void this.exportHighlights();
-        exportBtn.oncontextmenu = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            this.openExportMenu(e);
-        };
-
-        const canvasBtn = footerBtnGroup.createEl("button", { text: "Canvas", cls: "mod-cta" });
-        canvasBtn.onclick = () => void this.exportCurrentFileToCanvas();
-
-        const scanBtn = footerBtnGroup.createEl("button", { text: "Scan vault", cls: "mod-cta" });
-        scanBtn.onclick = () => void this.plugin.activateResearchView();
-
-        const bulkBtn = footerBtnGroup.createEl("button", { text: "Bulk", cls: "mod-cta" });
-        bulkBtn.onclick = (e) => this.openBulkMenu(e);
+        const researchBtn = footerBtnGroup.createEl("button", { text: "Manage", cls: "mod-cta" });
+        researchBtn.onclick = () => void this.plugin.activateResearchView();
+        setTooltip(researchBtn, "Manage annotations across this vault", { placement: "top" });
+        this.canvasButton = footerBtnGroup.createEl("button", { cls: "mod-cta" });
+        this.canvasButton.onclick = () => void this.exportCurrentFileToCanvas();
+        this.updateCanvasButton();
 
         // Register for file changes
         this.registerEvent(
@@ -196,6 +195,7 @@ export class HighlightNavigatorView extends ItemView {
 
         if (this.currentFile?.path !== targetFile.path || force) this.selectedIds.clear();
         this.currentFile = targetFile;
+        this.updateCanvasButton();
 
         try {
             const raw = await this.app.vault.read(targetFile);
@@ -311,29 +311,29 @@ export class HighlightNavigatorView extends ItemView {
         const controls = this.selectionBarEl;
         if (!controls) return;
         controls.empty();
-        controls.toggleClass("is-hidden", this.viewMode === "footnotes");
-        if (this.viewMode === "footnotes") return;
-        const toggle = controls.createEl("button", { text: this.selectionMode ? "Done" : "Select marks" });
-        toggle.setAttribute("aria-pressed", String(this.selectionMode));
-        toggle.onclick = () => {
-            this.selectionMode = !this.selectionMode;
-            this.selectedIds.clear();
-            this.renderContent();
-        };
-
         this.selectionCountEl = null;
         this.groupButton = null;
         this.ungroupButton = null;
-        if (!this.selectionMode) return;
+        controls.toggleClass("is-hidden", this.viewMode === "footnotes" || !this.selectionMode);
+        if (this.viewMode === "footnotes" || !this.selectionMode) return;
+        const toggle = controls.createEl("button", { text: "Done" });
+        toggle.setAttribute("aria-pressed", String(this.selectionMode));
+        toggle.onclick = () => this.setSelectionMode(false);
 
         this.selectionCountEl = controls.createSpan({ cls: "fp-navigator-selected-count" });
         this.groupButton = controls.createEl("button", { text: "Group" });
-        this.groupButton.setAttribute("aria-label", "Group selected marks");
+        this.groupButton.setAttribute("aria-label", "Group selected highlights");
         this.groupButton.onclick = () => void this.regroupSelected(createNotationGroupId());
         this.ungroupButton = controls.createEl("button", { text: "Ungroup" });
-        this.ungroupButton.setAttribute("aria-label", "Ungroup selected groups");
+        this.ungroupButton.setAttribute("aria-label", "Ungroup selected highlights");
         this.ungroupButton.onclick = () => void this.regroupSelected(null);
         this.updateSelectionControls();
+    }
+
+    setSelectionMode(active: boolean) {
+        this.selectionMode = active;
+        this.selectedIds.clear();
+        this.renderContent();
     }
 
     updateSelectionControls() {
@@ -362,7 +362,7 @@ export class HighlightNavigatorView extends ItemView {
             this.selectedIds.clear();
             this.selectionMode = false;
             await this.refresh(true);
-            new Notice(groupId ? "Marks grouped." : "Groups separated.");
+            new Notice(groupId ? "Highlights grouped." : "Groups separated.");
         } catch (err) {
             new Notice(err instanceof Error ? err.message : "Could not change groups.");
         }
@@ -404,7 +404,7 @@ export class HighlightNavigatorView extends ItemView {
                 const checkbox = el.createEl("input", { cls: "fp-navigator-select" });
                 checkbox.type = "checkbox";
                 checkbox.checked = this.selectedIds.has(highlight.id);
-                checkbox.setAttribute("aria-label", `Select mark: ${highlight.text.slice(0, 80)}`);
+                checkbox.setAttribute("aria-label", `Select highlight: ${highlight.text.slice(0, 80)}`);
                 checkbox.onchange = () => {
                     if (checkbox.checked) this.selectedIds.add(highlight.id);
                     else this.selectedIds.delete(highlight.id);
@@ -446,12 +446,28 @@ export class HighlightNavigatorView extends ItemView {
             if (type === "highlights" && (item as Highlight).members?.length) {
                 el.createSpan({
                     cls: "fp-navigator-group-count",
-                    text: `${(item as Highlight).members?.length} marks`,
+                    text: `${(item as Highlight).members?.length} highlights`,
                 });
             }
 
+            const sourceBtn = el.createEl("button", { cls: "fp-navigator-source-link" });
+            setIcon(sourceBtn, "arrow-up-right");
+            sourceBtn.setAttribute(
+                "aria-label",
+                type === "highlights" ? "Go to highlight in note" : "Go to footnote in note"
+            );
+            setTooltip(sourceBtn, type === "highlights" ? "Go to highlight in note" : "Go to footnote in note", {
+                placement: "top",
+            });
+            sourceBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (type === "footnotes") void this.jumpToFootnote(item as NavFootnote);
+                else void this.jumpToLine((item as Highlight).line);
+            };
+
             // Actions menu (hidden until hover on desktop; always available on mobile).
-            // Available for both highlights and footnote annotations.
+            // Available for both highlights and footnotes.
             const openMenu = (e: MouseEvent) => {
                 if (type === "highlights") {
                     this.openHighlightActionsMenu(item as Highlight, e);
@@ -461,7 +477,7 @@ export class HighlightNavigatorView extends ItemView {
             };
 
             const menuBtn = el.createEl("button", { cls: "highlight-item-menu" });
-            menuBtn.setAttribute("aria-label", type === "highlights" ? "Highlight actions" : "Annotation actions");
+            menuBtn.setAttribute("aria-label", type === "highlights" ? "Highlight actions" : "Footnote actions");
             menuBtn.textContent = "⋯";
             menuBtn.onclick = (e) => {
                 e.preventDefault();
@@ -482,18 +498,15 @@ export class HighlightNavigatorView extends ItemView {
                 openMenu(e);
             };
 
-            // Click to jump. Highlights scroll to their body line; footnotes
-            // scroll to the footnote definition at the bottom (see jumpToFootnote).
+            // Rows stay inert during ordinary reading. The explicit source
+            // control above prevents an accidental scroll while using the
+            // Navigator as a companion to the note.
             el.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                if (type === "footnotes") {
-                    void this.jumpToFootnote(item as NavFootnote);
-                } else if (this.selectionMode) {
+                if (type === "highlights" && this.selectionMode) {
                     const checkbox = el.querySelector<HTMLInputElement>(".fp-navigator-select");
                     if (checkbox) checkbox.click();
-                } else {
-                    void this.jumpToLine((item as Highlight).line);
                 }
             };
         });
@@ -534,7 +547,7 @@ export class HighlightNavigatorView extends ItemView {
 
         if (item.groupId) {
             menu.addItem((mi: MenuItem) => {
-                mi.setTitle("Ungroup marks")
+                mi.setTitle("Ungroup highlights")
                     .setIcon("ungroup")
                     .onClick(() => {
                         this.selectedIds.clear();
@@ -617,7 +630,7 @@ export class HighlightNavigatorView extends ItemView {
         menu.addSeparator();
 
         menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Remove annotation")
+            mi.setTitle("Remove footnote")
                 .setIcon("trash-2")
                 .setWarning(true)
                 .onClick(async () => {
@@ -629,50 +642,12 @@ export class HighlightNavigatorView extends ItemView {
         menu.addSeparator();
 
         menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Remove all annotations (note)")
+            mi.setTitle("Remove all footnotes (note)")
                 .setIcon("eraser")
                 .setWarning(true)
                 .onClick(async () => {
                     await this.plugin.removeAllAnnotations(currentFile);
                     await this.refresh(true);
-                });
-        });
-
-        menu.showAtMouseEvent(event);
-    }
-
-    openBulkMenu(event: MouseEvent) {
-        const currentFile = this.currentFile;
-        if (!currentFile) return;
-
-        const menu = new Menu();
-        menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Merge adjacent highlights (note)")
-                .setIcon("git-merge")
-                .onClick(async () => {
-                    await this.plugin.mergeAdjacentHighlightsInFile(currentFile);
-                    void this.refresh(true);
-                });
-        });
-
-        menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Recolor <mark> highlights (note)…")
-                .setIcon("palette")
-                .onClick(() => {
-                    new BulkRecolorModal(this.plugin, currentFile, () => {
-                        void this.refresh(true);
-                    }).open();
-                });
-        });
-
-        menu.addSeparator();
-
-        menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Migrate <span> highlights to <mark> (note)")
-                .setIcon("wand")
-                .onClick(async () => {
-                    await this.plugin.migrateSpanHighlightsInFile(currentFile);
-                    void this.refresh(true);
                 });
         });
 
@@ -776,12 +751,18 @@ export class HighlightNavigatorView extends ItemView {
         }
     }
 
-    openExportMenu(event: MouseEvent) {
-        if (!this.currentFile) return;
-
+    openNavigatorMenu(event: MouseEvent) {
         const menu = new Menu();
+        if (this.viewMode !== "footnotes") {
+            menu.addItem((mi: MenuItem) => {
+                mi.setTitle("Select highlights")
+                    .setIcon("list-checks")
+                    .onClick(() => this.setSelectionMode(true));
+            });
+            menu.addSeparator();
+        }
         menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Export md")
+            mi.setTitle("Export Markdown")
                 .setIcon("file-text")
                 .onClick(() => void this.exportHighlights());
         });
@@ -795,7 +776,6 @@ export class HighlightNavigatorView extends ItemView {
                 .setIcon("table")
                 .onClick(() => void this.exportHighlightsCSV());
         });
-
         menu.showAtMouseEvent(event);
     }
 
@@ -836,19 +816,34 @@ export class HighlightNavigatorView extends ItemView {
         try {
             const { exportHighlightsToCanvas } = await import("../utils/canvas");
 
-            // Map current highlights to the format expected by canvas util
-            const highlights: HighlightWithFile[] = this.highlights.map((h) => ({
+            // Re-read: the note may have changed since the sidebar last refreshed.
+            const fresh = getHighlightsFromContent(await this.app.vault.read(currentFile)).map((h) => ({
                 ...h,
                 file: currentFile,
             }));
-
-            if (highlights.length === 0) {
+            if (fresh.length === 0) {
                 new Notice("No highlights to export.");
                 return;
             }
-
-            new Notice("Generating canvas...");
-            const exportPath = await exportHighlightsToCanvas(this.app, highlights);
+            const associations = this.plugin.settings.canvasAssociations;
+            const association = associations.find((item) => item.source === currentFile.path);
+            if (!association && associations.length >= MAX_CANVAS_ASSOCIATIONS)
+                throw new Error(
+                    "Canvas association limit reached. Use Annotations manager → Canvas… for an explicit export."
+                );
+            const exportPath =
+                association?.canvas ?? defaultCanvasPath(currentFile, this.plugin.settings.canvasDefaults);
+            const result = await exportHighlightsToCanvas(this.app, fresh, {
+                path: exportPath,
+                defaults: this.plugin.settings.canvasDefaults,
+                allowExisting: !!association,
+            });
+            if (!association) {
+                associations.push({ source: currentFile.path, canvas: exportPath });
+                await this.plugin.saveData(this.plugin.settings);
+            }
+            this.updateCanvasButton();
+            new Notice(`${result.added} new cards added. Existing cards preserved.`);
 
             const file = this.app.vault.getAbstractFileByPath(exportPath);
             if (file instanceof TFile) {
@@ -856,7 +851,25 @@ export class HighlightNavigatorView extends ItemView {
             }
         } catch (err) {
             console.error(err);
+            new Notice(err instanceof Error ? err.message : String(err));
         }
+    }
+
+    updateCanvasButton() {
+        if (!this.canvasButton) return;
+        const association = this.currentFile
+            ? this.plugin.settings.canvasAssociations.find((item) => item.source === this.currentFile?.path)
+            : null;
+        const associatedFile = association ? this.app.vault.getAbstractFileByPath(association.canvas) : null;
+        const willAppend = associatedFile instanceof TFile;
+        this.canvasButton.setText(willAppend ? "Add to Canvas" : "Create Canvas");
+        setTooltip(
+            this.canvasButton,
+            willAppend
+                ? "Add new highlights to this note’s associated canvas"
+                : "Create a canvas from this note’s highlights",
+            { placement: "top" }
+        );
     }
 
     async onClose() {

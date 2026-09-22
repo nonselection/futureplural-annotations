@@ -467,15 +467,50 @@ body .highlight-navigator-container .highlight-navigator-btn-group {
 
 body .highlight-navigator-container .highlight-navigator-search {
     padding: 0 0 12px;
+    width: calc(100% - 16px);
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    box-sizing: border-box;
 }
 
 body .highlight-navigator-container .nav-search-input {
-    width: calc(100% - 16px);
-    margin: 0 auto;
-    display: block;
+    flex: 1;
+    min-width: 0;
     border-radius: var(--input-radius);
     padding: 6px 10px;
     box-sizing: border-box;
+}
+
+body .highlight-navigator-container .fp-navigator-overflow,
+body .highlight-navigator-container .fp-navigator-source-link,
+.research-view-container .fp-manager-source-link,
+.research-view-container .fp-manager-edit-link,
+.research-view-container .fp-manager-row-disclosure,
+.research-view-container .fp-manager-note-actions {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    box-shadow: none;
+}
+
+body .highlight-navigator-container .fp-navigator-overflow:hover,
+body .highlight-navigator-container .fp-navigator-source-link:hover,
+.research-view-container .fp-manager-source-link:hover,
+.research-view-container .fp-manager-edit-link:hover,
+.research-view-container .fp-manager-row-disclosure:hover,
+.research-view-container .fp-manager-note-actions:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+    border-color: var(--background-modifier-border);
 }
 
 .highlight-navigator-content {
@@ -584,7 +619,7 @@ body .highlight-navigator-container .highlight-navigator-list {
     gap: 10px;
     padding: 10px 12px;
     border-radius: var(--radius-s);
-    cursor: pointer;
+    cursor: default;
     transition: background-color 0.1s;
 }
 
@@ -616,6 +651,15 @@ body .highlight-navigator-container .highlight-navigator-list {
     line-height: 1.4;
     white-space: normal;
     word-break: break-word;
+}
+
+body .highlight-navigator-container .fp-navigator-source-link {
+    opacity: 0.68;
+    flex-shrink: 0;
+}
+
+body .highlight-navigator-container .fp-navigator-source-link:hover {
+    opacity: 1;
 }
 
 body .highlight-navigator-container .highlight-navigator-item .highlight-item-menu {
@@ -1178,15 +1222,32 @@ body.is-mobile .research-view-container {
 .research-group-header {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    cursor: pointer;
+    gap: 4px;
+    padding: 4px 8px 4px 4px;
     background: var(--background-secondary);
     transition: background-color 0.15s;
 }
 
-.research-group-header:hover {
+.research-group-header:has(.fp-manager-group-toggle:hover) {
     background: var(--background-modifier-hover);
+}
+
+.fp-manager-group-toggle {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    gap: 10px;
+    padding: 6px 10px;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    color: inherit;
+    text-align: left;
+}
+
+.fp-manager-group-toggle:hover {
+    background: transparent;
 }
 
 .research-expand-icon {
@@ -1223,14 +1284,22 @@ body.is-mobile .research-view-container {
     background: var(--background-primary);
 }
 
+.research-highlight-list.is-collapsed {
+    display: none;
+}
+
 .research-highlight-item {
     display: flex;
     align-items: flex-start;
     gap: 12px;
-    padding: 12px 14px 12px 36px;
+    padding: 12px 14px;
     cursor: pointer;
     border-bottom: 1px solid var(--background-modifier-border-alt);
     transition: background-color 0.15s;
+}
+
+.research-highlight-item.is-expanded {
+    background: var(--background-secondary);
 }
 
 .research-highlight-item:last-child {
@@ -1251,11 +1320,40 @@ body.is-mobile .research-view-container {
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
 }
 
+.fp-manager-item-body {
+    flex: 1;
+    min-width: 0;
+}
+
 .research-item-text {
+    display: block;
     font-size: 0.9em;
     line-height: 1.5;
     color: var(--text-normal);
-    flex: 1;
+}
+
+.fp-manager-item-details {
+    margin-top: 5px;
+    color: var(--text-muted);
+    font-size: 0.76em;
+    line-height: 1.35;
+}
+
+.fp-manager-item-details.is-hidden {
+    display: none;
+}
+
+.research-view-container .fp-manager-source-link,
+.research-view-container .fp-manager-edit-link,
+.research-view-container .fp-manager-row-disclosure,
+.research-view-container .fp-manager-note-actions {
+    flex-shrink: 0;
+}
+
+.research-view-container .fp-manager-row-disclosure {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
 }
 
 .research-flat-list {
@@ -1479,4 +1577,26 @@ body .reading-highlighter-float-container.is-pdf-view button.pdf-only-btn {
         width: 38px;
         height: 38px;
     }
+}
+.fp-research-file-options {
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.fp-research-file-options label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    overflow-wrap: anywhere;
+}
+.fp-research-files {
+    margin-block: 8px;
+}
+.fp-maintenance-preview {
+    max-height: 280px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }

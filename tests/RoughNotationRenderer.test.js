@@ -21,7 +21,7 @@ describe("Rough Notation renderer", () => {
         const root = window.document.getElementById("content");
         root.classList.add("markdown-reading-view");
         root.innerHTML =
-            '<div class="markdown-preview-view"><p><mark data-fp-notation="box">One</mark></p><p><mark>Two</mark></p></div>';
+            '<div class="markdown-preview-view"><p><mark data-fp-notation="box">One</mark></p><p><mark data-fp-notation="underline">Two</mark></p></div>';
         const observers = [];
         window.ResizeObserver = class {
             constructor(callback) {
@@ -157,12 +157,13 @@ describe("Rough Notation renderer", () => {
         expect(createRoughNotationConfig(old, opacityByType).color).toBe("#8fa58fcc");
     });
 
-    it("renders FuturePlural and legacy marks after layout, then removes every annotation on unload", async () => {
+    it("renders only FuturePlural marks, leaving native and third-party marks intact", async () => {
         const window = createObsidianWindow();
         const container = window.document.getElementById("content");
         container.innerHTML = [
             '<p><mark data-fp-notation="circle" data-fp-color="#8fa58f">Future</mark></p>',
             '<p><mark style="background-color: rgb(255, 204, 102)">Legacy</mark></p>',
+            "<p><mark>Native Markdown</mark></p>",
         ].join("");
 
         const annotations = [];
@@ -178,17 +179,17 @@ describe("Rough Notation renderer", () => {
 
         await waitForAnimationFrame(window);
 
-        expect(annotateElement).toHaveBeenCalledTimes(2);
+        expect(annotateElement).toHaveBeenCalledTimes(1);
         expect(annotateElement.mock.calls[0][1]).toMatchObject({
             type: "circle",
             color: "#8fa58fad",
         });
-        expect(annotateElement.mock.calls[1][1]).toMatchObject({
-            type: "highlight",
-            color: "color-mix(in srgb, rgb(255, 204, 102) 60%, transparent)",
-        });
         expect(annotations.every((annotation) => annotation.show.mock.calls.length === 1)).toBe(true);
-        expect(container.querySelectorAll("mark.fp-rough-notation-target")).toHaveLength(2);
+        expect(container.querySelectorAll("mark.fp-rough-notation-target")).toHaveLength(1);
+        expect(container.querySelector("mark[style]")?.getAttribute("style")).toBe(
+            "background-color: rgb(255, 204, 102)"
+        );
+        expect(container.querySelectorAll("mark:not(.fp-rough-notation-target)")).toHaveLength(2);
 
         renderer.onunload();
 

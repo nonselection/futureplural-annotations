@@ -8,17 +8,13 @@ export interface ScrollPosition {
     y: number;
 }
 
-// The preview's scroll helpers are not part of the public typings in a way that
-// matches how this plugin uses them, so describe the shape we rely on.
 export function getScroll(view: MarkdownView): ScrollPosition {
     const preview = view.previewMode;
-
     return typeof preview?.getScroll === "function" ? { x: 0, y: preview.getScroll() } : getFallbackScroll(view);
 }
 
 export function applyScroll(view: MarkdownView, pos: ScrollPosition): void {
     const preview = view.previewMode;
-
     if (typeof preview?.applyScroll === "function") {
         preview.applyScroll(pos.y);
     } else {

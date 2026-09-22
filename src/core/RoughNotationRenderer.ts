@@ -236,9 +236,9 @@ export class RoughNotationRenderer extends MarkdownRenderChild {
     }
 
     private renderTargets(): void {
-        const targets = Array.from(this.containerEl.querySelectorAll<HTMLElement>("mark"));
+        const targets = Array.from(this.containerEl.querySelectorAll<HTMLElement>("mark[data-fp-notation]"));
 
-        if (this.containerEl.matches("mark")) {
+        if (this.containerEl.matches("mark[data-fp-notation]")) {
             targets.unshift(this.containerEl);
         }
 

@@ -1,3 +1,6 @@
+// Block-level brackets are intentionally not another inline notation type.
+// They need block-range storage, rendering and cleanup as one tested feature;
+// see docs/PRODUCT_DECISIONS_AND_BACKLOG.md.
 export const NOTATION_TYPES = ["highlight", "underline", "box", "circle", "strike-through", "crossed-off"] as const;
 
 export type NotationType = (typeof NOTATION_TYPES)[number];

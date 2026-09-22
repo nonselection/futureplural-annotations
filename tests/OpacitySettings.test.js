@@ -8,7 +8,7 @@ describe("gesture opacity settings", () => {
         await plugin.loadSettings();
         plugin.saveSettings = vi.fn(async () => {});
         const tab = new ReadingHighlighterSettingTab({}, plugin);
-        const group = tab.getSettingDefinitions().find((item) => item.heading === "Gesture opacity");
+        const group = tab.getSettingDefinitions().find((item) => item.heading === "Highlight appearance");
         expect(group.items).toHaveLength(6);
 
         const { document, Event } = createObsidianWindow();

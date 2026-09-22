@@ -7,6 +7,11 @@ the MIT License. It preserves the upstream Git history and licence while extendi
 the plugin into a reading-view notation system whose visual gesture and semantic
 colour are independent choices.
 
+Its hand-drawn rendering is powered by
+[Rough Notation](https://roughnotation.com/), which in turn uses
+[Rough.js](https://roughjs.com/). FuturePlural ports that rendering model into
+Obsidian; it does not claim those drawing algorithms as original work.
+
 The inherited upstream feature documentation follows below and will be revised as
 FuturePlural functionality replaces or extends it.
 

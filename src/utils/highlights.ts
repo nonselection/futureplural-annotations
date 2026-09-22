@@ -125,6 +125,107 @@ function normalizeTagsText(tagsText: string): string {
     return cleaned.join(" ");
 }
 
+/** Hide Markdown code and comments without moving any source offsets. */
+function visibleSource(raw: string): string {
+    // UTF-16 units match JavaScript string offsets, including after emoji.
+    const hidden = raw.split("");
+    const hide = (start: number, end: number) => {
+        for (let i = start; i < end; i++) if (raw[i] !== "\n" && raw[i] !== "\r") hidden[i] = " ";
+    };
+    const lines = raw.split(/\n/);
+    let offset = 0;
+    let fence: { marker: string; length: number } | null = null;
+    let previousBlank = true;
+    let indentedCode = false;
+    for (const line of lines) {
+        const content = line.replace(/\r$/, "");
+        const prefix = content.match(/^(?: {0,3}> ?)* {0,3}(?:[-+*] |\d+[.)] )?/u)?.[0] ?? "";
+        const rest = content.slice(prefix.length);
+        const opening = rest.match(/^(`{3,}|~{3,})(.*)$/);
+        if (fence) {
+            hide(offset, offset + content.length);
+            if (new RegExp(`^${fence.marker}{${fence.length},}\\s*$`).test(rest)) fence = null;
+        } else if (opening && (opening[1][0] === "~" || !opening[2].includes("`"))) {
+            fence = { marker: opening[1][0], length: opening[1].length };
+            hide(offset, offset + content.length);
+        } else if (
+            (previousBlank || indentedCode) &&
+            /^(?: {4,}|\t)\S/.test(content) &&
+            !/^\s*(?:[-+*] |\d+[.)] )/.test(content)
+        ) {
+            hide(offset, offset + content.length);
+            indentedCode = true;
+        } else if (content.trim()) {
+            indentedCode = false;
+        }
+        previousBlank = !content.trim();
+        offset += line.length + 1;
+    }
+
+    // Mask comments, escaped syntax and HTML code blocks first.
+    const codeOpen = /<(pre|code)\b(?:[^>"']|"[^"]*"|'[^']*')*>/giy;
+    for (let i = 0; i < raw.length; i++) {
+        if (hidden[i] === " " && raw[i] !== " ") continue;
+        if (raw[i] === "\\") {
+            if (i + 1 < raw.length && /[\\`<>=]/.test(raw[i + 1])) hide(i, i + 2);
+            i++;
+            continue;
+        }
+        if (raw.startsWith("<!--", i)) {
+            const end = raw.indexOf("-->", i + 4);
+            hide(i, end < 0 ? raw.length : end + 3);
+            i = end < 0 ? raw.length : end + 2;
+            continue;
+        }
+        if (raw[i] === "<") codeOpen.lastIndex = i;
+        const codeTag = raw[i] === "<" ? codeOpen.exec(raw) : null;
+        if (codeTag) {
+            const closer = new RegExp(`</${codeTag[1]}\\s*>`, "ig");
+            closer.lastIndex = i + codeTag[0].length;
+            const end = closer.exec(raw)?.[0].length;
+            const closeAt = closer.lastIndex;
+            hide(i, end ? closeAt : raw.length);
+            i = (end ? closeAt : raw.length) - 1;
+            continue;
+        }
+    }
+
+    // Index runs once. Repeated unmatched backticks must not cause repeated
+    // scans of the rest of a long note.
+    const runs = Array.from(raw.matchAll(/`+/g)).filter((match) => hidden[match.index] === "`");
+    const byLength = new Map<number, number[]>();
+    for (const run of runs) {
+        const length = run[0].length;
+        const positions = byLength.get(length) ?? [];
+        positions.push(run.index);
+        byLength.set(length, positions);
+    }
+    for (const run of runs) {
+        if (hidden[run.index] !== "`") continue;
+        const positions = byLength.get(run[0].length) ?? [];
+        let low = 0;
+        let high = positions.length;
+        while (low < high) {
+            const mid = (low + high) >>> 1;
+            if (positions[mid] <= run.index) low = mid + 1;
+            else high = mid;
+        }
+        if (low < positions.length) hide(run.index, positions[low] + run[0].length);
+    }
+    return hidden.join("");
+}
+
+function sourceLineAt(lineStarts: number[], offset: number): number {
+    let low = 0;
+    let high = lineStarts.length;
+    while (low + 1 < high) {
+        const middle = (low + high) >>> 1;
+        if (lineStarts[middle] <= offset) low = middle;
+        else high = middle;
+    }
+    return low;
+}
+
 export function parseFootnotes(raw: string): Map<string, Footnote> {
     const newline = detectNewline(raw);
     const lines = raw.split(/\r?\n/);
@@ -153,36 +254,47 @@ export function parseHighlights(raw: string): ParsedHighlights {
     const newline = detectNewline(raw);
     const footnotes = parseFootnotes(raw);
     const highlights: Highlight[] = [];
+    const visible = visibleSource(raw);
+    const htmlTags = /<\/?[A-Za-z][\w:-]*(?:[^>"']|"[^"]*"|'[^']*')*>/g;
+    const withoutOtherTags = visible.replace(htmlTags, (tag) =>
+        /^<\/?mark\b/i.test(tag) ? tag : tag.replace(/[^\r\n]/g, " ")
+    );
+    const markdownSource = withoutOtherTags.replace(htmlTags, (tag) => tag.replace(/[^\r\n]/g, " "));
 
     const lines = raw.split(/\r?\n/);
+    const visibleLines = markdownSource.split(/\r?\n/);
+    const lineStarts: number[] = [];
     let lineOffset = 0;
 
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
         const line = lines[lineIdx];
+        lineStarts.push(lineOffset);
         let matchIndex = 0;
 
-        const markdownPattern = /==(.*?)==/g;
-        const htmlPattern = /<mark\b[^>]*>(.*?)<\/mark>/gi;
+        // An opener must touch content; a dangling closer from an escaped
+        // example must not consume a later real highlight on the same line.
+        const markdownPattern = /==(?=\S)(.*?)==/g;
 
         let match: RegExpExecArray | null;
-        while ((match = markdownPattern.exec(line)) !== null) {
+        while ((match = markdownPattern.exec(visibleLines[lineIdx])) !== null) {
             const start = lineOffset + match.index;
             const end = start + match[0].length;
             const innerStart = start + 2;
             const innerEnd = end - 2;
+            const innerText = raw.slice(innerStart, innerEnd);
 
             const { tagsText, tagsStart, tagsEnd } = extractLeadingTagsRange(line, lineOffset, match.index);
             const footnote = detectFootnoteForHighlight({
                 line,
                 lineOffset,
                 wrapperEndInLine: match.index + match[0].length,
-                innerText: match[1],
+                innerText,
                 innerStart,
             });
 
             highlights.push({
                 id: `${lineIdx}:${matchIndex}`,
-                text: (match[1] ?? "").trim(),
+                text: innerText.trim(),
                 line: lineIdx,
                 type: "markdown",
                 notationType: "highlight",
@@ -210,69 +322,78 @@ export function parseHighlights(raw: string): ParsedHighlights {
             matchIndex++;
         }
 
-        while ((match = htmlPattern.exec(line)) !== null) {
-            const start = lineOffset + match.index;
-            const end = start + match[0].length;
-
-            const full = match[0];
-            const openTagMatch = full.match(/^<mark\b[^>]*>/i);
-            const openTag = openTagMatch ? openTagMatch[0] : "<mark>";
-            const openTagEndInMatch = openTag.length;
-            const closeTagLength = "</mark>".length;
-
-            const openTagStart = start;
-            const openTagEnd = start + openTagEndInMatch;
-            const innerStart = openTagEnd;
-            const innerEnd = end - closeTagLength;
-
-            const styleAttr = extractStyleAttribute(openTag);
-            const styleColor = styleAttr ? extractBackgroundFromStyle(styleAttr.value) : null;
-            const color = extractAttribute(openTag, "data-fp-color") ?? styleColor;
-            const notationType = normalizeNotationType(extractAttribute(openTag, "data-fp-notation"));
-            const opacity = normalizeOpacity(extractAttribute(openTag, "data-fp-opacity"));
-            const groupId = extractAttribute(openTag, "data-fp-group");
-
-            const { tagsText, tagsStart, tagsEnd } = extractLeadingTagsRange(line, lineOffset, match.index);
-            const footnote = detectFootnoteForHighlight({
-                line,
-                lineOffset,
-                wrapperEndInLine: match.index + match[0].length,
-                innerText: match[1],
-                innerStart,
-            });
-
-            highlights.push({
-                id: `${lineIdx}:${matchIndex}`,
-                text: (match[1] ?? "").trim(),
-                line: lineIdx,
-                type: "html",
-                notationType,
-                opacity,
-                color: color ? color.trim() : null,
-                groupId,
-                start,
-                end,
-                innerStart,
-                innerEnd,
-                openTagStart,
-                openTagEnd,
-                closeTagStart: innerEnd,
-                closeTagEnd: end,
-                openTag,
-                tagsText,
-                tagsStart,
-                tagsEnd,
-                footnoteId: footnote?.id ?? null,
-                footnoteStart: footnote?.start ?? null,
-                footnoteEnd: footnote?.end ?? null,
-                footnotePlacement: footnote?.placement ?? null,
-                annotation: footnote?.id ? (footnotes.get(footnote.id)?.text ?? "") : "",
-            });
-
-            matchIndex++;
-        }
-
         lineOffset += line.length + (lineIdx < lines.length - 1 ? newline.length : 0);
+    }
+
+    // HTML marks can cross source lines. Match tag boundaries in the masked
+    // source, retaining exact offsets and original content for safe edits.
+    const tagPattern = /<\/?mark\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+    let opening: { start: number; end: number; nested: boolean } | null = null;
+    let depth = 0;
+    let tag: RegExpExecArray | null;
+    while ((tag = tagPattern.exec(withoutOtherTags)) !== null) {
+        const closing = /^<\//.test(tag[0]);
+        if (!closing) {
+            if (depth === 0) opening = { start: tag.index, end: tagPattern.lastIndex, nested: false };
+            else if (opening) opening.nested = true;
+            depth++;
+            continue;
+        }
+        if (depth === 0) continue;
+        depth--;
+        if (depth !== 0 || !opening) continue;
+        const { start, end: openTagEnd, nested } = opening;
+        opening = null;
+        if (nested) continue; // Nested marks are invalid HTML; never rewrite them speculatively.
+
+        const end = tagPattern.lastIndex;
+        const innerStart = openTagEnd;
+        const innerEnd = tag.index;
+        const innerText = raw.slice(innerStart, innerEnd);
+        const openTag = raw.slice(start, openTagEnd);
+        const lineIdx = sourceLineAt(lineStarts, start);
+        const line = lines[lineIdx];
+        const lineOffset = lineStarts[lineIdx];
+        const closingLineIdx = sourceLineAt(lineStarts, end);
+        const closingLine = lines[closingLineIdx];
+        const styleAttr = extractStyleAttribute(openTag);
+        const styleColor = styleAttr ? extractBackgroundFromStyle(styleAttr.value) : null;
+        const color = extractAttribute(openTag, "data-fp-color") ?? styleColor;
+        const { tagsText, tagsStart, tagsEnd } = extractLeadingTagsRange(line, lineOffset, start - lineOffset);
+        const footnote = detectFootnoteForHighlight({
+            line: closingLine,
+            lineOffset: lineStarts[closingLineIdx],
+            wrapperEndInLine: end - lineStarts[closingLineIdx],
+            innerText,
+            innerStart,
+        });
+        highlights.push({
+            id: `${lineIdx}:${start - lineOffset}`,
+            text: innerText.trim(),
+            line: lineIdx,
+            type: "html",
+            notationType: normalizeNotationType(extractAttribute(openTag, "data-fp-notation")),
+            opacity: normalizeOpacity(extractAttribute(openTag, "data-fp-opacity")),
+            color: color ? color.trim() : null,
+            groupId: extractAttribute(openTag, "data-fp-group"),
+            start,
+            end,
+            innerStart,
+            innerEnd,
+            openTagStart: start,
+            openTagEnd,
+            closeTagStart: innerEnd,
+            closeTagEnd: end,
+            openTag,
+            tagsText,
+            tagsStart,
+            tagsEnd,
+            footnoteId: footnote?.id ?? null,
+            footnoteStart: footnote?.start ?? null,
+            footnoteEnd: footnote?.end ?? null,
+            footnotePlacement: footnote?.placement ?? null,
+            annotation: footnote?.id ? (footnotes.get(footnote.id)?.text ?? "") : "",
+        });
     }
 
     highlights.sort((a, b) => a.start - b.start);
@@ -775,20 +896,33 @@ export function recolorMarkHighlightsInRaw(
 }
 
 export function migrateSpanHighlightsInRaw(raw: string): { raw: string; changedCount: number } {
-    let updated = String(raw ?? "");
-    let changedCount = 0;
-
-    // Convert <span style="background...">...</span> into <mark style="background...">...</mark>
-    // This is intentionally conservative: only spans with a background/background-color declaration are migrated.
-    const spanRe = /<span\b([^>]*)>([\s\S]*?)<\/span>/gi;
-    updated = updated.replace(spanRe, (full, attrs: string, inner: string) => {
-        const styleMatch = String(attrs || "").match(/\sstyle=(["'])([\s\S]*?)\1/i);
-        if (!styleMatch) return full;
-        const background = extractBackgroundFromStyle(styleMatch[2]);
-        if (!background) return full;
-        changedCount++;
-        return `<mark style="background: ${background}; color: black;">${inner}</mark>`;
-    });
-
-    return { raw: updated, changedCount };
+    const visible = visibleSource(raw);
+    // Consume complete tags so examples embedded in attributes cannot become targets.
+    const tags = /<\/?[a-z][\w:-]*\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+    const stack: { start: number; end: number; nested: boolean }[] = [];
+    const edits: { start: number; end: number; text: string }[] = [];
+    let tag: RegExpExecArray | null;
+    while ((tag = tags.exec(visible))) {
+        if (!/^<\/?span\b/i.test(tag[0])) continue;
+        if (!/^<\//.test(tag[0])) {
+            for (const entry of stack) entry.nested = true;
+            stack.push({ start: tag.index, end: tags.lastIndex, nested: stack.length > 0 });
+        } else {
+            const opening = stack.pop();
+            if (!opening || opening.nested) continue;
+            const original = raw.slice(opening.start, opening.end);
+            const style = extractStyleAttribute(original);
+            if (!style || !extractBackgroundFromStyle(style.value)) continue;
+            edits.push({ start: opening.start, end: opening.end, text: original.replace(/^<span/i, "<mark") });
+            edits.push({
+                start: tag.index,
+                end: tags.lastIndex,
+                text: raw.slice(tag.index, tags.lastIndex).replace(/^<\/span/i, "</mark"),
+            });
+        }
+    }
+    let updated = raw;
+    for (const edit of edits.sort((a, b) => b.start - a.start))
+        updated = updated.slice(0, edit.start) + edit.text + updated.slice(edit.end);
+    return { raw: updated, changedCount: edits.length / 2 };
 }

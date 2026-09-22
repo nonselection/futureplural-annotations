@@ -99,4 +99,67 @@ describe("FuturePlural notation parsing", () => {
         expect(highlight.footnotePlacement).toBe("after");
         expect(highlight.annotation).toBe("A retained comment.");
     });
+
+    it("indexes a multiline HTML mark with exact source positions and a following footnote", () => {
+        const raw = [
+            "Intro",
+            '#source <mark style="background-color: #eabe98">a passage',
+            "that continues</mark>[^note]",
+            "",
+            "[^note]: Retained comment.",
+        ].join("\r\n");
+        const [highlight] = parseHighlights(raw).highlights;
+
+        expect(highlight.text).toBe("a passage\r\nthat continues");
+        expect(highlight.line).toBe(1);
+        expect(highlight.color).toBe("#eabe98");
+        expect(highlight.tagsText).toBe("#source");
+        expect(highlight.annotation).toBe("Retained comment.");
+        expect(raw.slice(highlight.start, highlight.end)).toBe(
+            '<mark style="background-color: #eabe98">a passage\r\nthat continues</mark>'
+        );
+        expect(raw.slice(highlight.innerStart, highlight.innerEnd)).toBe(highlight.text);
+        expect(removeHighlightGroupFromRaw(raw, highlight)).toBe(raw.replace(/<mark[^>]*>|<\/mark>/g, ""));
+    });
+
+    it("ignores Markdown examples in fences, inline code, comments and indented code", () => {
+        const raw = [
+            "```html",
+            '<mark style="background: red">fenced</mark> ==fenced==',
+            "```",
+            "~~~",
+            "==tilde==",
+            "~~~",
+            "`==inline==` and ``<mark>inline</mark>``",
+            "<!-- <mark>comment</mark> ==comment== -->",
+            "<pre><mark>html code</mark></pre>",
+            "",
+            "    ==indented== <mark>indented</mark>",
+            "    ==indented continued==",
+            "",
+            "Visible ==native== and <mark>legacy</mark>.",
+        ].join("\n");
+        expect(parseHighlights(raw).highlights.map((highlight) => highlight.text)).toEqual(["native", "legacy"]);
+    });
+
+    it("does not index escaped markup or malformed nested HTML marks", () => {
+        const raw = String.raw`\==escaped== \<mark>escaped</mark> <mark>outer <mark>inner</mark></mark> ==real==`;
+        expect(parseHighlights(raw).highlights.map((highlight) => highlight.text)).toEqual(["real"]);
+    });
+
+    it("keeps offsets correct after emoji and quoted angle brackets in a multiline opening tag", () => {
+        const raw = '📚 Intro\n<mark data-title="A > B" style="background: #aabbcc">first\nsecond</mark> end';
+        const [highlight] = parseHighlights(raw).highlights;
+        expect(highlight.start).toBe(raw.indexOf("<mark"));
+        expect(highlight.color).toBe("#aabbcc");
+        expect(highlight.text).toBe("first\nsecond");
+        expect(raw.slice(highlight.start, highlight.end)).toBe(
+            '<mark data-title="A > B" style="background: #aabbcc">first\nsecond</mark>'
+        );
+    });
+
+    it("does not count markup embedded in unrelated HTML attributes", () => {
+        const raw = '<span title="<mark>not a mark</mark> and ==not a highlight==">x</span> <mark>real</mark>';
+        expect(parseHighlights(raw).highlights.map((highlight) => highlight.text)).toEqual(["real"]);
+    });
 });

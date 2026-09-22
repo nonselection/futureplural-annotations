@@ -3,6 +3,7 @@ import { HighlightNavigatorView } from "../src/views/HighlightNavigator";
 import { getHighlightsFromContent } from "../src/utils/export";
 import { parseHighlights } from "../src/utils/highlights";
 import { createObsidianWindow } from "./dom-helpers.js";
+import { TFile } from "obsidian";
 
 describe("Navigator mark selection", () => {
     it("groups nonadjacent selected rows, then ungroups the resulting entry", async () => {
@@ -40,7 +41,7 @@ describe("Navigator mark selection", () => {
 
         navigator.renderContent();
         expect(navigator.contentEl.querySelectorAll(".fp-navigator-select")).toHaveLength(0);
-        navigator.selectionBarEl.querySelector("button").click();
+        navigator.setSelectionMode(true);
         const boxes = navigator.contentEl.querySelectorAll(".fp-navigator-select");
         expect(boxes).toHaveLength(4);
         boxes[0].click();
@@ -59,12 +60,38 @@ describe("Navigator mark selection", () => {
         ]);
         expect(navigator.highlights.map((item) => item.text)).toEqual(["One\nTwo\nFour", "Three"]);
 
-        navigator.selectionBarEl.querySelector("button").click();
+        navigator.setSelectionMode(true);
         navigator.contentEl.querySelector(".fp-navigator-select").click();
         expect(navigator.ungroupButton.disabled).toBe(false);
         await navigator.regroupSelected(null);
         expect(undoSaves).toBe(2);
         expect(navigator.highlights.map((item) => item.text)).toEqual(["One", "Two", "Three", "Four"]);
         expect(parseHighlights(raw).highlights.every((part) => part.groupId === null)).toBe(true);
+    });
+
+    it("labels the canvas action from the real associated-canvas state", () => {
+        const window = createObsidianWindow();
+        const source = new TFile("notes/source.md");
+        const canvas = new TFile("notes/source — annotations.canvas");
+        const app = {
+            vault: {
+                getAbstractFileByPath: (path) => (path === canvas.path ? canvas : null),
+            },
+        };
+        const plugin = {
+            app,
+            settings: { canvasAssociations: [{ source: source.path, canvas: canvas.path }] },
+        };
+        const navigator = new HighlightNavigatorView({}, plugin);
+        navigator.app = app;
+        navigator.currentFile = source;
+        navigator.canvasButton = window.document.createElement("button");
+
+        navigator.updateCanvasButton();
+        expect(navigator.canvasButton.textContent).toBe("Add to Canvas");
+
+        plugin.settings.canvasAssociations = [{ source: source.path, canvas: "missing.canvas" }];
+        navigator.updateCanvasButton();
+        expect(navigator.canvasButton.textContent).toBe("Create Canvas");
     });
 });

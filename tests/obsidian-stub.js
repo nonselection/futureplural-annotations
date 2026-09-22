@@ -48,6 +48,26 @@ export class View extends Component {}
 export class ItemView extends View {}
 export class MarkdownView extends View {}
 export class Modal extends Component {}
+export class Menu {
+    addItem(callback) {
+        const item = new MenuItem();
+        callback(item);
+        return this;
+    }
+    showAtMouseEvent() {}
+}
+export class MenuItem {
+    setTitle() {
+        return this;
+    }
+    setIcon() {
+        return this;
+    }
+    onClick(callback) {
+        this.callback = callback;
+        return this;
+    }
+}
 export class PluginSettingTab extends Component {}
 export class Setting {
     setName() {

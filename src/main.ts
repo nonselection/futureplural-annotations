@@ -19,6 +19,15 @@ import { TagSuggestModal } from "./modals/TagSuggestModal";
 import { AnnotationModal } from "./modals/AnnotationModal";
 import { HighlightNavigatorView, HIGHLIGHT_NAVIGATOR_VIEW } from "./views/HighlightNavigator";
 import { ResearchView, RESEARCH_VIEW } from "./views/ResearchView";
+import {
+    DEFAULT_CANVAS_SETTINGS,
+    MAX_CANVAS_ASSOCIATIONS,
+    normalizeCanvasDefaults,
+    renamedCanvasAssociations,
+    type CanvasDefaults,
+    type CanvasAssociation,
+} from "./utils/canvas";
+import { canvasSettingsItems, renderCanvasSettings } from "./ui/canvasSettings";
 import { getScroll, applyScroll, type ScrollPosition } from "./utils/dom";
 import { exportHighlightsToCSV, exportHighlightsToJSON, exportHighlightsToMD } from "./utils/export";
 import { FailureRecoveryModal, type DerivedRule } from "./ui/FailureRecoveryModal";
@@ -94,6 +103,8 @@ interface ReadingHighlighterSettings {
     lastNotationType: NotationType;
     autoGroupMultiBlock: boolean;
     notationOpacity: Record<NotationType, number>;
+    canvasDefaults: CanvasDefaults;
+    canvasAssociations: CanvasAssociation[];
 }
 
 const SMART_SELECTION_TAGS = new Set(["P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TD", "TH"]);
@@ -103,8 +114,8 @@ const FRONTMATTER_RESERVED_RE = /^(true|false|null|yes|no|on|off)$/i;
 
 const DEFAULT_SETTINGS: ReadingHighlighterSettings = {
     toolbarPosition: "right",
-    enableColorHighlighting: false,
-    highlightColor: "",
+    enableColorHighlighting: true,
+    highlightColor: "#FFEE58",
     defaultTagPrefix: "",
     enableHaptics: true,
     showTagButton: true,
@@ -146,6 +157,8 @@ const DEFAULT_SETTINGS: ReadingHighlighterSettings = {
     lastNotationType: DEFAULT_NOTATION_TYPE,
     autoGroupMultiBlock: true,
     notationOpacity: { ...DEFAULT_NOTATION_OPACITY },
+    canvasDefaults: { ...DEFAULT_CANVAS_SETTINGS },
+    canvasAssociations: [],
 };
 
 // Stringify an unknown frontmatter value the same way `String(value || "")`
@@ -203,6 +216,16 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
     async onload() {
         await this.loadSettings();
+        this.registerEvent(
+            this.app.vault.on("rename", (file, oldPath) => {
+                this.settings.canvasAssociations = renamedCanvasAssociations(
+                    this.settings.canvasAssociations,
+                    oldPath,
+                    file.path
+                );
+                void this.saveData(this.settings);
+            })
+        );
 
         this.floatingManager = new FloatingManager(this);
         this.logic = new SelectionLogic(this.app, () => this.settings.learnedNormRules);
@@ -303,7 +326,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
         this.addCommand({
             id: "annotate-selection",
-            name: "Add annotation to selection (reading view)",
+            name: "Add footnote to selection (reading view)",
             checkCallback: (checking) => {
                 const view = this.getActiveReadingView();
                 if (!view) return false;
@@ -347,7 +370,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
         this.addCommand({
             id: "open-highlight-navigator",
-            name: "Open highlight navigator",
+            name: "Open annotation navigator",
             callback: () => {
                 void this.activateNavigatorView();
             },
@@ -355,7 +378,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
         this.addCommand({
             id: "open-research-view",
-            name: "Open global research view",
+            name: "Open annotations manager",
             callback: () => {
                 void this.activateResearchView();
             },
@@ -411,7 +434,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
         this.addCommand({
             id: "remove-all-annotations",
-            name: "Remove all annotations from note",
+            name: "Remove all footnotes from note",
             checkCallback: (checking) => {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
                 if (!view || !view.file) return false;
@@ -505,8 +528,22 @@ export default class ReadingHighlighterPlugin extends Plugin {
     async loadSettings() {
         const loaded = ((await this.loadData()) as Partial<ReadingHighlighterSettings>) || {};
         this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
+            // Retained in persisted settings for compatibility with the
+            // upstream schema. FuturePlural always writes <mark> notations;
+            // native == highlights remain importable but are not a creation mode.
+            enableColorHighlighting: true,
+            highlightColor:
+                typeof loaded.highlightColor === "string" && loaded.highlightColor.trim()
+                    ? loaded.highlightColor
+                    : DEFAULT_SETTINGS.highlightColor,
             semanticColors: loaded.semanticColors?.length ? loaded.semanticColors : DEFAULT_SETTINGS.semanticColors,
             lastNotationType: normalizeNotationType(loaded.lastNotationType),
+            canvasDefaults: normalizeCanvasDefaults(loaded.canvasDefaults),
+            canvasAssociations: Array.isArray(loaded.canvasAssociations)
+                ? loaded.canvasAssociations
+                      .filter((item) => item && typeof item.source === "string" && typeof item.canvas === "string")
+                      .slice(0, MAX_CANVAS_ASSOCIATIONS)
+                : [],
             notationOpacity: Object.fromEntries(
                 NOTATION_TYPES.map((type) => [
                     type,
@@ -1118,7 +1155,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
             await this.applyAnnotation(targetFile, currentRaw, newResult.start, newResult.end, comment);
             this.restoreScroll(view, scrollPos);
             window.getSelection()?.removeAllRanges();
-            new Notice("Annotation added!");
+            new Notice("Footnote added.");
         }).open();
     }
 
@@ -1189,11 +1226,11 @@ export default class ReadingHighlighterPlugin extends Plugin {
         const raw = await this.app.vault.read(file);
         const result = removeFootnoteFromRaw(raw, footnoteId);
         if (!result.changed) {
-            new Notice("Annotation not found.");
+            new Notice("Footnote not found.");
             return;
         }
         await this.app.vault.modify(file, result.raw);
-        new Notice("Annotation removed.");
+        new Notice("Footnote removed.");
     }
 
     async removeAllAnnotations(file: TFile) {
@@ -1201,11 +1238,11 @@ export default class ReadingHighlighterPlugin extends Plugin {
         const raw = await this.app.vault.read(file);
         const result = removeAllFootnotesFromRaw(raw);
         if (!result.removedCount) {
-            new Notice("No annotations to remove.");
+            new Notice("No footnotes to remove.");
             return;
         }
         await this.app.vault.modify(file, result.raw);
-        new Notice(`Removed ${result.removedCount} annotation${result.removedCount === 1 ? "" : "s"}.`);
+        new Notice(`Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`);
     }
 
     async mergeAdjacentHighlightsInFile(file: TFile) {
@@ -1971,7 +2008,12 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
         return [
             {
                 type: "group",
-                heading: "Gesture opacity",
+                heading: "Canvas creation defaults",
+                items: canvasSettingsItems(s.canvasDefaults, () => this.plugin.saveSettings()),
+            },
+            {
+                type: "group",
+                heading: "Highlight appearance",
                 items: NOTATION_TYPES.map((type) => ({
                     name: `${type} opacity`,
                     desc: "Saved on new marks. Earlier marks without an opacity value use this setting when rendered.",
@@ -1998,14 +2040,8 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
                         },
                     },
                     {
-                        name: "Enable color highlighting",
-                        desc: "Use HTML <mark> tags with specific colors instead of == syntax.",
-                        control: { type: "toggle", key: "enableColorHighlighting" },
-                    },
-                    {
                         name: "Highlight color",
                         desc: "Hex code for the default highlight color.",
-                        visible: () => this.plugin.settings.enableColorHighlighting,
                         control: { type: "color", key: "highlightColor" },
                     },
                     {
@@ -2066,16 +2102,16 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
             },
             {
                 type: "group",
-                heading: "Annotations",
+                heading: "Footnotes",
                 items: [
                     {
-                        name: "Enable annotations",
-                        desc: "Add comments to selections as footnotes.",
+                        name: "Enable footnotes",
+                        desc: "Add standard Markdown footnotes to selections.",
                         control: { type: "toggle", key: "enableAnnotations" },
                     },
                     {
-                        name: "Show annotation button",
-                        desc: "Show the annotation button in the toolbar.",
+                        name: "Show footnote button",
+                        desc: "Show the footnote button in the toolbar.",
                         control: { type: "toggle", key: "showAnnotationButton" },
                     },
                 ],
@@ -2231,7 +2267,9 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
     render() {
         const { containerEl } = this;
         containerEl.empty();
-        this.sectionHeading("Reader Highlighter Tags Settings", "h2");
+        this.sectionHeading("FuturePlural annotations settings", "h2");
+        this.sectionHeading("Canvas creation defaults", "h3");
+        renderCanvasSettings(containerEl, this.plugin.settings.canvasDefaults, () => this.plugin.saveSettings());
         new Setting(containerEl)
             .setName("Toolbar position")
             .setDesc("Choose where the floating toolbar should appear.")
@@ -2258,33 +2296,21 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 })
             );
-        this.sectionHeading("Gesture opacity", "h4");
+        this.sectionHeading("Highlight appearance", "h4");
         for (const type of NOTATION_TYPES) {
             const wrapper = containerEl.createDiv();
             wrapper.createSpan({ text: `${type} opacity` });
             this.addOpacitySlider(new Setting(wrapper), type);
         }
         new Setting(containerEl)
-            .setName("Enable color highlighting")
-            .setDesc("Use HTML <mark> tags with specific colors instead of == syntax.")
-            .addToggle((toggle) =>
-                toggle.setValue(this.plugin.settings.enableColorHighlighting).onChange(async (value) => {
-                    this.plugin.settings.enableColorHighlighting = value;
+            .setName("Highlight color")
+            .setDesc("Default color for new highlights.")
+            .addColorPicker((color) =>
+                color.setValue(this.plugin.settings.highlightColor || "#FFEE58").onChange(async (value) => {
+                    this.plugin.settings.highlightColor = value;
                     await this.plugin.saveSettings();
-                    this.render();
                 })
             );
-        if (this.plugin.settings.enableColorHighlighting) {
-            new Setting(containerEl)
-                .setName("Highlight color")
-                .setDesc("Hex code for the default highlight color.")
-                .addColorPicker((color) =>
-                    color.setValue(this.plugin.settings.highlightColor || "#FFEE58").onChange(async (value) => {
-                        this.plugin.settings.highlightColor = value;
-                        await this.plugin.saveSettings();
-                    })
-                );
-        }
         new Setting(containerEl)
             .setName("Enable color palette")
             .setDesc("Show the semantic colour palette in the toolbar for quick selection.")
@@ -2367,10 +2393,10 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 })
             );
-        this.sectionHeading("Annotations", "h3");
+        this.sectionHeading("Footnotes", "h3");
         new Setting(containerEl)
-            .setName("Enable annotations")
-            .setDesc("Add comments to selections as footnotes.")
+            .setName("Enable footnotes")
+            .setDesc("Add standard Markdown footnotes to selections.")
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.enableAnnotations).onChange(async (value) => {
                     this.plugin.settings.enableAnnotations = value;
@@ -2378,8 +2404,8 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
                 })
             );
         new Setting(containerEl)
-            .setName("Show annotation button")
-            .setDesc("Show the annotation button in the toolbar.")
+            .setName("Show footnote button")
+            .setDesc("Show the footnote button in the toolbar.")
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.showAnnotationButton).onChange(async (value) => {
                     this.plugin.settings.showAnnotationButton = value;

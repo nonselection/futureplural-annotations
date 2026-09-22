@@ -9,8 +9,8 @@
         "predeploy": "npm run build",
         "deploy": "node --env-file-if-exists=.env.local scripts/deploy.mjs",
         "test": "vitest run",
-        "typecheck": "tsc --noEmit",
         "test:watch": "vitest",
+        "typecheck": "tsc --noEmit",
         "lint": "eslint src tests scripts *.mjs package.json manifest.json",
         "format": "prettier --write \"src/**/*.{js,ts}\" \"tests/**/*.{js,ts}\" \"scripts/**/*.mjs\" \"*.{json,md,mjs}\"",
         "format:check": "prettier --check \"src/**/*.{js,ts}\" \"tests/**/*.{js,ts}\" \"scripts/**/*.mjs\" \"*.{json,md,mjs}\""
@@ -49,6 +49,6 @@
         "minimatch": "3.1.4"
     },
     "dependencies": {
-        "rough-notation": "^0.5.1"
+        "rough-notation": "0.5.1"
     }
 }

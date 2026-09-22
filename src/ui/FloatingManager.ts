@@ -205,9 +205,9 @@ export class FloatingManager {
             this.quoteBtn = this.createButton("quote", "Copy as quote");
         }
 
-        // Annotation button
+        // Footnote button
         if (this.plugin.settings.enableAnnotations && this.plugin.settings.showAnnotationButton) {
-            this.annotateBtn = this.createButton("message-square", "Add annotation");
+            this.annotateBtn = this.createButton("message-square", "Add footnote");
         }
 
         // Remove button

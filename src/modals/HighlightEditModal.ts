@@ -12,7 +12,6 @@ import {
 } from "../utils/highlights";
 
 interface EditState {
-    style: string;
     color: string;
     tags: string;
     annotation: string;
@@ -43,7 +42,6 @@ export class HighlightEditModal extends Modal {
         this.onApplied = onApplied;
 
         this.state = {
-            style: "default",
             color: "",
             tags: "",
             annotation: "",
@@ -75,27 +73,15 @@ export class HighlightEditModal extends Modal {
             return;
         }
 
-        this.state.style = highlight.type === "html" ? "color" : "default";
-        this.state.color = highlight.type === "html" ? highlight.color || "" : "";
+        this.state.color = highlight.color || "";
         this.state.tags = highlight.tagsText || "";
         this.state.annotation = highlight.annotation || "";
 
         const preview = contentEl.createDiv({ cls: "highlight-edit-preview" });
-        preview.createDiv({ cls: "highlight-edit-preview-label", text: "Preview" });
+        // TODO(product): replace this source excerpt with a live Rough Notation
+        // preview in both light and dark contexts. See docs/PRODUCT_DECISIONS_AND_BACKLOG.md.
+        preview.createDiv({ cls: "highlight-edit-preview-label", text: "Selected text" });
         preview.createDiv({ cls: "highlight-edit-preview-text", text: highlight.text || "" });
-
-        new Setting(contentEl)
-            .setName("Style")
-            .setDesc("Default uses == ==. Colored uses <mark>.")
-            .addDropdown((drop) => {
-                if (!highlight.groupId) drop.addOption("default", "Default (==)");
-                drop.addOption("color", "Colored (<mark>)");
-                drop.setValue(this.state.style);
-                drop.onChange((value) => {
-                    this.state.style = value;
-                    this.updateColorControls();
-                });
-            });
 
         this.colorSettingEl = contentEl.createDiv({ cls: "highlight-edit-color-setting" });
         this.renderColorControls();
@@ -121,7 +107,7 @@ export class HighlightEditModal extends Modal {
         );
 
         const annotationSetting = new Setting(contentEl)
-            .setName("Annotation")
+            .setName("Footnote")
             .setDesc("Stored as a standard footnote definition in the note.");
 
         this.annotationInput = annotationSetting.controlEl.createEl("textarea", {
@@ -143,8 +129,6 @@ export class HighlightEditModal extends Modal {
 
         const applyBtn = footer.createEl("button", { text: "Apply", cls: "mod-cta" });
         applyBtn.onclick = () => void this.applyEdits({ remove: false });
-
-        this.updateColorControls();
     }
 
     renderColorControls() {
@@ -202,13 +186,6 @@ export class HighlightEditModal extends Modal {
         }
     }
 
-    updateColorControls() {
-        const enabled = this.state.style === "color";
-        this.colorSettingEl.setCssStyles({ display: enabled ? "" : "none" });
-        if (this.colorInput) this.colorInput.disabled = !enabled;
-        if (this.colorTextInput) this.colorTextInput.disabled = !enabled;
-    }
-
     async applyEdits({ remove }: { remove: boolean }) {
         try {
             await this.plugin.saveUndoState(this.file);
@@ -235,25 +212,13 @@ export class HighlightEditModal extends Modal {
                     throw new Error("Highlight not found after tag update.");
                 }
 
-                if (this.state.style === "default" && updatedHighlight.type === "html") {
-                    // Convert HTML -> markdown
-                    const inner = raw.slice(updatedHighlight.innerStart, updatedHighlight.innerEnd);
-                    raw =
-                        raw.slice(0, updatedHighlight.openTagStart) +
-                        `==${inner}==` +
-                        raw.slice(updatedHighlight.closeTagEnd);
-                } else if (this.state.style === "color") {
-                    const color = String(this.state.color || "").trim();
-                    if (!color && !highlight.groupId) {
-                        throw new Error("Choose a color first.");
-                    }
-                    if (color) {
-                        const parts = highlight.groupId
-                            ? updatedParsed.highlights.filter((part) => part.groupId === highlight.groupId)
-                            : [updatedHighlight];
-                        for (const part of parts.sort((a, b) => b.openTagStart - a.openTagStart)) {
-                            raw = updateHighlightColorInRaw(raw, part, color);
-                        }
+                const color = String(this.state.color || "").trim();
+                if (color) {
+                    const parts = highlight.groupId
+                        ? updatedParsed.highlights.filter((part) => part.groupId === highlight.groupId)
+                        : [updatedHighlight];
+                    for (const part of parts.sort((a, b) => b.openTagStart - a.openTagStart)) {
+                        raw = updateHighlightColorInRaw(raw, part, color);
                     }
                 }
 

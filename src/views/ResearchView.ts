@@ -1,7 +1,9 @@
-import { ItemView, MarkdownView, Notice, WorkspaceLeaf, TFile } from "obsidian";
+import { ItemView, MarkdownView, Menu, Notice, WorkspaceLeaf, TFile, setIcon, setTooltip } from "obsidian";
 import type ReadingHighlighterPlugin from "../main";
 import { VaultScanner, type ScanResult } from "../core/VaultScanner";
-import { exportHighlightsToCanvas } from "../utils/canvas";
+import { CanvasExportModal } from "../modals/CanvasExportModal";
+import { MaintenanceModal } from "../modals/MaintenanceModal";
+import { HighlightEditModal } from "../modals/HighlightEditModal";
 import type { Highlight } from "../utils/highlights";
 
 export const RESEARCH_VIEW = "reader-research-view";
@@ -31,10 +33,13 @@ export class ResearchView extends ItemView {
     activeColors: Set<string>;
     isScanning: boolean;
     expandedFiles: Set<string>;
+    expandedHighlights: Set<string>;
     progressEl: HTMLElement | null;
     progressTextEl: HTMLElement | null;
     progressContainer!: HTMLElement;
     propertySelect!: HTMLSelectElement;
+    selectedFiles: Set<string> | null = null;
+    fileFilterEl?: HTMLElement;
 
     constructor(leaf: WorkspaceLeaf, plugin: ReadingHighlighterPlugin) {
         super(leaf);
@@ -49,6 +54,7 @@ export class ResearchView extends ItemView {
         this.activeColors = new Set();
         this.isScanning = false;
         this.expandedFiles = new Set(); // store file.path of expanded files
+        this.expandedHighlights = new Set();
 
         this.progressEl = null;
         this.progressTextEl = null;
@@ -59,7 +65,7 @@ export class ResearchView extends ItemView {
     }
 
     getDisplayText() {
-        return "Global research view";
+        return "Annotations manager";
     }
 
     getIcon() {
@@ -75,25 +81,32 @@ export class ResearchView extends ItemView {
         const header = container.createDiv({ cls: "research-view-header" });
 
         const titleRow = header.createDiv({ cls: "research-view-title-row" });
-        titleRow.createEl("h3", { text: "Research view" });
+        titleRow.createEl("h3", { text: "Annotations manager" });
 
-        const scanBtn = titleRow.createEl("button", { text: "Scan vault", cls: "mod-cta" });
-        scanBtn.onclick = () => void this.startScan();
+        const scanBtn = titleRow.createEl("button", { text: "Refresh" });
+        scanBtn.onclick = () => void this.refreshScan();
 
-        const canvasBtn = titleRow.createEl("button", { text: "Export canvas" });
+        const canvasBtn = titleRow.createEl("button", { text: "Export to canvas…" });
         canvasBtn.onclick = () => void this.exportToCanvas();
+        this.fileFilterEl = header.createDiv({ cls: "fp-research-files" });
+        this.renderFileFilter();
 
         // Search Bar & Date Filter
         const searchContainer = header.createDiv({ cls: "research-view-search" });
 
         const searchInput = searchContainer.createEl("input", {
             type: "text",
-            placeholder: "Search all highlights...",
+            placeholder: "Search highlights...",
             cls: "research-search-input",
         });
 
         searchInput.oninput = (e) => {
             this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
+            if (this.searchQuery) {
+                for (const highlight of this.filteredHighlights()) {
+                    this.expandedFiles.add(highlight.file.path);
+                }
+            }
             this.renderContent();
         };
 
@@ -192,6 +205,7 @@ export class ResearchView extends ItemView {
                 }
             }
             this.updatePropertySelector();
+            this.renderFileFilter();
 
             // Expand first file automatically if any
             if (this.scanResults.length > 0) {
@@ -208,6 +222,11 @@ export class ResearchView extends ItemView {
             this.progressContainer.setCssStyles({ display: "none" });
             this.renderContent();
         }
+    }
+
+    async refreshScan() {
+        this.scanner.clearCache();
+        await this.startScan();
     }
 
     updatePropertySelector() {
@@ -235,6 +254,71 @@ export class ResearchView extends ItemView {
             }
         }
         return allHighlights;
+    }
+
+    renderFileFilter() {
+        if (!this.fileFilterEl) return;
+        this.fileFilterEl.empty();
+        const details = this.fileFilterEl.createEl("details");
+        const summary = details.createEl("summary");
+        const updateSummary = () => {
+            const total = this.scanResults.length;
+            summary.setText(
+                this.selectedFiles === null
+                    ? `All notes with highlights (${total})`
+                    : `${this.selectedFiles.size} of ${total} notes`
+            );
+        };
+        updateSummary();
+        const buttons = details.createDiv();
+        buttons.createEl("button", { text: "All" }).onclick = () => {
+            this.selectedFiles = null;
+            updateSummary();
+            renderOptions();
+            this.renderContent();
+        };
+        buttons.createEl("button", { text: "None" }).onclick = () => {
+            this.selectedFiles = new Set();
+            updateSummary();
+            renderOptions();
+            this.renderContent();
+        };
+        const search = details.createEl("input", {
+            attr: { type: "search", placeholder: "Find notes by path", "aria-label": "Find notes by path" },
+        });
+        const options = details.createDiv({ cls: "fp-research-file-options" });
+        const renderOptions = () => {
+            options.empty();
+            for (const result of this.scanResults.filter((r) =>
+                r.file.path.toLowerCase().includes(search.value.toLowerCase())
+            )) {
+                const row = options.createEl("label");
+                const check = row.createEl("input", { attr: { type: "checkbox" } });
+                check.checked = this.selectedFiles === null || this.selectedFiles.has(result.file.path);
+                row.createSpan({ text: result.file.path });
+                check.onchange = () => {
+                    if (this.selectedFiles === null)
+                        this.selectedFiles = new Set(this.scanResults.map((r) => r.file.path));
+                    if (check.checked) this.selectedFiles.add(result.file.path);
+                    else this.selectedFiles.delete(result.file.path);
+                    if (this.selectedFiles.size === this.scanResults.length) this.selectedFiles = null;
+                    updateSummary();
+                    renderOptions();
+                    this.renderContent();
+                };
+            }
+        };
+        search.oninput = renderOptions;
+        renderOptions();
+    }
+
+    filteredHighlights(): ResearchHighlight[] {
+        return this.applyPropertyFilter(this.collectHighlights()).filter(
+            (h) =>
+                (this.selectedFiles === null || this.selectedFiles.has(h.file.path)) &&
+                (!this.searchQuery || h.text.toLowerCase().includes(this.searchQuery)) &&
+                (!this.activeColors.size || this.matchesActiveColor(h))
+        );
     }
 
     private matchesActiveColor(highlight: ResearchHighlight): boolean {
@@ -292,99 +376,163 @@ export class ResearchView extends ItemView {
         if (this.scanResults.length === 0) {
             this.contentEl.createDiv({
                 cls: "research-empty",
-                text: "No highlights found. Click 'Scan Vault' to analyze.",
+                text: "No highlights found. Click Refresh to scan again.",
             });
             return;
         }
 
-        // Collect all highlights with file reference
-        let allHighlights = this.collectHighlights();
-        const totalHighlights = allHighlights.length;
-
-        // Apply property filter
-        allHighlights = this.applyPropertyFilter(allHighlights);
-
-        // Apply search filter
-        if (this.searchQuery) {
-            allHighlights = allHighlights.filter((h) => h.text.toLowerCase().includes(this.searchQuery));
-        }
-
-        // Apply color filter
-        if (this.activeColors.size > 0) {
-            allHighlights = allHighlights.filter((h) => this.matchesActiveColor(h));
-        }
-
-        // Stats summary
+        const allScannedHighlights = this.collectHighlights();
+        const totalHighlights = allScannedHighlights.length;
+        const visibleHighlights = this.filteredHighlights();
         const statsRow = this.contentEl.createDiv({ cls: "research-stats" });
+        const visibleFileCount = new Set(visibleHighlights.map((highlight) => highlight.file.path)).size;
+        const totalFileCount = new Set(allScannedHighlights.map((highlight) => highlight.file.path)).size;
+        statsRow.textContent = `${visibleHighlights.length} of ${totalHighlights} highlights · ${visibleFileCount} of ${totalFileCount} notes`;
 
-        if (this.searchQuery) {
-            // Group filtered results by file for the detailed view
-            const fileMap = new Map<string, { file: TFile; highlights: ResearchHighlight[] }>();
-            for (const h of allHighlights) {
-                if (!fileMap.has(h.file.path)) {
-                    fileMap.set(h.file.path, { file: h.file, highlights: [] });
-                }
-                fileMap.get(h.file.path).highlights.push(h);
-            }
-            const filteredGroups = [...fileMap.values()];
-            const fileCount = filteredGroups.length;
-
-            statsRow.textContent = `Found ${allHighlights.length} highlights in ${fileCount} files (filtered from ${totalHighlights}).`;
-
-            // Render grouped/expanded view when searching
-            for (const group of filteredGroups) {
-                const groupEl = this.contentEl.createDiv({ cls: "research-group" });
-
-                const headerEl = groupEl.createDiv({ cls: "research-group-header" });
-
-                const expandIcon = headerEl.createSpan({ cls: "research-expand-icon" });
-                expandIcon.setText("▼");
-
-                headerEl.createSpan({ cls: "research-group-title", text: group.file.basename });
-                headerEl.createSpan({ cls: "research-group-badge", text: `${group.highlights.length}` });
-
-                const listEl = groupEl.createDiv({ cls: "research-highlight-list" });
-
-                group.highlights.forEach((h) => {
-                    const itemEl = listEl.createDiv({ cls: "research-highlight-item" });
-
-                    this.addColorIndicator(itemEl, h);
-
-                    itemEl.createSpan({ cls: "research-item-text", text: h.text });
-
-                    itemEl.onclick = (e) => {
-                        e.stopPropagation();
-                        void this.jumpToHighlight(group.file, h.line);
-                    };
-                });
-            }
-        } else {
-            // Default: simplified flat list of all highlights
-            const totalFileCount = this.scanResults.length;
-            statsRow.textContent = `${totalHighlights} highlights across ${totalFileCount} files.`;
-
-            const listEl = this.contentEl.createDiv({ cls: "research-highlight-list research-flat-list" });
-
-            for (const h of allHighlights) {
-                const itemEl = listEl.createDiv({ cls: "research-highlight-item" });
-
-                // Color dot
-                this.addColorIndicator(itemEl, h);
-
-                // Highlight text (truncated for readability)
-                const displayText = h.text.length > 120 ? h.text.substring(0, 120) + "..." : h.text;
-                itemEl.createSpan({ cls: "research-item-text", text: displayText });
-
-                // Source file badge
-                itemEl.createSpan({ cls: "research-source-badge", text: h.file.basename });
-
-                // Click to jump
-                itemEl.onclick = (e) => {
-                    e.stopPropagation();
-                    void this.jumpToHighlight(h.file, h.line);
-                };
-            }
+        if (visibleHighlights.length === 0) {
+            this.contentEl.createDiv({
+                cls: "research-empty",
+                text: "No highlights match the current filters.",
+            });
+            return;
         }
+
+        const fileMap = new Map<string, { file: TFile; highlights: ResearchHighlight[] }>();
+        for (const highlight of visibleHighlights) {
+            const group = fileMap.get(highlight.file.path) ?? { file: highlight.file, highlights: [] };
+            group.highlights.push(highlight);
+            fileMap.set(highlight.file.path, group);
+        }
+
+        for (const group of fileMap.values()) {
+            const groupEl = this.contentEl.createDiv({ cls: "research-group" });
+            const headerEl = groupEl.createDiv({ cls: "research-group-header" });
+            const toggleBtn = headerEl.createEl("button", {
+                cls: "fp-manager-group-toggle",
+                attr: { role: "button", tabindex: "0", "aria-expanded": "false" },
+            });
+            const expandIcon = toggleBtn.createSpan({ cls: "research-expand-icon" });
+            const title = toggleBtn.createSpan({ cls: "research-group-title", text: group.file.basename });
+            title.setAttribute("title", group.file.path);
+            toggleBtn.createSpan({ cls: "research-group-badge", text: `${group.highlights.length}` });
+            this.addNoteActionsButton(headerEl, group.file);
+
+            const listEl = groupEl.createDiv({ cls: "research-highlight-list" });
+            for (const highlight of group.highlights) this.renderHighlightItem(listEl, highlight);
+
+            const setExpanded = (expanded: boolean) => {
+                toggleBtn.setAttribute("aria-expanded", String(expanded));
+                listEl.toggleClass("is-collapsed", !expanded);
+                setIcon(expandIcon, expanded ? "chevron-down" : "chevron-right");
+                if (expanded) this.expandedFiles.add(group.file.path);
+                else this.expandedFiles.delete(group.file.path);
+            };
+            const toggleExpanded = () => setExpanded(!this.expandedFiles.has(group.file.path));
+            toggleBtn.onclick = toggleExpanded;
+            setExpanded(this.expandedFiles.has(group.file.path));
+        }
+    }
+
+    private renderHighlightItem(listEl: HTMLElement, highlight: ResearchHighlight) {
+        const rowKey = `${highlight.file.path}\u0000${highlight.id}`;
+        const itemEl = listEl.createDiv({ cls: "research-highlight-item", attr: { "aria-expanded": "false" } });
+        const disclosureBtn = itemEl.createEl("button", { cls: "fp-manager-row-disclosure" });
+        disclosureBtn.setAttribute("aria-label", "Show highlight details");
+        this.addColorIndicator(itemEl, highlight);
+
+        const bodyEl = itemEl.createDiv({ cls: "fp-manager-item-body" });
+        const textEl = bodyEl.createSpan({ cls: "research-item-text" });
+        const detailsEl = bodyEl.createDiv({ cls: "fp-manager-item-details" });
+        const detailParts = [this.notationLabel(highlight.notationType), `Line ${highlight.line + 1}`];
+        if (highlight.members?.length) detailParts.push(`${highlight.members.length} passages grouped`);
+        detailsEl.setText(detailParts.join(" · "));
+
+        this.addEditButton(itemEl, highlight);
+        this.addSourceButton(itemEl, highlight);
+
+        const setExpanded = (expanded: boolean) => {
+            itemEl.toggleClass("is-expanded", expanded);
+            itemEl.setAttribute("aria-expanded", String(expanded));
+            textEl.setText(
+                expanded || highlight.text.length <= 120 ? highlight.text : `${highlight.text.slice(0, 120)}…`
+            );
+            detailsEl.toggleClass("is-hidden", !expanded);
+            disclosureBtn.setAttribute("aria-label", expanded ? "Hide highlight details" : "Show highlight details");
+            setIcon(disclosureBtn, expanded ? "chevron-down" : "chevron-right");
+            if (expanded) this.expandedHighlights.add(rowKey);
+            else this.expandedHighlights.delete(rowKey);
+        };
+        const toggleExpanded = () => setExpanded(!this.expandedHighlights.has(rowKey));
+        itemEl.onclick = toggleExpanded;
+        disclosureBtn.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleExpanded();
+        };
+        setExpanded(this.expandedHighlights.has(rowKey));
+    }
+
+    private notationLabel(notationType?: string): string {
+        if (!notationType) return "Legacy highlight";
+        return notationType
+            .split("-")
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" ");
+    }
+
+    private openHighlightEditor(highlight: ResearchHighlight) {
+        new HighlightEditModal(this.plugin, highlight.file, highlight.id, () => {
+            void this.refreshScan();
+        }).open();
+    }
+
+    private addEditButton(itemEl: HTMLElement, highlight: ResearchHighlight) {
+        const editBtn = itemEl.createEl("button", { cls: "fp-manager-edit-link" });
+        setIcon(editBtn, "pencil");
+        editBtn.setAttribute("aria-label", "Edit highlight");
+        setTooltip(editBtn, "Edit highlight", { placement: "top" });
+        editBtn.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.openHighlightEditor(highlight);
+        };
+    }
+
+    private addSourceButton(itemEl: HTMLElement, highlight: ResearchHighlight) {
+        const sourceBtn = itemEl.createEl("button", { cls: "fp-manager-source-link" });
+        setIcon(sourceBtn, "arrow-up-right");
+        sourceBtn.setAttribute("aria-label", `Open source in new tab: ${highlight.file.basename}`);
+        setTooltip(sourceBtn, `Open source in new tab: ${highlight.file.basename}`, { placement: "top" });
+        sourceBtn.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void this.jumpToHighlight(highlight.file, highlight.line);
+        };
+    }
+
+    private addNoteActionsButton(headerEl: HTMLElement, file: TFile) {
+        const actionsBtn = headerEl.createEl("button", { cls: "fp-manager-note-actions" });
+        setIcon(actionsBtn, "more-vertical");
+        actionsBtn.setAttribute("aria-label", `Note actions for ${file.basename}`);
+        setTooltip(actionsBtn, `Note actions for ${file.basename}`, { placement: "top" });
+        actionsBtn.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.openNoteActionsMenu(event, file);
+        };
+    }
+
+    private openNoteActionsMenu(event: MouseEvent, file: TFile) {
+        const menu = new Menu();
+        menu.addItem((item) =>
+            item
+                .setTitle("Note maintenance…")
+                .setIcon("wrench")
+                .onClick(() => {
+                    new MaintenanceModal(this.plugin, file, () => void this.refreshScan()).open();
+                })
+        );
+        menu.showAtMouseEvent(event);
     }
 
     async jumpToHighlight(file: TFile, line: number) {
@@ -403,16 +551,7 @@ export class ResearchView extends ItemView {
     async exportToCanvas() {
         if (this.isScanning) return;
 
-        let allHighlights = this.collectHighlights();
-        allHighlights = this.applyPropertyFilter(allHighlights);
-
-        if (this.searchQuery) {
-            allHighlights = allHighlights.filter((h) => h.text.toLowerCase().includes(this.searchQuery));
-        }
-
-        if (this.activeColors.size > 0) {
-            allHighlights = allHighlights.filter((h) => this.matchesActiveColor(h));
-        }
+        const allHighlights = this.filteredHighlights();
 
         if (allHighlights.length === 0) {
             new Notice("No highlights to export to canvas.");
@@ -420,13 +559,7 @@ export class ResearchView extends ItemView {
         }
 
         try {
-            new Notice("Generating canvas...");
-            const exportPath = await exportHighlightsToCanvas(this.app, allHighlights);
-            const file = this.app.vault.getAbstractFileByPath(exportPath);
-            if (file instanceof TFile) {
-                const leaf = this.app.workspace.getLeaf("tab");
-                await leaf.openFile(file);
-            }
+            new CanvasExportModal(this.plugin, allHighlights).open();
         } catch (e) {
             console.error(e);
         }
