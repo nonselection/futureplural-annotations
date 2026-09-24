@@ -2,11 +2,13 @@ import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const vaultPath = process.env.FUTUREPLURAL_DEV_VAULT?.trim();
+const deployToActualVault = process.argv.includes("--actual");
+const vaultVariable = deployToActualVault ? "FUTUREPLURAL_ACTUAL_VAULT" : "FUTUREPLURAL_DEV_VAULT";
+const vaultPath = process.env[vaultVariable]?.trim();
 
 if (!vaultPath) {
     throw new Error(
-        "FUTUREPLURAL_DEV_VAULT is not set. Add it to .env.local as the absolute path to your development vault."
+        `${vaultVariable} is not set. Add it to .env.local as the absolute path to your ${deployToActualVault ? "actual" : "development"} vault.`
     );
 }
 
@@ -52,4 +54,6 @@ for (const filename of deployFiles) {
     await copyFile(join(repositoryRoot, filename), join(pluginDirectory, filename));
 }
 
-console.log(`Deployed ${manifest.name} ${manifest.version} to ${pluginDirectory}`);
+console.log(
+    `Deployed ${manifest.name} ${manifest.version} to ${deployToActualVault ? "ACTUAL vault" : "development vault"}: ${pluginDirectory}`
+);

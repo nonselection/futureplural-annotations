@@ -8,6 +8,8 @@
         "build": "node esbuild.config.mjs production",
         "predeploy": "npm run build",
         "deploy": "node --env-file-if-exists=.env.local scripts/deploy.mjs",
+        "predeploy:actual": "npm run build",
+        "deploy:actual": "node --env-file-if-exists=.env.local scripts/deploy.mjs --actual",
         "test": "vitest run",
         "test:watch": "vitest",
         "typecheck": "tsc --noEmit",

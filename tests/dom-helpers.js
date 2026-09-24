@@ -119,7 +119,7 @@ export function polyfillGeometry(window) {
 }
 
 export function createObsidianWindow(html = "<!doctype html><html><body><div id='content'></div></body></html>") {
-    const dom = new JSDOM(html, { pretendToBeVisual: true });
+    const dom = new JSDOM(html, { pretendToBeVisual: true, url: "https://obsidian.local/" });
     polyfillInnerText(dom.window);
     polyfillObsidianDom(dom.window);
     polyfillGeometry(dom.window);

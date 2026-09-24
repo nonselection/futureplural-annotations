@@ -3,6 +3,7 @@ import {
     MarkdownView,
     Menu,
     MenuItem,
+    Modal,
     Notice,
     Platform,
     WorkspaceLeaf,
@@ -17,6 +18,9 @@ import type { Highlight } from "../utils/highlights";
 import {
     parseHighlights,
     findHighlightById,
+    removeAllFootnotesFromRaw,
+    removeFootnoteFromRaw,
+    removeHighlightFromRaw,
     removeHighlightGroupFromRaw,
     regroupHighlightsInRaw,
 } from "../utils/highlights";
@@ -37,16 +41,57 @@ interface NavFootnote {
 type NavItem = Highlight | NavFootnote;
 type ListType = "highlights" | "footnotes";
 
+class NavigatorConfirmationModal extends Modal {
+    private settled = false;
+
+    constructor(
+        app: ReadingHighlighterPlugin["app"],
+        private readonly title: string,
+        private readonly message: string,
+        private readonly confirmLabel: string,
+        private readonly resolveChoice: (confirmed: boolean) => void
+    ) {
+        super(app);
+    }
+
+    onOpen() {
+        this.setTitle(this.title);
+        this.contentEl.createEl("p", { text: this.message });
+        const actions = this.contentEl.createDiv({ cls: "fp-navigator-confirm-actions" });
+        const cancel = actions.createEl("button", { text: "Cancel" });
+        const confirm = actions.createEl("button", { text: this.confirmLabel, cls: "mod-warning" });
+        cancel.onclick = () => this.finish(false);
+        confirm.onclick = () => this.finish(true);
+        cancel.focus();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+        if (!this.settled) {
+            this.settled = true;
+            this.resolveChoice(false);
+        }
+    }
+
+    private finish(confirmed: boolean) {
+        if (this.settled) return;
+        this.settled = true;
+        this.resolveChoice(confirmed);
+        this.close();
+    }
+}
+
 /**
- * Enhanced Sidebar view that displays all highlights and footnotes in the current document.
- * Includes tabbed switching and split views for premium navigator experience.
+ * Sidebar companion for the current document. Highlights and footnotes remain
+ * visible as two explicit, independently collapsible sections.
  */
 export class HighlightNavigatorView extends ItemView {
     plugin: ReadingHighlighterPlugin;
     highlights: Highlight[];
     footnotes: NavFootnote[];
     currentFile: TFile | null;
-    viewMode: string;
+    sectionCollapsed: Record<ListType, boolean>;
+    preSearchCollapsed: Record<ListType, boolean> | null;
     searchQuery: string;
     selectionMode: boolean;
     selectedIds: Set<string>;
@@ -55,6 +100,9 @@ export class HighlightNavigatorView extends ItemView {
     ungroupButton: HTMLButtonElement | null = null;
     selectionBarEl: HTMLElement | null = null;
     canvasButton: HTMLButtonElement | null = null;
+    activeMenu: Menu | null = null;
+    activeMenuTrigger: HTMLElement | null = null;
+    expandedItemIds: Set<string>;
 
     constructor(leaf: WorkspaceLeaf, plugin: ReadingHighlighterPlugin) {
         super(leaf);
@@ -62,10 +110,12 @@ export class HighlightNavigatorView extends ItemView {
         this.highlights = [];
         this.footnotes = [];
         this.currentFile = null;
-        this.viewMode = "highlights"; // 'highlights', 'footnotes', or 'split'
+        this.sectionCollapsed = { highlights: false, footnotes: true };
+        this.preSearchCollapsed = null;
         this.searchQuery = ""; // Search filter
         this.selectionMode = false;
         this.selectedIds = new Set();
+        this.expandedItemIds = new Set();
     }
 
     getViewType() {
@@ -77,7 +127,7 @@ export class HighlightNavigatorView extends ItemView {
     }
 
     getIcon() {
-        return "lamp";
+        return "notebook-pen";
     }
 
     async onOpen() {
@@ -85,45 +135,33 @@ export class HighlightNavigatorView extends ItemView {
         container.empty();
         container.addClass("highlight-navigator-container");
 
-        // Header
+        // Compact, persistent controls. Content begins immediately underneath.
         const header = container.createDiv({ cls: "highlight-navigator-header" });
-
-        // View Mode Switcher
-        const btnGroup = header.createDiv({ cls: "highlight-navigator-btn-group" });
-        const modes = [
-            { label: "Highlights", value: "highlights" },
-            { label: "Footnotes", value: "footnotes" },
-            { label: "Both", value: "split" },
-        ];
-
-        modes.forEach((m) => {
-            const btn = btnGroup.createEl("button", { text: m.label, cls: "nav-btn" });
-            if (this.viewMode === m.value) btn.addClass("is-active");
-
-            btn.onclick = () => {
-                btnGroup.querySelectorAll(".nav-btn").forEach((el) => el.removeClass("is-active"));
-                btn.addClass("is-active");
-                this.viewMode = m.value;
-                this.selectionMode = false;
-                this.selectedIds.clear();
-                this.renderContent();
-            };
-        });
-
-        // Search Bar
-        const searchContainer = container.createDiv({ cls: "highlight-navigator-search" });
-        const searchInput = searchContainer.createEl("input", {
+        const searchContainer = header.createDiv({ cls: "highlight-navigator-search" });
+        const searchField = searchContainer.createDiv({ cls: "fp-navigator-search-field" });
+        const searchInput = searchField.createEl("input", {
             type: "text",
             placeholder: "Search...",
             cls: "nav-search-input",
         });
-        searchInput.oninput = (e) => {
-            this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
-            this.selectedIds.clear();
-            this.renderContent();
+        const clearSearchBtn = searchField.createEl("button", {
+            cls: "fp-navigator-search-clear is-hidden",
+        });
+        setIcon(clearSearchBtn, "x");
+        clearSearchBtn.setAttribute("aria-label", "Clear search");
+        setTooltip(clearSearchBtn, "Clear search", { placement: "top" });
+        const applySearch = (value: string) => {
+            this.setSearchQuery(value);
+            clearSearchBtn.toggleClass("is-hidden", !this.searchQuery);
+        };
+        searchInput.oninput = (e) => applySearch((e.target as HTMLInputElement).value);
+        clearSearchBtn.onclick = () => {
+            searchInput.value = "";
+            applySearch("");
+            searchInput.focus();
         };
         const overflowBtn = searchContainer.createEl("button", { cls: "fp-navigator-overflow" });
-        setIcon(overflowBtn, "more-vertical");
+        setIcon(overflowBtn, "ellipsis-vertical");
         overflowBtn.setAttribute("aria-label", "Navigator actions");
         setTooltip(overflowBtn, "Navigator actions", { placement: "top" });
         overflowBtn.onclick = (event) => this.openNavigatorMenu(event);
@@ -161,7 +199,38 @@ export class HighlightNavigatorView extends ItemView {
             })
         );
 
+        // Canvas labels describe what will happen *now*, not what was true when
+        // the sidebar opened. Creating, deleting or renaming an associated file
+        // is therefore reflected without requiring the note to be reopened.
+        this.registerEvent(this.app.vault.on("create", () => this.updateCanvasButton()));
+        this.registerEvent(this.app.vault.on("delete", () => this.updateCanvasButton()));
+        this.registerEvent(this.app.vault.on("rename", () => window.setTimeout(() => this.updateCanvasButton(), 0)));
+
         void this.refresh();
+    }
+
+    setSearchQuery(value: string) {
+        const nextQuery = value.toLowerCase();
+        const wasSearching = Boolean(this.searchQuery);
+        const isSearching = Boolean(nextQuery);
+
+        if (!wasSearching && isSearching) {
+            this.preSearchCollapsed = { ...this.sectionCollapsed };
+        }
+
+        this.searchQuery = nextQuery;
+        this.selectedIds.clear();
+
+        if (isSearching) {
+            // Search results must never be hidden behind a collapsed section.
+            this.sectionCollapsed.highlights = false;
+            this.sectionCollapsed.footnotes = false;
+        } else if (wasSearching && this.preSearchCollapsed) {
+            this.sectionCollapsed = { ...this.preSearchCollapsed };
+            this.preSearchCollapsed = null;
+        }
+
+        this.renderContent();
     }
 
     async refresh(force = false) {
@@ -193,7 +262,9 @@ export class HighlightNavigatorView extends ItemView {
             targetFile = view.file;
         }
 
-        if (this.currentFile?.path !== targetFile.path || force) this.selectedIds.clear();
+        const fileChanged = this.currentFile?.path !== targetFile.path;
+        if (fileChanged || force) this.selectedIds.clear();
+        if (fileChanged) this.expandedItemIds.clear();
         this.currentFile = targetFile;
         this.updateCanvasButton();
 
@@ -201,6 +272,13 @@ export class HighlightNavigatorView extends ItemView {
             const raw = await this.app.vault.read(targetFile);
             this.highlights = getHighlightsFromContent(raw);
             this.footnotes = this.getFootnotesFromContent(raw);
+            const validExpandedIds = new Set([
+                ...this.highlights.map((highlight) => `highlight:${highlight.id}`),
+                ...this.footnotes.map((footnote) => `footnote:${footnote.id}`),
+            ]);
+            for (const id of this.expandedItemIds) {
+                if (!validExpandedIds.has(id)) this.expandedItemIds.delete(id);
+            }
             this.renderContent();
         } catch (err) {
             this.showEmpty("Error loading content.");
@@ -290,21 +368,9 @@ export class HighlightNavigatorView extends ItemView {
 
     renderContent() {
         this.contentEl.empty();
-        this.contentEl.removeClass("split-view");
-
         this.renderSelectionControls();
-
-        if (this.viewMode === "highlights") {
-            this.renderList(this.contentEl, this.highlights, "highlights");
-        } else if (this.viewMode === "footnotes") {
-            this.renderList(this.contentEl, this.footnotes, "footnotes");
-        } else if (this.viewMode === "split") {
-            this.contentEl.addClass("split-view");
-            const topHalf = this.contentEl.createDiv({ cls: "split-half split-top" });
-            const bottomHalf = this.contentEl.createDiv({ cls: "split-half split-bottom" });
-            this.renderList(topHalf, this.highlights, "highlights");
-            this.renderList(bottomHalf, this.footnotes, "footnotes");
-        }
+        this.renderSection(this.highlights, "highlights");
+        this.renderSection(this.footnotes, "footnotes");
     }
 
     renderSelectionControls() {
@@ -314,8 +380,8 @@ export class HighlightNavigatorView extends ItemView {
         this.selectionCountEl = null;
         this.groupButton = null;
         this.ungroupButton = null;
-        controls.toggleClass("is-hidden", this.viewMode === "footnotes" || !this.selectionMode);
-        if (this.viewMode === "footnotes" || !this.selectionMode) return;
+        controls.toggleClass("is-hidden", !this.selectionMode);
+        if (!this.selectionMode) return;
         const toggle = controls.createEl("button", { text: "Done" });
         toggle.setAttribute("aria-pressed", String(this.selectionMode));
         toggle.onclick = () => this.setSelectionMode(false);
@@ -332,6 +398,7 @@ export class HighlightNavigatorView extends ItemView {
 
     setSelectionMode(active: boolean) {
         this.selectionMode = active;
+        if (active) this.sectionCollapsed.highlights = false;
         this.selectedIds.clear();
         this.renderContent();
     }
@@ -368,35 +435,54 @@ export class HighlightNavigatorView extends ItemView {
         }
     }
 
-    renderList(container: HTMLElement, items: NavItem[], type: ListType) {
+    renderSection(items: NavItem[], type: ListType) {
         // Filter items based on search query
         const filteredItems = items.filter((item) => {
             if (!this.searchQuery) return true;
             return item.text.toLowerCase().includes(this.searchQuery);
         });
 
+        const collapsed = this.sectionCollapsed[type];
+        const title = type === "highlights" ? "Highlights" : "Footnotes";
+        const section = this.contentEl.createDiv({
+            cls: `fp-navigator-section${collapsed ? " is-collapsed" : ""}`,
+        });
+        const heading = section.createEl("button", {
+            cls: "fp-navigator-section-heading",
+            attr: { "aria-expanded": String(!collapsed), "aria-label": `${collapsed ? "Show" : "Hide"} ${title}` },
+        });
+        const disclosure = heading.createSpan({ cls: "fp-navigator-section-disclosure" });
+        setIcon(disclosure, collapsed ? "chevron-right" : "chevron-down");
+        heading.createSpan({ cls: "fp-navigator-section-title", text: title });
+        heading.createSpan({
+            cls: "fp-navigator-section-count",
+            text:
+                this.searchQuery && filteredItems.length !== items.length
+                    ? `${filteredItems.length}/${items.length}`
+                    : String(items.length),
+        });
+        heading.onclick = () => {
+            this.sectionCollapsed[type] = !this.sectionCollapsed[type];
+            this.renderContent();
+        };
+
+        if (collapsed) return;
+
+        const body = section.createDiv({ cls: "fp-navigator-section-body" });
+
         if (filteredItems.length === 0) {
             if (this.searchQuery) {
-                this.showEmpty(`No matches for "${this.searchQuery}".`, container);
+                this.showEmpty(`No matches for "${this.searchQuery}".`, body);
             } else {
-                this.showEmpty(`No ${type} found.`, container);
+                this.showEmpty(`No ${type} found.`, body);
             }
             return;
         }
 
-        const title = type === "highlights" ? "Highlights" : "Footnotes";
-        const stats = container.createDiv({ cls: "highlight-navigator-stats" });
-
-        let statsText = `${filteredItems.length} ${title.toLowerCase()}`;
-        if (this.searchQuery && filteredItems.length !== items.length) {
-            statsText += ` (filtered from ${items.length})`;
-        }
-        stats.createSpan({ text: statsText });
-
-        const list = container.createDiv({ cls: "highlight-navigator-list" });
+        const list = body.createDiv({ cls: "highlight-navigator-list" });
         const fragment = createFragment();
 
-        filteredItems.forEach((item, index) => {
+        filteredItems.forEach((item) => {
             const el = fragment.createDiv({ cls: "highlight-navigator-item" });
 
             if (type === "highlights" && this.selectionMode) {
@@ -415,42 +501,35 @@ export class HighlightNavigatorView extends ItemView {
                 el.toggleClass("is-selected", checkbox.checked);
             }
 
+            const leading = el.createSpan({ cls: "fp-navigator-leading" });
+            const leadingMeta = leading.createSpan({ cls: "fp-navigator-leading-meta" });
+            const number = type === "highlights" ? items.indexOf(item) + 1 : (item as NavFootnote).displayNumber;
+            const numberEl = leadingMeta.createSpan({ cls: "fp-navigator-number" });
+            numberEl.textContent = number != null ? String(number) : `[^${(item as NavFootnote).id}]`;
+
             if (type === "highlights") {
                 const highlight = item as Highlight;
-                // Color indicator
                 if (highlight.color) {
-                    const colorDot = el.createSpan({ cls: "highlight-color-dot" });
+                    const colorDot = leadingMeta.createSpan({ cls: "highlight-color-dot" });
                     colorDot.setCssStyles({ backgroundColor: highlight.color });
                 } else {
-                    el.createSpan({ cls: "highlight-color-dot highlight-default" });
+                    leadingMeta.createSpan({ cls: "highlight-color-dot highlight-default" });
                 }
                 if (highlight.members && new Set(highlight.members.map((part) => part.color)).size > 1) {
                     el.addClass("fp-navigator-mixed-group");
                 }
             } else {
                 const footnote = item as NavFootnote;
-                // Footnote indicator: show the number Obsidian renders in
-                // Reading View (sequential by first appearance), not the literal
-                // id — those differ for out-of-order names (e.g. Wikipedia
-                // imports). The source id is kept in a tooltip. Unreferenced
-                // definitions have no rendered number, so fall back to `[^id]`.
-                const idSpan = el.createSpan({ cls: "footnote-id" });
-                idSpan.textContent =
-                    footnote.displayNumber != null ? `${footnote.displayNumber} ` : `[^${footnote.id}] `;
-                idSpan.setAttribute("title", `[^${footnote.id}]`);
-                idSpan.setCssStyles({ marginRight: "5px", color: "var(--text-muted)" });
+                numberEl.setAttribute("title", `[^${footnote.id}]`);
             }
 
-            const textSpan = el.createSpan({ cls: "highlight-text" });
-            textSpan.textContent = this.stripMarkdown(item.text);
-            if (type === "highlights" && (item as Highlight).members?.length) {
-                el.createSpan({
-                    cls: "fp-navigator-group-count",
-                    text: `${(item as Highlight).members?.length} highlights`,
-                });
-            }
+            // Create the right-side controls before the text so their float
+            // affects only the opening line. Wrapped text then reclaims the
+            // complete row width instead of inheriting a permanent actions
+            // column.
+            const rowActions = el.createSpan({ cls: "fp-navigator-row-actions" });
 
-            const sourceBtn = el.createEl("button", { cls: "fp-navigator-source-link" });
+            const sourceBtn = rowActions.createEl("button", { cls: "fp-navigator-source-link" });
             setIcon(sourceBtn, "arrow-up-right");
             sourceBtn.setAttribute(
                 "aria-label",
@@ -466,8 +545,9 @@ export class HighlightNavigatorView extends ItemView {
                 else void this.jumpToLine((item as Highlight).line);
             };
 
-            // Actions menu (hidden until hover on desktop; always available on mobile).
-            // Available for both highlights and footnotes.
+            // The actions control lives in the narrow metadata rail. Keeping
+            // it visible avoids an essential hover-only interaction and does
+            // not consume a permanent text column.
             const openMenu = (e: MouseEvent) => {
                 if (type === "highlights") {
                     this.openHighlightActionsMenu(item as Highlight, e);
@@ -476,27 +556,70 @@ export class HighlightNavigatorView extends ItemView {
                 }
             };
 
-            const menuBtn = el.createEl("button", { cls: "highlight-item-menu" });
-            menuBtn.setAttribute("aria-label", type === "highlights" ? "Highlight actions" : "Footnote actions");
-            menuBtn.textContent = "⋯";
+            const menuBtn = leading.createEl("button", { cls: "highlight-item-menu" });
+            menuBtn.setAttribute(
+                "aria-label",
+                `Actions for ${type === "highlights" ? "highlight" : "footnote"}: ${item.text.slice(0, 80)}`
+            );
+            setTooltip(menuBtn, "Actions", { placement: "top" });
+            setIcon(menuBtn, "ellipsis-vertical");
             menuBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 openMenu(e);
             };
-
-            // Trailing ordinal badge (highlights only). Footnotes already show
-            // their Reading-View number as the leading badge.
-            if (type === "highlights") {
-                const numberBadge = el.createSpan({ cls: "highlight-number" });
-                numberBadge.textContent = `${index + 1}`;
-            }
-
             el.oncontextmenu = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 openMenu(e);
             };
+
+            const itemBody = el.createSpan({ cls: "fp-navigator-item-body" });
+            const textSpan = itemBody.createSpan({ cls: "highlight-text" });
+            textSpan.textContent = this.stripMarkdown(item.text);
+            const itemKey =
+                type === "highlights" ? `highlight:${(item as Highlight).id}` : `footnote:${(item as NavFootnote).id}`;
+            let expanded = this.expandedItemIds.has(itemKey);
+            let expandable = expanded;
+            const expandButton = itemBody.createEl("button", {
+                cls: "fp-navigator-expand is-hidden",
+                text: expanded ? "Show less" : "Show more",
+            });
+            const updateExpansion = () => {
+                textSpan.toggleClass("is-expanded", expanded);
+                expandButton.setText(expanded ? "Show less" : "Show more");
+                expandButton.setAttribute("aria-expanded", String(expanded));
+                expandButton.setAttribute(
+                    "aria-label",
+                    `${expanded ? "Show less of" : "Show more of"} this ${type === "highlights" ? "highlight" : "footnote"}`
+                );
+            };
+            updateExpansion();
+            expandButton.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!expandable) return;
+                expanded = !expanded;
+                if (expanded) this.expandedItemIds.add(itemKey);
+                else this.expandedItemIds.delete(itemKey);
+                updateExpansion();
+            };
+            const checkOverflow = () => {
+                if (!textSpan.isConnected) return;
+                expandable = expanded || textSpan.scrollHeight > textSpan.clientHeight + 1;
+                expandButton.toggleClass("is-hidden", !expandable);
+            };
+            if (typeof window.requestAnimationFrame === "function") {
+                window.requestAnimationFrame(checkOverflow);
+            } else {
+                window.setTimeout(checkOverflow, 0);
+            }
+            if (type === "highlights" && (item as Highlight).members?.length) {
+                itemBody.createSpan({
+                    cls: "fp-navigator-group-count",
+                    text: `${(item as Highlight).members?.length} highlights`,
+                });
+            }
 
             // Rows stay inert during ordinary reading. The explicit source
             // control above prevents an accidental scroll while using the
@@ -528,7 +651,7 @@ export class HighlightNavigatorView extends ItemView {
         const currentFile = this.currentFile;
         if (!currentFile) return;
 
-        const menu = new Menu();
+        const menu = new Menu().setUseNativeMenu(false);
         menu.addItem((mi: MenuItem) => {
             mi.setTitle("Copy")
                 .setIcon("copy")
@@ -565,28 +688,7 @@ export class HighlightNavigatorView extends ItemView {
                 .onClick(() => void this.removeSingleHighlight(item));
         });
 
-        menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Remove all highlights (note)")
-                .setIcon("eraser")
-                .setWarning(true)
-                .onClick(async () => {
-                    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                    if (!view || !view.file || view.file.path !== currentFile.path) {
-                        // Still allow removal even if user isn't in preview; operate on file directly.
-                        await this.plugin.saveUndoState(currentFile);
-                        let raw = await this.app.vault.read(currentFile);
-                        raw = raw.replace(/==(.*?)==/gs, "$1");
-                        raw = raw.replace(/<mark[^>]*>(.*?)<\/mark>/gs, "$1");
-                        await this.app.vault.modify(currentFile, raw);
-                        await this.refresh(true);
-                        return;
-                    }
-                    await this.plugin.removeAllHighlights(view);
-                    await this.refresh(true);
-                });
-        });
-
-        menu.showAtMouseEvent(event);
+        this.showNavigatorMenu(menu, event);
     }
 
     /**
@@ -608,6 +710,8 @@ export class HighlightNavigatorView extends ItemView {
             });
             if (!found) {
                 new Notice("Highlight not found (it may have moved).");
+            } else {
+                this.showUndoNotice("Highlight removed.", "Highlight restored.");
             }
             await this.refresh(true);
         } catch (err) {
@@ -616,11 +720,62 @@ export class HighlightNavigatorView extends ItemView {
         }
     }
 
+    async confirmDestructive(title: string, message: string, confirmLabel: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            new NavigatorConfirmationModal(this.app, title, message, confirmLabel, resolve).open();
+        });
+    }
+
+    showUndoNotice(message: string, undoMessage: string) {
+        const fragment = createFragment();
+        fragment.createSpan({ text: `${message} ` });
+        const undo = fragment.createEl("button", { text: "Undo", cls: "mod-cta fp-navigator-undo" });
+        const progress = fragment.createDiv({ cls: "fp-navigator-undo-progress" });
+        progress.setAttribute("aria-hidden", "true");
+        progress.createSpan({ cls: "fp-navigator-undo-progress-bar" });
+        const notice = new Notice(fragment, 10000);
+        undo.onclick = () => {
+            void (async () => {
+                await this.plugin.undoLastHighlight(undoMessage);
+                notice.hide();
+                await this.refresh(true);
+            })();
+        };
+    }
+
+    async removeAllHighlightsInNote() {
+        const currentFile = this.currentFile;
+        if (!currentFile) return;
+        const raw = await this.app.vault.read(currentFile);
+        const highlights = parseHighlights(raw).highlights;
+        if (!highlights.length) {
+            new Notice("No highlights to remove.");
+            return;
+        }
+        const confirmed = await this.confirmDestructive(
+            "Remove all highlights?",
+            `Remove ${highlights.length} highlight${highlights.length === 1 ? "" : "s"} from “${currentFile.basename}”? The text will remain in place.`,
+            "Remove all"
+        );
+        if (!confirmed) return;
+
+        const updated = [...highlights]
+            .sort((a, b) => b.openTagStart - a.openTagStart)
+            .reduce((content, highlight) => removeHighlightFromRaw(content, highlight), raw);
+        await this.plugin.saveUndoState(currentFile, raw);
+        await this.app.vault.modify(currentFile, updated);
+        await this.refresh(true);
+        this.showUndoNotice(
+            `Removed ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`,
+            `Restored ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`
+        );
+    }
+
     openFootnoteActionsMenu(item: NavFootnote, event: MouseEvent) {
         const currentFile = this.currentFile;
         if (!currentFile) return;
 
-        const menu = new Menu();
+        const menu = new Menu().setUseNativeMenu(false);
         menu.addItem((mi: MenuItem) => {
             mi.setTitle("Copy")
                 .setIcon("copy")
@@ -633,25 +788,82 @@ export class HighlightNavigatorView extends ItemView {
             mi.setTitle("Remove footnote")
                 .setIcon("trash-2")
                 .setWarning(true)
-                .onClick(async () => {
-                    await this.plugin.removeAnnotationById(currentFile, item.id);
-                    await this.refresh(true);
-                });
+                .onClick(() => void this.removeFootnoteInNote(item));
         });
 
-        menu.addSeparator();
+        this.showNavigatorMenu(menu, event);
+    }
 
-        menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Remove all footnotes (note)")
-                .setIcon("eraser")
-                .setWarning(true)
-                .onClick(async () => {
-                    await this.plugin.removeAllAnnotations(currentFile);
-                    await this.refresh(true);
-                });
+    showNavigatorMenu(menu: Menu, event: MouseEvent) {
+        const body = this.containerEl.ownerDocument.body;
+        const HTMLElementConstructor = this.containerEl.ownerDocument.defaultView?.HTMLElement;
+        const trigger =
+            HTMLElementConstructor && event.currentTarget instanceof HTMLElementConstructor
+                ? event.currentTarget
+                : null;
+        if (this.activeMenu && trigger && this.activeMenuTrigger === trigger) {
+            this.activeMenu.hide();
+            return;
+        }
+        this.activeMenu?.hide();
+        this.activeMenu = menu;
+        this.activeMenuTrigger = trigger;
+        if (trigger) menu.setParentElement(trigger);
+        body.addClass("fp-navigator-menu-open");
+        menu.onHide(() => {
+            if (this.activeMenu !== menu) return;
+            this.activeMenu = null;
+            this.activeMenuTrigger = null;
+            body.removeClass("fp-navigator-menu-open");
         });
-
         menu.showAtMouseEvent(event);
+    }
+
+    async removeFootnoteInNote(item: NavFootnote) {
+        const currentFile = this.currentFile;
+        if (!currentFile) return;
+        const raw = await this.app.vault.read(currentFile);
+        const result = removeFootnoteFromRaw(raw, item.id);
+        if (!result.changed) {
+            new Notice("Footnote not found.");
+            return;
+        }
+        const confirmed = await this.confirmDestructive(
+            "Remove footnote?",
+            `Remove footnote ${item.displayNumber ?? `[^${item.id}]`} from “${currentFile.basename}”? Its reference and authored text will be deleted.`,
+            "Remove footnote"
+        );
+        if (!confirmed) return;
+
+        await this.plugin.saveUndoState(currentFile, raw);
+        await this.app.vault.modify(currentFile, result.raw);
+        await this.refresh(true);
+        this.showUndoNotice("Footnote removed.", "Footnote restored.");
+    }
+
+    async removeAllFootnotesInNote() {
+        const currentFile = this.currentFile;
+        if (!currentFile) return;
+        const raw = await this.app.vault.read(currentFile);
+        const result = removeAllFootnotesFromRaw(raw);
+        if (!result.removedCount) {
+            new Notice("No footnotes to remove.");
+            return;
+        }
+        const confirmed = await this.confirmDestructive(
+            "Remove all footnotes?",
+            `Remove ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"} from “${currentFile.basename}”? References and definitions will be removed.`,
+            "Remove all"
+        );
+        if (!confirmed) return;
+
+        await this.plugin.saveUndoState(currentFile, raw);
+        await this.app.vault.modify(currentFile, result.raw);
+        await this.refresh(true);
+        this.showUndoNotice(
+            `Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`,
+            `Restored ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`
+        );
     }
 
     async jumpToLine(line: number) {
@@ -752,15 +964,13 @@ export class HighlightNavigatorView extends ItemView {
     }
 
     openNavigatorMenu(event: MouseEvent) {
-        const menu = new Menu();
-        if (this.viewMode !== "footnotes") {
-            menu.addItem((mi: MenuItem) => {
-                mi.setTitle("Select highlights")
-                    .setIcon("list-checks")
-                    .onClick(() => this.setSelectionMode(true));
-            });
-            menu.addSeparator();
-        }
+        const menu = new Menu().setUseNativeMenu(false);
+        menu.addItem((mi: MenuItem) => {
+            mi.setTitle("Select highlights")
+                .setIcon("list-checks")
+                .onClick(() => this.setSelectionMode(true));
+        });
+        menu.addSeparator();
         menu.addItem((mi: MenuItem) => {
             mi.setTitle("Export Markdown")
                 .setIcon("file-text")
@@ -776,7 +986,20 @@ export class HighlightNavigatorView extends ItemView {
                 .setIcon("table")
                 .onClick(() => void this.exportHighlightsCSV());
         });
-        menu.showAtMouseEvent(event);
+        menu.addSeparator();
+        menu.addItem((mi: MenuItem) => {
+            mi.setTitle("Remove note highlights")
+                .setIcon("eraser")
+                .setWarning(true)
+                .onClick(() => void this.removeAllHighlightsInNote());
+        });
+        menu.addItem((mi: MenuItem) => {
+            mi.setTitle("Remove note footnotes")
+                .setIcon("eraser")
+                .setWarning(true)
+                .onClick(() => void this.removeAllFootnotesInNote());
+        });
+        this.showNavigatorMenu(menu, event);
     }
 
     async exportHighlightsJSON() {
@@ -826,24 +1049,41 @@ export class HighlightNavigatorView extends ItemView {
                 return;
             }
             const associations = this.plugin.settings.canvasAssociations;
-            const association = associations.find((item) => item.source === currentFile.path);
+            const associationIndex = associations.findIndex((item) => item.source === currentFile.path);
+            const association = associationIndex >= 0 ? associations[associationIndex] : null;
+            const associatedFile = association ? this.app.vault.getAbstractFileByPath(association.canvas) : null;
+            const hasExistingCanvas = associatedFile instanceof TFile;
             if (!association && associations.length >= MAX_CANVAS_ASSOCIATIONS)
                 throw new Error(
                     "Canvas association limit reached. Use Annotations manager → Canvas… for an explicit export."
                 );
-            const exportPath =
-                association?.canvas ?? defaultCanvasPath(currentFile, this.plugin.settings.canvasDefaults);
+            // A stale association describes a deleted canvas, not a filename
+            // promise. Create a fresh canvas from the note's *current* name and
+            // replace the stale association; never resurrect an obsolete name.
+            const exportPath = hasExistingCanvas
+                ? association.canvas
+                : defaultCanvasPath(currentFile, this.plugin.settings.canvasDefaults);
             const result = await exportHighlightsToCanvas(this.app, fresh, {
                 path: exportPath,
                 defaults: this.plugin.settings.canvasDefaults,
-                allowExisting: !!association,
+                allowExisting: hasExistingCanvas,
             });
-            if (!association) {
-                associations.push({ source: currentFile.path, canvas: exportPath });
+            if (!hasExistingCanvas) {
+                if (associationIndex >= 0)
+                    associations[associationIndex] = { source: currentFile.path, canvas: exportPath };
+                else {
+                    associations.push({ source: currentFile.path, canvas: exportPath });
+                }
                 await this.plugin.saveData(this.plugin.settings);
             }
             this.updateCanvasButton();
-            new Notice(`${result.added} new cards added. Existing cards preserved.`);
+            if (!hasExistingCanvas) {
+                new Notice(`Created canvas with ${result.added} card${result.added === 1 ? "" : "s"}.`);
+            } else if (result.added) {
+                new Notice(`Added ${result.added} new card${result.added === 1 ? "" : "s"}. Existing cards preserved.`);
+            } else {
+                new Notice("Canvas already contains all current highlights. No cards added.");
+            }
 
             const file = this.app.vault.getAbstractFileByPath(exportPath);
             if (file instanceof TFile) {
@@ -873,6 +1113,8 @@ export class HighlightNavigatorView extends ItemView {
     }
 
     async onClose() {
-        // Cleanup if needed
+        this.activeMenu?.hide();
+        this.activeMenu = null;
+        this.activeMenuTrigger = null;
     }
 }

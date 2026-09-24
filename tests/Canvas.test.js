@@ -38,6 +38,13 @@ describe("Canvas snapshots", () => {
         expect(first.data.edges[0]).toEqual(original.edges[0]);
         expect(first.data.customTopLevel).toEqual({ keep: true });
         expect(first.data.edges).toHaveLength(1);
+        const sourceHeader = first.data.nodes.find((n) => n.id.startsWith("fps-"));
+        expect(sourceHeader).toMatchObject({
+            type: "text",
+            text: "[[Notes/Field note.md]]",
+            height: 60,
+        });
+        expect(sourceHeader.file).toBeUndefined();
         expect(first.data.nodes.filter((n) => n.type === "text").map((n) => n.text)).toContain(
             "Alpha\n\n[[Notes/Field note.md|↗]]"
         );

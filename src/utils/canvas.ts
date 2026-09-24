@@ -141,14 +141,22 @@ export function appendCanvasMarks(
     let y = nodes.length ? Math.max(...nodes.map((n) => n.y + n.height)) + 100 : 0;
     let added = 0;
     for (const source of sources) {
-        let anchor = nodes.find((n) => n.type === "file" && n.file === source && n.id.startsWith("fps-"));
+        const sourceLink = `[[${source}]]`;
+        let anchor = nodes.find(
+            (n) =>
+                n.id.startsWith("fps-") &&
+                ((n.type === "file" && n.file === source) || (n.type === "text" && n.text === sourceLink))
+        );
         const anchorId = anchor?.id ?? `fps-${crypto.randomUUID()}`;
         const pending = marks.filter((m) => m.source === source && !ids.has(`fpm-${anchorId}-${m.key}`));
         if (!pending.length) continue;
         if (!anchor) {
-            anchor = { id: anchorId, type: "file", file: source, x: 0, y, width: defaults.width, height: 100 };
+            // Compact provenance rather than embedding the entire source note.
+            // The ordinary unaliased wikilink remains clickable and lets
+            // Obsidian update its visible filename when the note is renamed.
+            anchor = { id: anchorId, type: "text", text: sourceLink, x: 0, y, width: defaults.width, height: 60 };
             nodes.push(anchor);
-            y += 160;
+            y += 120;
         }
         const columns = defaults.layout === "column" ? 1 : 3;
         pending.forEach((mark, index) => {

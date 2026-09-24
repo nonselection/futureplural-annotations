@@ -49,18 +49,42 @@ export class ItemView extends View {}
 export class MarkdownView extends View {}
 export class Modal extends Component {}
 export class Menu {
+    setUseNativeMenu() {
+        return this;
+    }
+    setParentElement(element) {
+        this.parentElement = element;
+        return this;
+    }
+    onHide(callback) {
+        this.onHideCallback = callback;
+        return this;
+    }
     addItem(callback) {
         const item = new MenuItem();
         callback(item);
         return this;
     }
+    addSeparator() {
+        return this;
+    }
     showAtMouseEvent() {}
+    hide() {
+        this.onHideCallback?.();
+        return this;
+    }
 }
 export class MenuItem {
     setTitle() {
         return this;
     }
     setIcon() {
+        return this;
+    }
+    setWarning() {
+        return this;
+    }
+    setIsLabel() {
         return this;
     }
     onClick(callback) {

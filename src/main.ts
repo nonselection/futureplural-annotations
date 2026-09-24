@@ -277,7 +277,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
             this.register(() => btn.remove());
         }
 
-        this.addRibbonIcon("lamp", "Highlight navigator", () => {
+        this.addRibbonIcon("notebook-pen", "Annotation navigator", () => {
             void this.activateNavigatorView();
         });
 
@@ -362,7 +362,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
         this.addCommand({
             id: "undo-last-highlight",
-            name: "Undo last highlight",
+            name: "Undo last annotation change",
             callback: () => {
                 void this.undoLastHighlight();
             },
@@ -710,14 +710,14 @@ export default class ReadingHighlighterPlugin extends Plugin {
         };
     }
 
-    async undoLastHighlight() {
+    async undoLastHighlight(successMessage = "Undone last annotation change.") {
         if (!this.lastModification) {
             new Notice("Nothing to undo.");
             return;
         }
         try {
             await this.app.vault.modify(this.lastModification.file, this.lastModification.original);
-            new Notice("Undone last highlight.");
+            new Notice(successMessage);
             this.lastModification = null;
         } catch (err) {
             new Notice("Failed to undo.");

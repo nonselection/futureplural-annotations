@@ -1074,14 +1074,17 @@ function appendCanvasMarks(data, marks, defaults) {
   let y = nodes.length ? Math.max(...nodes.map((n2) => n2.y + n2.height)) + 100 : 0;
   let added = 0;
   for (const source of sources) {
-    let anchor = nodes.find((n2) => n2.type === "file" && n2.file === source && n2.id.startsWith("fps-"));
+    const sourceLink = `[[${source}]]`;
+    let anchor = nodes.find(
+      (n2) => n2.id.startsWith("fps-") && (n2.type === "file" && n2.file === source || n2.type === "text" && n2.text === sourceLink)
+    );
     const anchorId = (_a = anchor == null ? void 0 : anchor.id) != null ? _a : `fps-${crypto.randomUUID()}`;
     const pending = marks.filter((m) => m.source === source && !ids.has(`fpm-${anchorId}-${m.key}`));
     if (!pending.length) continue;
     if (!anchor) {
-      anchor = { id: anchorId, type: "file", file: source, x: 0, y, width: defaults.width, height: 100 };
+      anchor = { id: anchorId, type: "text", text: sourceLink, x: 0, y, width: defaults.width, height: 60 };
       nodes.push(anchor);
-      y += 160;
+      y += 120;
     }
     const columns = defaults.layout === "column" ? 1 : 3;
     pending.forEach((mark, index) => {
@@ -3523,6 +3526,39 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
 
 // src/views/HighlightNavigator.ts
 var HIGHLIGHT_NAVIGATOR_VIEW = "highlight-navigator";
+var NavigatorConfirmationModal = class extends import_obsidian6.Modal {
+  constructor(app, title, message, confirmLabel, resolveChoice) {
+    super(app);
+    this.title = title;
+    this.message = message;
+    this.confirmLabel = confirmLabel;
+    this.resolveChoice = resolveChoice;
+    this.settled = false;
+  }
+  onOpen() {
+    this.setTitle(this.title);
+    this.contentEl.createEl("p", { text: this.message });
+    const actions = this.contentEl.createDiv({ cls: "fp-navigator-confirm-actions" });
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    const confirm = actions.createEl("button", { text: this.confirmLabel, cls: "mod-warning" });
+    cancel.onclick = () => this.finish(false);
+    confirm.onclick = () => this.finish(true);
+    cancel.focus();
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.settled) {
+      this.settled = true;
+      this.resolveChoice(false);
+    }
+  }
+  finish(confirmed) {
+    if (this.settled) return;
+    this.settled = true;
+    this.resolveChoice(confirmed);
+    this.close();
+  }
+};
 var HighlightNavigatorView = class extends import_obsidian6.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -3531,14 +3567,18 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     this.ungroupButton = null;
     this.selectionBarEl = null;
     this.canvasButton = null;
+    this.activeMenu = null;
+    this.activeMenuTrigger = null;
     this.plugin = plugin;
     this.highlights = [];
     this.footnotes = [];
     this.currentFile = null;
-    this.viewMode = "highlights";
+    this.sectionCollapsed = { highlights: false, footnotes: true };
+    this.preSearchCollapsed = null;
     this.searchQuery = "";
     this.selectionMode = false;
     this.selectedIds = /* @__PURE__ */ new Set();
+    this.expandedItemIds = /* @__PURE__ */ new Set();
   }
   getViewType() {
     return HIGHLIGHT_NAVIGATOR_VIEW;
@@ -3547,44 +3587,38 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     return "Annotation navigator";
   }
   getIcon() {
-    return "lamp";
+    return "notebook-pen";
   }
   async onOpen() {
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass("highlight-navigator-container");
     const header = container.createDiv({ cls: "highlight-navigator-header" });
-    const btnGroup = header.createDiv({ cls: "highlight-navigator-btn-group" });
-    const modes = [
-      { label: "Highlights", value: "highlights" },
-      { label: "Footnotes", value: "footnotes" },
-      { label: "Both", value: "split" }
-    ];
-    modes.forEach((m) => {
-      const btn = btnGroup.createEl("button", { text: m.label, cls: "nav-btn" });
-      if (this.viewMode === m.value) btn.addClass("is-active");
-      btn.onclick = () => {
-        btnGroup.querySelectorAll(".nav-btn").forEach((el) => el.removeClass("is-active"));
-        btn.addClass("is-active");
-        this.viewMode = m.value;
-        this.selectionMode = false;
-        this.selectedIds.clear();
-        this.renderContent();
-      };
-    });
-    const searchContainer = container.createDiv({ cls: "highlight-navigator-search" });
-    const searchInput = searchContainer.createEl("input", {
+    const searchContainer = header.createDiv({ cls: "highlight-navigator-search" });
+    const searchField = searchContainer.createDiv({ cls: "fp-navigator-search-field" });
+    const searchInput = searchField.createEl("input", {
       type: "text",
       placeholder: "Search...",
       cls: "nav-search-input"
     });
-    searchInput.oninput = (e2) => {
-      this.searchQuery = e2.target.value.toLowerCase();
-      this.selectedIds.clear();
-      this.renderContent();
+    const clearSearchBtn = searchField.createEl("button", {
+      cls: "fp-navigator-search-clear is-hidden"
+    });
+    (0, import_obsidian6.setIcon)(clearSearchBtn, "x");
+    clearSearchBtn.setAttribute("aria-label", "Clear search");
+    (0, import_obsidian6.setTooltip)(clearSearchBtn, "Clear search", { placement: "top" });
+    const applySearch = (value) => {
+      this.setSearchQuery(value);
+      clearSearchBtn.toggleClass("is-hidden", !this.searchQuery);
+    };
+    searchInput.oninput = (e2) => applySearch(e2.target.value);
+    clearSearchBtn.onclick = () => {
+      searchInput.value = "";
+      applySearch("");
+      searchInput.focus();
     };
     const overflowBtn = searchContainer.createEl("button", { cls: "fp-navigator-overflow" });
-    (0, import_obsidian6.setIcon)(overflowBtn, "more-vertical");
+    (0, import_obsidian6.setIcon)(overflowBtn, "ellipsis-vertical");
     overflowBtn.setAttribute("aria-label", "Navigator actions");
     (0, import_obsidian6.setTooltip)(overflowBtn, "Navigator actions", { placement: "top" });
     overflowBtn.onclick = (event) => this.openNavigatorMenu(event);
@@ -3610,7 +3644,28 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
         }
       })
     );
+    this.registerEvent(this.app.vault.on("create", () => this.updateCanvasButton()));
+    this.registerEvent(this.app.vault.on("delete", () => this.updateCanvasButton()));
+    this.registerEvent(this.app.vault.on("rename", () => window.setTimeout(() => this.updateCanvasButton(), 0)));
     void this.refresh();
+  }
+  setSearchQuery(value) {
+    const nextQuery = value.toLowerCase();
+    const wasSearching = Boolean(this.searchQuery);
+    const isSearching = Boolean(nextQuery);
+    if (!wasSearching && isSearching) {
+      this.preSearchCollapsed = { ...this.sectionCollapsed };
+    }
+    this.searchQuery = nextQuery;
+    this.selectedIds.clear();
+    if (isSearching) {
+      this.sectionCollapsed.highlights = false;
+      this.sectionCollapsed.footnotes = false;
+    } else if (wasSearching && this.preSearchCollapsed) {
+      this.sectionCollapsed = { ...this.preSearchCollapsed };
+      this.preSearchCollapsed = null;
+    }
+    this.renderContent();
   }
   async refresh(force = false) {
     var _a, _b;
@@ -3630,13 +3685,22 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       }
       targetFile = view.file;
     }
-    if (((_b = this.currentFile) == null ? void 0 : _b.path) !== targetFile.path || force) this.selectedIds.clear();
+    const fileChanged = ((_b = this.currentFile) == null ? void 0 : _b.path) !== targetFile.path;
+    if (fileChanged || force) this.selectedIds.clear();
+    if (fileChanged) this.expandedItemIds.clear();
     this.currentFile = targetFile;
     this.updateCanvasButton();
     try {
       const raw = await this.app.vault.read(targetFile);
       this.highlights = getHighlightsFromContent(raw);
       this.footnotes = this.getFootnotesFromContent(raw);
+      const validExpandedIds = /* @__PURE__ */ new Set([
+        ...this.highlights.map((highlight) => `highlight:${highlight.id}`),
+        ...this.footnotes.map((footnote) => `footnote:${footnote.id}`)
+      ]);
+      for (const id of this.expandedItemIds) {
+        if (!validExpandedIds.has(id)) this.expandedItemIds.delete(id);
+      }
       this.renderContent();
     } catch (err) {
       this.showEmpty("Error loading content.");
@@ -3694,19 +3758,9 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
   }
   renderContent() {
     this.contentEl.empty();
-    this.contentEl.removeClass("split-view");
     this.renderSelectionControls();
-    if (this.viewMode === "highlights") {
-      this.renderList(this.contentEl, this.highlights, "highlights");
-    } else if (this.viewMode === "footnotes") {
-      this.renderList(this.contentEl, this.footnotes, "footnotes");
-    } else if (this.viewMode === "split") {
-      this.contentEl.addClass("split-view");
-      const topHalf = this.contentEl.createDiv({ cls: "split-half split-top" });
-      const bottomHalf = this.contentEl.createDiv({ cls: "split-half split-bottom" });
-      this.renderList(topHalf, this.highlights, "highlights");
-      this.renderList(bottomHalf, this.footnotes, "footnotes");
-    }
+    this.renderSection(this.highlights, "highlights");
+    this.renderSection(this.footnotes, "footnotes");
   }
   renderSelectionControls() {
     const controls = this.selectionBarEl;
@@ -3715,8 +3769,8 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     this.selectionCountEl = null;
     this.groupButton = null;
     this.ungroupButton = null;
-    controls.toggleClass("is-hidden", this.viewMode === "footnotes" || !this.selectionMode);
-    if (this.viewMode === "footnotes" || !this.selectionMode) return;
+    controls.toggleClass("is-hidden", !this.selectionMode);
+    if (!this.selectionMode) return;
     const toggle = controls.createEl("button", { text: "Done" });
     toggle.setAttribute("aria-pressed", String(this.selectionMode));
     toggle.onclick = () => this.setSelectionMode(false);
@@ -3731,6 +3785,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
   }
   setSelectionMode(active) {
     this.selectionMode = active;
+    if (active) this.sectionCollapsed.highlights = false;
     this.selectedIds.clear();
     this.renderContent();
   }
@@ -3763,29 +3818,44 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       new import_obsidian6.Notice(err instanceof Error ? err.message : "Could not change groups.");
     }
   }
-  renderList(container, items, type) {
+  renderSection(items, type) {
     const filteredItems = items.filter((item) => {
       if (!this.searchQuery) return true;
       return item.text.toLowerCase().includes(this.searchQuery);
     });
+    const collapsed = this.sectionCollapsed[type];
+    const title = type === "highlights" ? "Highlights" : "Footnotes";
+    const section = this.contentEl.createDiv({
+      cls: `fp-navigator-section${collapsed ? " is-collapsed" : ""}`
+    });
+    const heading = section.createEl("button", {
+      cls: "fp-navigator-section-heading",
+      attr: { "aria-expanded": String(!collapsed), "aria-label": `${collapsed ? "Show" : "Hide"} ${title}` }
+    });
+    const disclosure = heading.createSpan({ cls: "fp-navigator-section-disclosure" });
+    (0, import_obsidian6.setIcon)(disclosure, collapsed ? "chevron-right" : "chevron-down");
+    heading.createSpan({ cls: "fp-navigator-section-title", text: title });
+    heading.createSpan({
+      cls: "fp-navigator-section-count",
+      text: this.searchQuery && filteredItems.length !== items.length ? `${filteredItems.length}/${items.length}` : String(items.length)
+    });
+    heading.onclick = () => {
+      this.sectionCollapsed[type] = !this.sectionCollapsed[type];
+      this.renderContent();
+    };
+    if (collapsed) return;
+    const body = section.createDiv({ cls: "fp-navigator-section-body" });
     if (filteredItems.length === 0) {
       if (this.searchQuery) {
-        this.showEmpty(`No matches for "${this.searchQuery}".`, container);
+        this.showEmpty(`No matches for "${this.searchQuery}".`, body);
       } else {
-        this.showEmpty(`No ${type} found.`, container);
+        this.showEmpty(`No ${type} found.`, body);
       }
       return;
     }
-    const title = type === "highlights" ? "Highlights" : "Footnotes";
-    const stats = container.createDiv({ cls: "highlight-navigator-stats" });
-    let statsText = `${filteredItems.length} ${title.toLowerCase()}`;
-    if (this.searchQuery && filteredItems.length !== items.length) {
-      statsText += ` (filtered from ${items.length})`;
-    }
-    stats.createSpan({ text: statsText });
-    const list = container.createDiv({ cls: "highlight-navigator-list" });
+    const list = body.createDiv({ cls: "highlight-navigator-list" });
     const fragment = createFragment();
-    filteredItems.forEach((item, index) => {
+    filteredItems.forEach((item) => {
       var _a, _b;
       const el = fragment.createDiv({ cls: "highlight-navigator-item" });
       if (type === "highlights" && this.selectionMode) {
@@ -3803,33 +3873,28 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
         checkbox.onclick = (e2) => e2.stopPropagation();
         el.toggleClass("is-selected", checkbox.checked);
       }
+      const leading = el.createSpan({ cls: "fp-navigator-leading" });
+      const leadingMeta = leading.createSpan({ cls: "fp-navigator-leading-meta" });
+      const number = type === "highlights" ? items.indexOf(item) + 1 : item.displayNumber;
+      const numberEl = leadingMeta.createSpan({ cls: "fp-navigator-number" });
+      numberEl.textContent = number != null ? String(number) : `[^${item.id}]`;
       if (type === "highlights") {
         const highlight = item;
         if (highlight.color) {
-          const colorDot = el.createSpan({ cls: "highlight-color-dot" });
+          const colorDot = leadingMeta.createSpan({ cls: "highlight-color-dot" });
           colorDot.setCssStyles({ backgroundColor: highlight.color });
         } else {
-          el.createSpan({ cls: "highlight-color-dot highlight-default" });
+          leadingMeta.createSpan({ cls: "highlight-color-dot highlight-default" });
         }
         if (highlight.members && new Set(highlight.members.map((part) => part.color)).size > 1) {
           el.addClass("fp-navigator-mixed-group");
         }
       } else {
         const footnote = item;
-        const idSpan = el.createSpan({ cls: "footnote-id" });
-        idSpan.textContent = footnote.displayNumber != null ? `${footnote.displayNumber} ` : `[^${footnote.id}] `;
-        idSpan.setAttribute("title", `[^${footnote.id}]`);
-        idSpan.setCssStyles({ marginRight: "5px", color: "var(--text-muted)" });
+        numberEl.setAttribute("title", `[^${footnote.id}]`);
       }
-      const textSpan = el.createSpan({ cls: "highlight-text" });
-      textSpan.textContent = this.stripMarkdown(item.text);
-      if (type === "highlights" && ((_a = item.members) == null ? void 0 : _a.length)) {
-        el.createSpan({
-          cls: "fp-navigator-group-count",
-          text: `${(_b = item.members) == null ? void 0 : _b.length} highlights`
-        });
-      }
-      const sourceBtn = el.createEl("button", { cls: "fp-navigator-source-link" });
+      const rowActions = el.createSpan({ cls: "fp-navigator-row-actions" });
+      const sourceBtn = rowActions.createEl("button", { cls: "fp-navigator-source-link" });
       (0, import_obsidian6.setIcon)(sourceBtn, "arrow-up-right");
       sourceBtn.setAttribute(
         "aria-label",
@@ -3851,23 +3916,68 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
           this.openFootnoteActionsMenu(item, e2);
         }
       };
-      const menuBtn = el.createEl("button", { cls: "highlight-item-menu" });
-      menuBtn.setAttribute("aria-label", type === "highlights" ? "Highlight actions" : "Footnote actions");
-      menuBtn.textContent = "\u22EF";
+      const menuBtn = leading.createEl("button", { cls: "highlight-item-menu" });
+      menuBtn.setAttribute(
+        "aria-label",
+        `Actions for ${type === "highlights" ? "highlight" : "footnote"}: ${item.text.slice(0, 80)}`
+      );
+      (0, import_obsidian6.setTooltip)(menuBtn, "Actions", { placement: "top" });
+      (0, import_obsidian6.setIcon)(menuBtn, "ellipsis-vertical");
       menuBtn.onclick = (e2) => {
         e2.preventDefault();
         e2.stopPropagation();
         openMenu(e2);
       };
-      if (type === "highlights") {
-        const numberBadge = el.createSpan({ cls: "highlight-number" });
-        numberBadge.textContent = `${index + 1}`;
-      }
       el.oncontextmenu = (e2) => {
         e2.preventDefault();
         e2.stopPropagation();
         openMenu(e2);
       };
+      const itemBody = el.createSpan({ cls: "fp-navigator-item-body" });
+      const textSpan = itemBody.createSpan({ cls: "highlight-text" });
+      textSpan.textContent = this.stripMarkdown(item.text);
+      const itemKey = type === "highlights" ? `highlight:${item.id}` : `footnote:${item.id}`;
+      let expanded = this.expandedItemIds.has(itemKey);
+      let expandable = expanded;
+      const expandButton = itemBody.createEl("button", {
+        cls: "fp-navigator-expand is-hidden",
+        text: expanded ? "Show less" : "Show more"
+      });
+      const updateExpansion = () => {
+        textSpan.toggleClass("is-expanded", expanded);
+        expandButton.setText(expanded ? "Show less" : "Show more");
+        expandButton.setAttribute("aria-expanded", String(expanded));
+        expandButton.setAttribute(
+          "aria-label",
+          `${expanded ? "Show less of" : "Show more of"} this ${type === "highlights" ? "highlight" : "footnote"}`
+        );
+      };
+      updateExpansion();
+      expandButton.onclick = (e2) => {
+        e2.preventDefault();
+        e2.stopPropagation();
+        if (!expandable) return;
+        expanded = !expanded;
+        if (expanded) this.expandedItemIds.add(itemKey);
+        else this.expandedItemIds.delete(itemKey);
+        updateExpansion();
+      };
+      const checkOverflow = () => {
+        if (!textSpan.isConnected) return;
+        expandable = expanded || textSpan.scrollHeight > textSpan.clientHeight + 1;
+        expandButton.toggleClass("is-hidden", !expandable);
+      };
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(checkOverflow);
+      } else {
+        window.setTimeout(checkOverflow, 0);
+      }
+      if (type === "highlights" && ((_a = item.members) == null ? void 0 : _a.length)) {
+        itemBody.createSpan({
+          cls: "fp-navigator-group-count",
+          text: `${(_b = item.members) == null ? void 0 : _b.length} highlights`
+        });
+      }
       el.onclick = (e2) => {
         e2.preventDefault();
         e2.stopPropagation();
@@ -3892,7 +4002,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
   openHighlightActionsMenu(item, event) {
     const currentFile = this.currentFile;
     if (!currentFile) return;
-    const menu = new import_obsidian6.Menu();
+    const menu = new import_obsidian6.Menu().setUseNativeMenu(false);
     menu.addItem((mi) => {
       mi.setTitle("Copy").setIcon("copy").onClick(() => void this.copyItemText(item));
     });
@@ -3916,23 +4026,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     menu.addItem((mi) => {
       mi.setTitle("Remove highlight").setIcon("trash-2").onClick(() => void this.removeSingleHighlight(item));
     });
-    menu.addItem((mi) => {
-      mi.setTitle("Remove all highlights (note)").setIcon("eraser").setWarning(true).onClick(async () => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
-        if (!view || !view.file || view.file.path !== currentFile.path) {
-          await this.plugin.saveUndoState(currentFile);
-          let raw = await this.app.vault.read(currentFile);
-          raw = raw.replace(/==(.*?)==/gs, "$1");
-          raw = raw.replace(/<mark[^>]*>(.*?)<\/mark>/gs, "$1");
-          await this.app.vault.modify(currentFile, raw);
-          await this.refresh(true);
-          return;
-        }
-        await this.plugin.removeAllHighlights(view);
-        await this.refresh(true);
-      });
-    });
-    menu.showAtMouseEvent(event);
+    this.showNavigatorMenu(menu, event);
   }
   /**
    * Delete one highlight, leaving its text in place. Removing a single
@@ -3953,6 +4047,8 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       });
       if (!found) {
         new import_obsidian6.Notice("Highlight not found (it may have moved).");
+      } else {
+        this.showUndoNotice("Highlight removed.", "Highlight restored.");
       }
       await this.refresh(true);
     } catch (err) {
@@ -3960,28 +4056,129 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       new import_obsidian6.Notice("Failed to remove highlight.");
     }
   }
+  async confirmDestructive(title, message, confirmLabel) {
+    return new Promise((resolve) => {
+      new NavigatorConfirmationModal(this.app, title, message, confirmLabel, resolve).open();
+    });
+  }
+  showUndoNotice(message, undoMessage) {
+    const fragment = createFragment();
+    fragment.createSpan({ text: `${message} ` });
+    const undo = fragment.createEl("button", { text: "Undo", cls: "mod-cta fp-navigator-undo" });
+    const progress = fragment.createDiv({ cls: "fp-navigator-undo-progress" });
+    progress.setAttribute("aria-hidden", "true");
+    progress.createSpan({ cls: "fp-navigator-undo-progress-bar" });
+    const notice = new import_obsidian6.Notice(fragment, 1e4);
+    undo.onclick = () => {
+      void (async () => {
+        await this.plugin.undoLastHighlight(undoMessage);
+        notice.hide();
+        await this.refresh(true);
+      })();
+    };
+  }
+  async removeAllHighlightsInNote() {
+    const currentFile = this.currentFile;
+    if (!currentFile) return;
+    const raw = await this.app.vault.read(currentFile);
+    const highlights = parseHighlights(raw).highlights;
+    if (!highlights.length) {
+      new import_obsidian6.Notice("No highlights to remove.");
+      return;
+    }
+    const confirmed = await this.confirmDestructive(
+      "Remove all highlights?",
+      `Remove ${highlights.length} highlight${highlights.length === 1 ? "" : "s"} from \u201C${currentFile.basename}\u201D? The text will remain in place.`,
+      "Remove all"
+    );
+    if (!confirmed) return;
+    const updated = [...highlights].sort((a2, b) => b.openTagStart - a2.openTagStart).reduce((content, highlight) => removeHighlightFromRaw(content, highlight), raw);
+    await this.plugin.saveUndoState(currentFile, raw);
+    await this.app.vault.modify(currentFile, updated);
+    await this.refresh(true);
+    this.showUndoNotice(
+      `Removed ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`,
+      `Restored ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`
+    );
+  }
   openFootnoteActionsMenu(item, event) {
     const currentFile = this.currentFile;
     if (!currentFile) return;
-    const menu = new import_obsidian6.Menu();
+    const menu = new import_obsidian6.Menu().setUseNativeMenu(false);
     menu.addItem((mi) => {
       mi.setTitle("Copy").setIcon("copy").onClick(() => void this.copyItemText(item));
     });
     menu.addSeparator();
     menu.addItem((mi) => {
-      mi.setTitle("Remove footnote").setIcon("trash-2").setWarning(true).onClick(async () => {
-        await this.plugin.removeAnnotationById(currentFile, item.id);
-        await this.refresh(true);
-      });
+      mi.setTitle("Remove footnote").setIcon("trash-2").setWarning(true).onClick(() => void this.removeFootnoteInNote(item));
     });
-    menu.addSeparator();
-    menu.addItem((mi) => {
-      mi.setTitle("Remove all footnotes (note)").setIcon("eraser").setWarning(true).onClick(async () => {
-        await this.plugin.removeAllAnnotations(currentFile);
-        await this.refresh(true);
-      });
+    this.showNavigatorMenu(menu, event);
+  }
+  showNavigatorMenu(menu, event) {
+    var _a, _b;
+    const body = this.containerEl.ownerDocument.body;
+    const HTMLElementConstructor = (_a = this.containerEl.ownerDocument.defaultView) == null ? void 0 : _a.HTMLElement;
+    const trigger = HTMLElementConstructor && event.currentTarget instanceof HTMLElementConstructor ? event.currentTarget : null;
+    if (this.activeMenu && trigger && this.activeMenuTrigger === trigger) {
+      this.activeMenu.hide();
+      return;
+    }
+    (_b = this.activeMenu) == null ? void 0 : _b.hide();
+    this.activeMenu = menu;
+    this.activeMenuTrigger = trigger;
+    if (trigger) menu.setParentElement(trigger);
+    body.addClass("fp-navigator-menu-open");
+    menu.onHide(() => {
+      if (this.activeMenu !== menu) return;
+      this.activeMenu = null;
+      this.activeMenuTrigger = null;
+      body.removeClass("fp-navigator-menu-open");
     });
     menu.showAtMouseEvent(event);
+  }
+  async removeFootnoteInNote(item) {
+    var _a;
+    const currentFile = this.currentFile;
+    if (!currentFile) return;
+    const raw = await this.app.vault.read(currentFile);
+    const result = removeFootnoteFromRaw(raw, item.id);
+    if (!result.changed) {
+      new import_obsidian6.Notice("Footnote not found.");
+      return;
+    }
+    const confirmed = await this.confirmDestructive(
+      "Remove footnote?",
+      `Remove footnote ${(_a = item.displayNumber) != null ? _a : `[^${item.id}]`} from \u201C${currentFile.basename}\u201D? Its reference and authored text will be deleted.`,
+      "Remove footnote"
+    );
+    if (!confirmed) return;
+    await this.plugin.saveUndoState(currentFile, raw);
+    await this.app.vault.modify(currentFile, result.raw);
+    await this.refresh(true);
+    this.showUndoNotice("Footnote removed.", "Footnote restored.");
+  }
+  async removeAllFootnotesInNote() {
+    const currentFile = this.currentFile;
+    if (!currentFile) return;
+    const raw = await this.app.vault.read(currentFile);
+    const result = removeAllFootnotesFromRaw(raw);
+    if (!result.removedCount) {
+      new import_obsidian6.Notice("No footnotes to remove.");
+      return;
+    }
+    const confirmed = await this.confirmDestructive(
+      "Remove all footnotes?",
+      `Remove ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"} from \u201C${currentFile.basename}\u201D? References and definitions will be removed.`,
+      "Remove all"
+    );
+    if (!confirmed) return;
+    await this.plugin.saveUndoState(currentFile, raw);
+    await this.app.vault.modify(currentFile, result.raw);
+    await this.refresh(true);
+    this.showUndoNotice(
+      `Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`,
+      `Restored ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`
+    );
   }
   async jumpToLine(line) {
     const leaf = this.app.workspace.getMostRecentLeaf();
@@ -4064,13 +4261,11 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     }
   }
   openNavigatorMenu(event) {
-    const menu = new import_obsidian6.Menu();
-    if (this.viewMode !== "footnotes") {
-      menu.addItem((mi) => {
-        mi.setTitle("Select highlights").setIcon("list-checks").onClick(() => this.setSelectionMode(true));
-      });
-      menu.addSeparator();
-    }
+    const menu = new import_obsidian6.Menu().setUseNativeMenu(false);
+    menu.addItem((mi) => {
+      mi.setTitle("Select highlights").setIcon("list-checks").onClick(() => this.setSelectionMode(true));
+    });
+    menu.addSeparator();
     menu.addItem((mi) => {
       mi.setTitle("Export Markdown").setIcon("file-text").onClick(() => void this.exportHighlights());
     });
@@ -4080,7 +4275,14 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     menu.addItem((mi) => {
       mi.setTitle("Export CSV").setIcon("table").onClick(() => void this.exportHighlightsCSV());
     });
-    menu.showAtMouseEvent(event);
+    menu.addSeparator();
+    menu.addItem((mi) => {
+      mi.setTitle("Remove note highlights").setIcon("eraser").setWarning(true).onClick(() => void this.removeAllHighlightsInNote());
+    });
+    menu.addItem((mi) => {
+      mi.setTitle("Remove note footnotes").setIcon("eraser").setWarning(true).onClick(() => void this.removeAllFootnotesInNote());
+    });
+    this.showNavigatorMenu(menu, event);
   }
   async exportHighlightsJSON() {
     const currentFile = this.currentFile;
@@ -4111,7 +4313,6 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     }
   }
   async exportCurrentFileToCanvas() {
-    var _a;
     const currentFile = this.currentFile;
     if (!currentFile) return;
     try {
@@ -4125,23 +4326,36 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
         return;
       }
       const associations = this.plugin.settings.canvasAssociations;
-      const association = associations.find((item) => item.source === currentFile.path);
+      const associationIndex = associations.findIndex((item) => item.source === currentFile.path);
+      const association = associationIndex >= 0 ? associations[associationIndex] : null;
+      const associatedFile = association ? this.app.vault.getAbstractFileByPath(association.canvas) : null;
+      const hasExistingCanvas = associatedFile instanceof import_obsidian6.TFile;
       if (!association && associations.length >= MAX_CANVAS_ASSOCIATIONS)
         throw new Error(
           "Canvas association limit reached. Use Annotations manager \u2192 Canvas\u2026 for an explicit export."
         );
-      const exportPath = (_a = association == null ? void 0 : association.canvas) != null ? _a : defaultCanvasPath(currentFile, this.plugin.settings.canvasDefaults);
+      const exportPath = hasExistingCanvas ? association.canvas : defaultCanvasPath(currentFile, this.plugin.settings.canvasDefaults);
       const result = await exportHighlightsToCanvas2(this.app, fresh, {
         path: exportPath,
         defaults: this.plugin.settings.canvasDefaults,
-        allowExisting: !!association
+        allowExisting: hasExistingCanvas
       });
-      if (!association) {
-        associations.push({ source: currentFile.path, canvas: exportPath });
+      if (!hasExistingCanvas) {
+        if (associationIndex >= 0)
+          associations[associationIndex] = { source: currentFile.path, canvas: exportPath };
+        else {
+          associations.push({ source: currentFile.path, canvas: exportPath });
+        }
         await this.plugin.saveData(this.plugin.settings);
       }
       this.updateCanvasButton();
-      new import_obsidian6.Notice(`${result.added} new cards added. Existing cards preserved.`);
+      if (!hasExistingCanvas) {
+        new import_obsidian6.Notice(`Created canvas with ${result.added} card${result.added === 1 ? "" : "s"}.`);
+      } else if (result.added) {
+        new import_obsidian6.Notice(`Added ${result.added} new card${result.added === 1 ? "" : "s"}. Existing cards preserved.`);
+      } else {
+        new import_obsidian6.Notice("Canvas already contains all current highlights. No cards added.");
+      }
       const file = this.app.vault.getAbstractFileByPath(exportPath);
       if (file instanceof import_obsidian6.TFile) {
         await this.app.workspace.getLeaf("tab").openFile(file);
@@ -4167,6 +4381,10 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     );
   }
   async onClose() {
+    var _a;
+    (_a = this.activeMenu) == null ? void 0 : _a.hide();
+    this.activeMenu = null;
+    this.activeMenuTrigger = null;
   }
 };
 
@@ -6092,7 +6310,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       });
       this.register(() => btn.remove());
     }
-    this.addRibbonIcon("lamp", "Highlight navigator", () => {
+    this.addRibbonIcon("notebook-pen", "Annotation navigator", () => {
       void this.activateNavigatorView();
     });
     this.floatingManager.load();
@@ -6169,7 +6387,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     });
     this.addCommand({
       id: "undo-last-highlight",
-      name: "Undo last highlight",
+      name: "Undo last annotation change",
       callback: () => {
         void this.undoLastHighlight();
       }
@@ -6473,14 +6691,14 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       original: original != null ? original : await this.app.vault.read(file)
     };
   }
-  async undoLastHighlight() {
+  async undoLastHighlight(successMessage = "Undone last annotation change.") {
     if (!this.lastModification) {
       new import_obsidian14.Notice("Nothing to undo.");
       return;
     }
     try {
       await this.app.vault.modify(this.lastModification.file, this.lastModification.original);
-      new import_obsidian14.Notice("Undone last highlight.");
+      new import_obsidian14.Notice(successMessage);
       this.lastModification = null;
     } catch (err) {
       new import_obsidian14.Notice("Failed to undo.");

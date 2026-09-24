@@ -51,6 +51,27 @@ The large view is the operational surface for annotations across the vault.
 - Make Manager rows open the highlight editor and provide a separate source arrow.
 - Put **Select highlights** and export formats in a Navigator kebab menu; show the selection bar only during selection.
 - Make the Navigator Canvas action say **Create Canvas** or **Add to Canvas** according to current state.
+- Replace the Highlights / Footnotes / Both mode switch with two consistent collapsible sections. Highlights open by default; Footnotes are collapsed by default; search opens both so matches cannot be hidden.
+- Use one compact row grammar for highlights and footnotes: a left ordinal, a tiny highlight swatch where applicable, the annotation text, an explicit source arrow, and a vertical item-actions kebab.
+- Confirm note-wide highlight removal and both single and note-wide footnote removal, mark those menu items as destructive, and provide a ten-second in-plugin Undo action after the write. Single visual-highlight removal remains immediate but receives the same Undo action.
+- Refresh the Navigator's Canvas action when Canvas files are created, deleted, or renamed.
+- Treat a missing associated Canvas as a stale association: create a new Canvas from the note's current name and replace the stale record. Existing Canvas files are never silently renamed.
+- Distinguish Canvas creation, appended cards, and no-op exports in completion notices.
+- Use the **notebook-pen** icon for the Annotation Navigator view and ribbon action.
+- Add an explicit trailing clear control to Navigator search; clearing restores the unfiltered sections and returns focus to the field.
+- Use vertical kebab icons and the concise visible tooltip **Actions** for per-row menus.
+- Let row metadata occupy only the opening line: the ordinal and swatch float left, the source/action controls float right, and subsequent lines reclaim the complete row width.
+- Make destructive Navigator menu items reliably use the error color even when the active theme does not visibly style Obsidian's warning state.
+- Use action-specific Undo confirmation such as **Restored 12 highlights** rather than the inherited **Undone last highlight** message.
+- Use a compact clickable source-link header on newly created canvases instead of embedding the full source note. Existing Canvas nodes remain untouched, and per-card arrow backlinks remain the default.
+- Force Navigator menus to use Obsidian's DOM menu so warning states are inspectable and theme-independent styling can reach them.
+- Keep note-wide highlight and footnote removal only in the Navigator-level menu, using the self-contained labels **Remove note highlights** and **Remove note footnotes** rather than a separate menu heading.
+- Preserve the exact pre-search section-collapse state and restore it whenever search is cleared, including by deleting the query manually.
+- Place the search-clear control inside the field and show a visible ten-second lifetime bar on reversible removal notices.
+- Put a subdued but permanently visible annotation-actions kebab beneath the ordinal/swatch in the left metadata rail, avoiding both a permanent text column and an undiscoverable hover-only action.
+- Clamp long Navigator excerpts to five lines and expose an explicit keyboard- and touch-operable **Show more / Show less** control only when overflow is detected.
+- Treat Navigator kebabs as toggles: a second activation of the same trigger closes its open menu. Keep menu icons but scale them to the surrounding text rather than exceeding its visual height.
+- Add a separately named `npm run deploy:actual` command backed by `FUTUREPLURAL_ACTUAL_VAULT`; ordinary `npm run deploy` remains isolated to the development vault.
 - Stop exposing native `==` syntax as a creation mode. Existing native highlights remain discoverable and migratable; new standard highlights use FuturePlural `<mark>` output.
 - Keep Manager results grouped by note before, during, and after search.
 - Make note and highlight disclosure controls functional.
@@ -76,9 +97,9 @@ The large view is the operational surface for annotations across the vault.
 - Replace filename prefix with a template; recommended default: `{note} — annotations`.
 - Add repeated-export behavior: update associated Canvas, create a new Canvas, or ask each time.
 - Keep exported cards as snapshots. Do not add hidden synchronization.
-- Replace the full embedded source note with compact provenance.
 - Add card source-label choices: filename, arrow only, or group header only.
 - Normalize alpha-bearing colors for new Canvas nodes without recoloring existing cards.
+- Consider whether a renamed source note should produce a non-blocking notice that its existing associated Canvas keeps its current filename. Never rename that Canvas silently.
 
 ### Settings and appearance
 
@@ -88,6 +109,12 @@ The large view is the operational surface for annotations across the vault.
 - Implement the light/dark rendered highlight preview.
 - Resolve filled-highlight text contrast in dark themes.
 - Keep Rough Notation’s two-pass behavior unless visual testing gives a concrete reason to change it.
+
+### Navigator interaction and accessibility
+
+- Evaluate `hyphens: auto` as a low-cost enhancement. Browser hyphenation depends on correct inherited language metadata and must not assume that every note uses the interface language.
+- Run a deliberate accessibility pass: semantic native controls first, useful accessible names, logical focus order, visible focus, dialog focus containment/return, accurate `aria-expanded` state, sufficient touch targets, and no essential hover-only actions.
+- Do not add ARIA roles to inert layout containers merely to silence an audit. A generic non-focusable row is correct when all actual actions are explicit named buttons inside it.
 
 ### Manager scaling
 
