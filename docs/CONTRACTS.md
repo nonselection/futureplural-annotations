@@ -34,10 +34,27 @@ These contracts are the approved v0.2 + v0.2.1 baseline and final handoff clarif
 - Scope controls eligible material; temporary View only filters the table. Out-of-scope relations are retained. Selecting a Code/Set/Memo detail does not itself filter the stream.
 - Source loss does not delete edges. Preserve bounded recovery context and provide explicit relink/cleanup. Invalid schemas and conflicts stay visible and recoverable. Canonical user data is never an evictable cache.
 
+## Undo, source-operation recovery, and divergence
+
+FuturePlural presents one coherent user-facing Undo history. Users must not be asked to choose between separate “Workspace Undo” and “source Undo” systems because their implementations differ. Workspace-domain mutations may use inverse deltas or other reversible application-state operations. Source mutations require durable operation/recovery records because they change user-owned notes and may be interrupted, externally edited, or synchronized while recovery is pending.
+
+Before a source-mutating operation begins, FuturePlural must persist enough durable information to recover safely after interruption or restart. At minimum, the record must identify the intended logical operation and affected logical annotations/source targets; capture relevant before-state and expected after-state for each target; record which targets succeeded, remain pending, or failed; and retain guards/fingerprints sufficient to decide whether a target still matches the operation's expected post-state. This is a semantic requirement, not a prescribed schema or storage API. It must not default to restoring whole old files when the logical annotation/source transformation can be reversed while preserving unrelated edits in the same note.
+
+On ordinary Undo, if all affected targets still match their expected post-state, FuturePlural must reverse the operation without unnecessary confirmation. Undo is guarded best-effort reversal, not unconditional byte restoration. If any target has diverged, FuturePlural must make no changes before asking the user. The choice must include a primary safe action to undo unchanged targets only, review of divergent targets, an explicit secondary/destructive choice equivalent to replacing later changes and undoing all anyway, and cancel. FuturePlural must not automatically undo the safe subset before asking, because divergence may affect the user's intent for the operation as a whole. Exact wording may evolve; the divergence warning must not be permanently suppressible by default.
+
+Review may initially show a comprehensible per-target comparison of before-operation state, operation-produced state, and current state. Sophisticated merge tooling is not required. Recovery records must also make interrupted partial operations inspectable after restart and support actions equivalent to resume remaining work, revert applied work, and review partial state. A partially applied batch must not be treated as unknowable or silently restarted from the beginning.
+
+Timestamps explain chronology; they are never authority for choosing a winner. FuturePlural must compare explicit source/operation state and guards. It must not infer that the newest timestamp is intended, overwrite later edits because a record is older, or resolve conflicts by last-write-wins ordering. This is provider-agnostic guarded recovery, not distributed Undo or a globally ordered cross-device transaction history.
+
+The first ordinary source-mutating bulk operation may show a dismissible introductory explanation that FuturePlural stores recovery information and can normally undo the operation unless affected annotations change elsewhere afterward. This explanation is distinct from a warning for an actual detected divergence.
+
+Bulk source maintenance follows the established safety sequence: read-only discovery, exact preview, explicit selection/confirmation, guarded per-file apply, manifest/partial-success record, resume/recovery, and verification. Source-operation recovery must fit that sequence.
+
 ## Persistence and sync
 
 - Shared canonical source registry/catalogue, palette/semantic catalogue, and Workspace domain require durable cross-device storage validated on desktop and actual iPad/mobile, including restart and conflict behavior under the actual selected transport. Storage representation and transport are separate decisions; Obsidian Sync-specific settings are not universal requirements for vault JSON.
 - Active pointer, temporary View, and history require a truly device-local vault-namespaced store validated across restart, two synced devices, retention, and isolation. Plugin config cannot be presumed local. Browser stores cannot be presumed durable.
+- Source-operation recovery records are durable enough to survive restart/interruption where needed for guarded reversal; their storage location/provider behavior is not yet selected. Remote or external durable changes may invalidate or quarantine stale local Workspace history. For source Undo they are evaluated against target guards and the expected post-state, never against timestamps alone.
 - Vault/API write preconditions protect a single observed file operation, not a vault-wide or cross-device transaction. Sync conflict behavior and backup/export implications must be explicit before backend selection.
 - Keep Node/Electron runtime dependencies out of mobile code paths. SQLite and speculative database/event-sourcing infrastructure are not approved.
 
@@ -54,6 +71,6 @@ B0 is one explicit acceptance gate after Slice 0, Slice 1, and required foundati
 
 At acceptance record actual build ID, schema versions, date, platforms, storage decisions, and proof in repository docs. Do not claim B0 by implication. Actual-vault creation/deployment still requires explicit human authorization.
 
-## Explicitly deferred
+## Implementation deferral
 
-Before ordinary bulk source-annotation edits ship, define a user-visible recovery/Undo contract for partial failure, restart, checked source versions, and restorable scope. Workspace inverse-delta history is not source-edit Undo. Multi-file Maintenance stays outside Workspace Undo. This decision is deferred and does not block B0 or initial Workspace slices.
+The product/architecture decision above is settled. Its implementation is deferred until before ordinary bulk source-mutating operations ship; it does not block Slice 2A. Storage location, record schema, guard representation, retention/compaction strategy, and detailed review UI remain implementation choices, provided they satisfy the normative contract and existing persistence/platform boundaries. Source-operation records must survive restart/interruption as required for recovery, but do not establish distributed transaction ordering or sync arbitration. Workspace inverse-delta history alone is insufficient.
