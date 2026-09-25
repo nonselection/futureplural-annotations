@@ -9,6 +9,7 @@ import {
 import { logicalHighlights, parseHighlights, visibleSource, type Highlight } from "../utils/highlights";
 import { createNotationOpenTag, type NotationSpec, type NotationType } from "../models/notations";
 import { RoughNotationRenderer } from "../core/RoughNotationRenderer";
+import type { AnnotationEvidence, AnnotationObservation } from "../models/canonical";
 
 export interface MarkdownRewriteSettings {
     defaultTagPrefix: string;
@@ -421,6 +422,56 @@ export class MarkdownSourceAdapter implements SourceAdapter<MarkdownAnchor, Mark
             },
             highlight,
         }));
+    }
+
+    /** Normalized evidence for pure reconciliation; no registry identity is assigned here. */
+    observeForReconciliation(raw: string): AnnotationObservation[] {
+        const marks = this.observe(raw).map((observation) => {
+            const parts = observation.highlight.members ?? [observation.highlight];
+            const start = Math.min(...parts.map((part) => part.start));
+            const end = Math.max(...parts.map((part) => part.end));
+            return {
+                observationKey: `mark:${observation.observationKey}`,
+                managedId: observation.managedId,
+                kind: "mark" as const,
+                integrity: observation.integrity,
+                anchor: observation.anchor,
+                evidence: this.reconciliationEvidence(raw, start, end, observation.highlight.text),
+            };
+        });
+        const footnotes = this.observeFootnotes(raw).map((observation) => {
+            const span = observation.references[0] ?? observation.definitions[0];
+            return {
+                observationKey: observation.observationKey,
+                managedId: observation.managedId,
+                kind: "footnote" as const,
+                integrity: observation.integrity,
+                anchor: observation.anchor,
+                evidence: this.footnoteReconciliationEvidence(raw, span.start, span.end, observation.text),
+            };
+        });
+        return [...marks, ...footnotes];
+    }
+
+    private reconciliationEvidence(raw: string, start: number, end: number, quote: string): AnnotationEvidence {
+        return {
+            quote: quote.slice(0, 8192),
+            quoteTruncated: quote.length > 8192,
+            before: raw.slice(Math.max(0, start - 64), start),
+            after: raw.slice(end, end + 64),
+        };
+    }
+
+    private footnoteReconciliationEvidence(raw: string, start: number, end: number, quote: string): AnnotationEvidence {
+        // Reference context excludes the changeable label and stays within its line.
+        const lineStart = this.getLineStart(raw, start);
+        const lineEnd = this.getLineEnd(raw, end);
+        return {
+            quote: quote.slice(0, 8192),
+            quoteTruncated: quote.length > 8192,
+            before: raw.slice(Math.max(lineStart, start - 64), start),
+            after: raw.slice(end, Math.min(lineEnd, end + 64)),
+        };
     }
 
     observeFootnotes(raw: string): MarkdownFootnoteObservation[] {
