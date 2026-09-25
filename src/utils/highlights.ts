@@ -1,4 +1,5 @@
 import { normalizeNotationType, normalizeOpacity, type NotationSpec } from "../models/notations";
+import { createAnnotationId, isAnnotationId, type IdentityMode, type Integrity } from "../models/annotation";
 
 export type HighlightType = "markdown" | "html";
 export type FootnotePlacement = "after" | "inside";
@@ -18,7 +19,12 @@ export interface Highlight extends NotationSpec {
     closeTagStart: number;
     closeTagEnd: number;
     openTag?: string;
-    groupId: string | null;
+    annotationId: string | null;
+    partId: string | null;
+    partIndex: number | null;
+    partTotal: number | null;
+    identityMode: IdentityMode;
+    integrity: Integrity;
     /** Source-safe marks comprising one passage; present only on logical entries. */
     members?: Highlight[];
     tagsText: string;
@@ -113,6 +119,39 @@ function extractAttribute(openTag: string, attributeName: string): string | null
     return value || null;
 }
 
+/** Read identity attributes at tag level, never from text inside another attribute. */
+function identityAttribute(openTag: string, attributeName: string): { value: string | null; duplicate: boolean } {
+    const attributes = new Map<string, string[]>();
+    let index = /^<mark\b/i.exec(openTag)?.[0].length ?? 0;
+    while (index < openTag.length) {
+        while (/\s/.test(openTag[index] ?? "")) index++;
+        if (openTag[index] === ">" || openTag[index] === "/" || index >= openTag.length) break;
+        const name = /^[^\s=/>]+/.exec(openTag.slice(index))?.[0];
+        if (!name) {
+            index++;
+            continue;
+        }
+        index += name.length;
+        while (/\s/.test(openTag[index] ?? "")) index++;
+        if (openTag[index] !== "=") continue;
+        index++;
+        while (/\s/.test(openTag[index] ?? "")) index++;
+        const quote = openTag[index];
+        if (quote !== '"' && quote !== "'") {
+            while (index < openTag.length && !/[\s>]/.test(openTag[index])) index++;
+            continue;
+        }
+        const start = ++index;
+        while (index < openTag.length && openTag[index] !== quote) index++;
+        const value = openTag.slice(start, index).trim();
+        if (index < openTag.length) index++;
+        const key = name.toLowerCase();
+        attributes.set(key, [...(attributes.get(key) ?? []), value]);
+    }
+    const values = attributes.get(attributeName.toLowerCase()) ?? [];
+    return { value: values[0] || null, duplicate: values.length > 1 };
+}
+
 function normalizeTagsText(tagsText: string): string {
     const tokens = String(tagsText || "")
         .split(/\s+/)
@@ -126,7 +165,7 @@ function normalizeTagsText(tagsText: string): string {
 }
 
 /** Hide Markdown code and comments without moving any source offsets. */
-function visibleSource(raw: string): string {
+export function visibleSource(raw: string): string {
     // UTF-16 units match JavaScript string offsets, including after emoji.
     const hidden = raw.split("");
     const hide = (start: number, end: number) => {
@@ -167,7 +206,7 @@ function visibleSource(raw: string): string {
     for (let i = 0; i < raw.length; i++) {
         if (hidden[i] === " " && raw[i] !== " ") continue;
         if (raw[i] === "\\") {
-            if (i + 1 < raw.length && /[\\`<>=]/.test(raw[i + 1])) hide(i, i + 2);
+            if (i + 1 < raw.length && /[\\`<>=[]/.test(raw[i + 1])) hide(i, i + 2);
             i++;
             continue;
         }
@@ -229,20 +268,32 @@ function sourceLineAt(lineStarts: number[], offset: number): number {
 export function parseFootnotes(raw: string): Map<string, Footnote> {
     const newline = detectNewline(raw);
     const lines = raw.split(/\r?\n/);
+    const visibleLines = visibleSource(raw).split(/\r?\n/);
     const results = new Map<string, Footnote>();
     let offset = 0;
+    let active: Footnote | null = null;
 
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
         const line = lines[lineIdx];
-        const match = line.match(/^\[\^([^\]]+)\]:\s*(.*)$/);
+        const match = visibleLines[lineIdx].match(/^\s{0,3}\[\^([^\]]+)\]:\s*/);
         if (match) {
-            results.set(match[1], {
-                id: match[1],
-                text: match[2] ?? "",
-                line: lineIdx,
-                start: offset,
-                end: offset + line.length,
-            });
+            if (results.has(match[1])) {
+                active = null;
+            } else {
+                active = {
+                    id: match[1],
+                    text: line.slice(match[0].length),
+                    line: lineIdx,
+                    start: offset,
+                    end: offset + line.length,
+                };
+                results.set(match[1], active);
+            }
+        } else if (active && /^(?: {4}|\t)\S/.test(line)) {
+            active.text += `\n${line.replace(/^(?: {4}|\t)/, "")}`;
+            active.end = offset + line.length;
+        } else {
+            active = null;
         }
         offset += line.length + (lineIdx < lines.length - 1 ? newline.length : 0);
     }
@@ -269,7 +320,6 @@ export function parseHighlights(raw: string): ParsedHighlights {
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
         const line = lines[lineIdx];
         lineStarts.push(lineOffset);
-        let matchIndex = 0;
 
         // An opener must touch content; a dangling closer from an escaped
         // example must not consume a later real highlight on the same line.
@@ -293,14 +343,19 @@ export function parseHighlights(raw: string): ParsedHighlights {
             });
 
             highlights.push({
-                id: `${lineIdx}:${matchIndex}`,
+                id: `legacy:markdown:${start}`,
                 text: innerText.trim(),
                 line: lineIdx,
                 type: "markdown",
                 notationType: "highlight",
                 opacity: null,
                 color: null,
-                groupId: null,
+                annotationId: null,
+                partId: null,
+                partIndex: null,
+                partTotal: null,
+                identityMode: "tracked-legacy",
+                integrity: "resolved",
                 start,
                 end,
                 innerStart,
@@ -318,8 +373,6 @@ export function parseHighlights(raw: string): ParsedHighlights {
                 footnotePlacement: footnote?.placement ?? null,
                 annotation: footnote?.id ? (footnotes.get(footnote.id)?.text ?? "") : "",
             });
-
-            matchIndex++;
         }
 
         lineOffset += line.length + (lineIdx < lines.length - 1 ? newline.length : 0);
@@ -367,15 +420,38 @@ export function parseHighlights(raw: string): ParsedHighlights {
             innerText,
             innerStart,
         });
+        const idAttribute = identityAttribute(openTag, "data-fp-id");
+        const partAttribute = identityAttribute(openTag, "data-fp-part");
+        const rawId = idAttribute.value;
+        const metadataConflict = idAttribute.duplicate || partAttribute.duplicate;
+        const annotationId = !idAttribute.duplicate && rawId && isAnnotationId(rawId) ? rawId : null;
+        const partId = partAttribute.value;
+        const part = partId?.match(/^([1-9]\d*)\/([1-9]\d*)$/);
+        const partIndex = part ? Number(part[1]) : null;
+        const partTotal = part ? Number(part[2]) : null;
+        const validPart = partIndex !== null && partTotal !== null && partIndex <= partTotal;
         highlights.push({
-            id: `${lineIdx}:${start - lineOffset}`,
+            id: annotationId ?? `legacy:html:${start}`,
             text: innerText.trim(),
             line: lineIdx,
             type: "html",
             notationType: normalizeNotationType(extractAttribute(openTag, "data-fp-notation")),
             opacity: normalizeOpacity(extractAttribute(openTag, "data-fp-opacity")),
             color: color ? color.trim() : null,
-            groupId: extractAttribute(openTag, "data-fp-group"),
+            annotationId,
+            partId,
+            partIndex: validPart ? partIndex : null,
+            partTotal: validPart ? partTotal : null,
+            identityMode: annotationId ? "managed" : "tracked-legacy",
+            integrity: metadataConflict
+                ? "ambiguous"
+                : annotationId
+                  ? validPart
+                      ? "resolved"
+                      : "degraded"
+                  : rawId || partId
+                    ? "degraded"
+                    : "resolved",
             start,
             end,
             innerStart,
@@ -470,88 +546,68 @@ function detectFootnoteForHighlight({
 }
 
 export function findHighlightById(parsed: ParsedHighlights, id: string): Highlight | null {
-    return parsed.highlights.find((h) => h.id === id) || null;
+    return logicalHighlights(parsed.highlights).find((h) => h.id === id) || null;
 }
 
-/** Present source wrappers carrying the same group ID as one item, even across gaps. */
-export function groupHighlights(highlights: Highlight[]): Highlight[] {
-    const grouped = new Map<string, Highlight[]>();
-    for (const highlight of highlights) {
-        if (!highlight.groupId) continue;
-        const members = grouped.get(highlight.groupId) ?? [];
-        members.push(highlight);
-        grouped.set(highlight.groupId, members);
+/** The Markdown adapter projects physical wrappers into logical annotations. */
+export function logicalHighlights(highlights: Highlight[]): Highlight[] {
+    const byId = new Map<string, Highlight[]>();
+    for (const mark of highlights) {
+        if (!mark.annotationId) continue;
+        const parts = byId.get(mark.annotationId) ?? [];
+        parts.push(mark);
+        byId.set(mark.annotationId, parts);
     }
-
     const seen = new Set<string>();
-    return highlights.flatMap((highlight) => {
-        if (!highlight.groupId) return [highlight];
-        if (seen.has(highlight.groupId)) return [];
-        seen.add(highlight.groupId);
-        const members = grouped.get(highlight.groupId) ?? [highlight];
+    return highlights.flatMap((mark) => {
+        if (!mark.annotationId) return [mark];
+        if (seen.has(mark.annotationId)) return [];
+        seen.add(mark.annotationId);
+        const members = (byId.get(mark.annotationId) ?? [mark]).sort(
+            (a, b) =>
+                (a.partIndex ?? Number.MAX_SAFE_INTEGER) - (b.partIndex ?? Number.MAX_SAFE_INTEGER) || a.start - b.start
+        );
+        const totals = new Set(members.map((part) => part.partTotal));
+        const ordinals = members.map((part) => part.partIndex);
+        const duplicate =
+            ordinals.some((ordinal, index) => ordinal !== null && ordinals.indexOf(ordinal) !== index) ||
+            (members.length > 1 && ordinals.some((ordinal) => ordinal === null));
+        const total = members[0].partTotal;
+        const missing = total !== null && members.length < total;
+        const integrity: Integrity =
+            duplicate ||
+            totals.size > 1 ||
+            members.length > (total ?? Infinity) ||
+            members.some((part) => part.integrity === "ambiguous")
+                ? "ambiguous"
+                : missing || members.some((part) => part.integrity === "degraded")
+                  ? "degraded"
+                  : "resolved";
+        const attachedFootnote = members.find((part) => part.footnoteId);
         return [
             {
-                ...highlight,
-                color: members.every((member) => member.color === highlight.color) ? highlight.color : null,
-                text: members.map((member) => member.text).join("\n"),
-                end: members[members.length - 1].end,
+                ...members[0],
+                text: members.map((part) => part.text).join("\n"),
+                color: members.every((part) => part.color === members[0].color) ? members[0].color : null,
+                end: Math.max(...members.map((part) => part.end)),
+                integrity,
+                footnoteId: attachedFootnote?.footnoteId ?? null,
+                footnoteStart: attachedFootnote?.footnoteStart ?? null,
+                footnoteEnd: attachedFootnote?.footnoteEnd ?? null,
+                footnotePlacement: attachedFootnote?.footnotePlacement ?? null,
+                annotation: attachedFootnote?.annotation ?? "",
                 members,
             },
         ];
     });
 }
 
-/** Update group membership without touching each mark's ink, tags or text. */
-export function regroupHighlightsInRaw(
-    raw: string,
-    selected: Pick<Highlight, "id" | "text" | "groupId">[],
-    groupId: string | null
-): string {
-    if (!selected.length || (groupId && selected.length < 2)) {
-        throw new Error("Select at least two annotations to group.");
-    }
-    if (groupId !== null && !/^[A-Za-z0-9-]+$/.test(groupId)) {
-        throw new Error("Invalid group ID.");
-    }
-    const logical = groupHighlights(parseHighlights(raw).highlights);
-    const chosen = selected.map((item) => {
-        const current = logical.find((entry) => entry.id === item.id);
-        if (!current || current.text !== item.text || current.groupId !== item.groupId) {
-            throw new Error("Annotations changed while you were selecting them. Select them again.");
-        }
-        return current;
-    });
-    if (!groupId && chosen.some((entry) => !entry.groupId)) {
-        throw new Error("Select grouped annotations to ungroup.");
-    }
-
-    const parts = [
-        ...new Map(chosen.flatMap((entry) => entry.members ?? [entry]).map((part) => [part.id, part])).values(),
-    ];
-    if (groupId && parts.length < 2) throw new Error("Select at least two distinct annotations to group.");
-    return parts
-        .sort((a, b) => b.openTagStart - a.openTagStart)
-        .reduce((content, part) => {
-            if (part.type === "markdown") {
-                if (groupId === null) throw new Error("Cannot ungroup an ungrouped Markdown highlight.");
-                // Markdown == == has nowhere to keep membership. Preserve its
-                // visible text while converting only this wrapper to HTML.
-                const text = content.slice(part.innerStart, part.innerEnd);
-                const openTag = `<mark data-fp-notation="highlight" data-fp-group="${groupId}">`;
-                return content.slice(0, part.start) + openTag + text + "</mark>" + content.slice(part.end);
-            }
-            const openTag = content.slice(part.openTagStart, part.openTagEnd);
-            const withoutGroup = openTag.replace(/\sdata-fp-group\s*=\s*(["'])[^"']*\1/i, "");
-            const updated = groupId ? withoutGroup.replace(/>$/, ` data-fp-group="${groupId}">`) : withoutGroup;
-            return content.slice(0, part.openTagStart) + updated + content.slice(part.openTagEnd);
-        }, raw);
-}
-
-/** Unwrap every source fragment of a logical passage in one atomic edit. */
-export function removeHighlightGroupFromRaw(raw: string, highlight: Highlight | null): string {
+/** Unwrap every physical fragment of one logical annotation. */
+export function removeLogicalHighlightFromRaw(raw: string, highlight: Highlight | null): string {
     if (!highlight) return raw;
-    const members = highlight.groupId
-        ? parseHighlights(raw).highlights.filter((member) => member.groupId === highlight.groupId)
+    if (highlight.integrity === "ambiguous") throw new Error("Annotation identity is ambiguous; no source changed.");
+    const members = highlight.annotationId
+        ? parseHighlights(raw).highlights.filter((member) => member.annotationId === highlight.annotationId)
         : [highlight];
     return members
         .sort((a, b) => b.start - a.start)
@@ -648,21 +704,26 @@ export function updateHighlightColorInRaw(raw: string, highlight: Highlight | nu
     return raw.slice(0, highlight.openTagStart) + replacement + raw.slice(highlight.closeTagEnd);
 }
 
-function nextNumericFootnoteId(raw: string): string {
-    const pattern = /\[\^(\d+)\]/g;
-    let maxNumber = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(raw)) !== null) {
-        const num = parseInt(match[1]);
-        if (num > maxNumber) maxNumber = num;
-    }
-    return String(maxNumber + 1);
+function nextManagedFootnoteId(raw: string): string {
+    let id = createAnnotationId();
+    while (raw.includes(`[^${id}]`)) id = createAnnotationId();
+    return id;
 }
 
 function countFootnoteRefs(raw: string, footnoteId: string): number {
-    const re = new RegExp(`\\[\\^${escapeRegex(footnoteId)}\\]`, "g");
-    const matches = raw.match(re);
+    const re = new RegExp(`\\[\\^${escapeRegex(footnoteId)}\\](?!:)`, "g");
+    const matches = visibleSource(raw).match(re);
     return matches ? matches.length : 0;
+}
+
+function countFootnoteDefinitions(raw: string, footnoteId: string): number {
+    return visibleSource(raw)
+        .split(/\r?\n/)
+        .filter((line) => new RegExp(`^\\s{0,3}\\[\\^${escapeRegex(footnoteId)}\\]:`).test(line)).length;
+}
+
+function formatFootnoteDefinition(id: string, annotation: string, newline: string): string {
+    return `[^${id}]: ${annotation.replace(/\r?\n/g, `${newline}    `)}`;
 }
 
 export function updateHighlightAnnotationInRaw(
@@ -676,6 +737,9 @@ export function updateHighlightAnnotationInRaw(
     const parsed = parseFootnotes(raw);
 
     const existingId = highlight.footnoteId;
+    if (existingId && countFootnoteDefinitions(raw, existingId) > 1) {
+        throw new Error("Duplicate footnote definitions; no source changed.");
+    }
     const existingRefStart = highlight.footnoteStart;
     const existingRefEnd = highlight.footnoteEnd;
 
@@ -717,7 +781,7 @@ export function updateHighlightAnnotationInRaw(
     void existingRefEnd;
 
     if (!footnoteId) {
-        footnoteId = nextNumericFootnoteId(updatedRaw);
+        footnoteId = nextManagedFootnoteId(updatedRaw);
         const footnoteRef = `[^${footnoteId}]`;
 
         // Insert at end of the highlighted range (inside the wrapper, to match current behavior).
@@ -728,13 +792,13 @@ export function updateHighlightAnnotationInRaw(
     // Update or insert definition
     const def = parsed.get(footnoteId);
     if (def) {
-        const newLine = `[^${footnoteId}]: ${annotation}`;
+        const newLine = formatFootnoteDefinition(footnoteId, annotation, newline);
         updatedRaw = updatedRaw.slice(0, def.start) + newLine + updatedRaw.slice(def.end);
         return updatedRaw;
     }
 
     // Append definition to end, preserving existing trim behavior.
-    const defText = `${newline}${newline}[^${footnoteId}]: ${annotation}${newline}`;
+    const defText = `${newline}${newline}${formatFootnoteDefinition(footnoteId, annotation, newline)}${newline}`;
     updatedRaw = updatedRaw.trimEnd() + defText;
     return updatedRaw;
 }
@@ -749,14 +813,21 @@ export function removeFootnoteFromRaw(raw: string, footnoteId: string): { raw: s
     let updated = String(raw ?? "");
     const id = String(footnoteId ?? "").trim();
     if (!id) return { raw: updated, changed: false };
+    if (countFootnoteDefinitions(updated, id) > 1) {
+        throw new Error("Duplicate footnote definitions; no source changed.");
+    }
 
     const newline = detectNewline(updated);
     let changed = false;
 
     // 1. Remove inline references `[^id]` (but never the definition's `[^id]:` token).
     const refRe = new RegExp(`\\[\\^${escapeRegex(id)}\\](?!:)`, "g");
-    if (refRe.test(updated)) {
-        updated = updated.replace(refRe, "");
+    const refs = [...visibleSource(updated).matchAll(refRe)].map((match) => ({
+        start: match.index,
+        end: match.index + match[0].length,
+    }));
+    if (refs.length) {
+        updated = applyDeletions(updated, refs);
         changed = true;
     }
 
@@ -833,6 +904,7 @@ export function mergeAdjacentHighlightsInRaw(raw: string): { raw: string; merged
 
             if (a.line !== b.line) continue;
             if (a.type !== b.type) continue;
+            if (a.annotationId || b.annotationId) continue;
             if ((a.tagsText || "").trim() || (b.tagsText || "").trim()) continue;
             if (a.footnoteId || b.footnoteId) continue;
 

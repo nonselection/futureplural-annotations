@@ -1,6 +1,6 @@
 // Block-level brackets are intentionally not another inline notation type.
 // They need block-range storage, rendering and cleanup as one tested feature;
-// see docs/PRODUCT_DECISIONS_AND_BACKLOG.md.
+// block-level notation needs a separate approved source contract.
 export const NOTATION_TYPES = ["highlight", "underline", "box", "circle", "strike-through", "crossed-off"] as const;
 
 export type NotationType = (typeof NOTATION_TYPES)[number];
@@ -28,10 +28,6 @@ export function normalizeOpacity(value: unknown): number | null {
 
 export const DEFAULT_NOTATION_TYPE: NotationType = "highlight";
 
-export function createNotationGroupId(): string {
-    return `fp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 export function isNotationType(value: string): value is NotationType {
     return (NOTATION_TYPES as readonly string[]).includes(value);
 }
@@ -47,15 +43,14 @@ function escapeAttribute(value: string): string {
     return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function createNotationOpenTag(spec: NotationSpec, groupId: string | null = null): string {
+export function createNotationOpenTag(spec: NotationSpec, id: string, part: string): string {
     const attributes = [`data-fp-notation="${spec.notationType}"`];
     const color = spec.color?.trim();
-    const group = groupId?.trim();
 
     if (color) attributes.push(`data-fp-color="${escapeAttribute(color)}"`);
     const opacity = normalizeOpacity(spec.opacity);
     if (opacity !== null) attributes.push(`data-fp-opacity="${opacity}"`);
-    if (group) attributes.push(`data-fp-group="${escapeAttribute(group)}"`);
+    attributes.push(`data-fp-id="${escapeAttribute(id)}"`, `data-fp-part="${escapeAttribute(part)}"`);
 
     return `<mark ${attributes.join(" ")}>`;
 }

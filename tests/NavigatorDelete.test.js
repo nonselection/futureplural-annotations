@@ -35,13 +35,11 @@ describe("navigator search state", () => {
         navigator.searchQuery = "";
         navigator.sectionCollapsed = { highlights: true, footnotes: false };
         navigator.preSearchCollapsed = null;
-        navigator.selectedIds = new Set(["selected"]);
         navigator.renderContent = vi.fn();
 
         navigator.setSearchQuery("needle");
         expect(navigator.sectionCollapsed).toEqual({ highlights: false, footnotes: false });
         expect(navigator.preSearchCollapsed).toEqual({ highlights: true, footnotes: false });
-        expect(navigator.selectedIds.size).toBe(0);
 
         navigator.setSearchQuery("");
         expect(navigator.sectionCollapsed).toEqual({ highlights: true, footnotes: false });
@@ -109,15 +107,16 @@ describe("remove a single highlight from the navigator", () => {
         expect(out()).toBe("Start inner end.");
     });
 
-    it("removes all fragments of a selected grouped passage in one action", async () => {
+    it("removes all parts of a selected logical annotation in one action", async () => {
+        const id = "fp-12345678-abcd-4abc-8abc-123456789abc";
         const raw = [
-            '- <mark data-fp-group="list-a">One</mark>',
-            '- <mark data-fp-group="list-a">Two</mark>',
-            '- <mark data-fp-group="other">Keep</mark>',
+            `- <mark data-fp-id="${id}" data-fp-part="1/2">One</mark>`,
+            `- <mark data-fp-id="${id}" data-fp-part="2/2">Two</mark>`,
+            "- <mark>Keep</mark>",
         ].join("\n");
         const { ctx, out } = harness(raw);
         await removeSingle.call(ctx, parseHighlights(raw).highlights[0]);
-        expect(out()).toBe('- One\n- Two\n- <mark data-fp-group="other">Keep</mark>');
+        expect(out()).toBe("- One\n- Two\n- <mark>Keep</mark>");
     });
 
     it("leaves the note alone when the highlight has since moved", async () => {
@@ -126,6 +125,13 @@ describe("remove a single highlight from the navigator", () => {
         const { ctx, out } = harness("Completely different text.");
         await removeSingle.call(ctx, target);
         expect(out()).toBe("Completely different text.");
+    });
+
+    it("refuses a stale positional legacy row even if a new mark occupies its slot", async () => {
+        const target = parseHighlights("Alpha ==one== beta.").highlights[0];
+        const { ctx, out } = harness("Alpha ==new== beta.");
+        await removeSingle.call(ctx, target);
+        expect(out()).toBe("Alpha ==new== beta.");
     });
 
     it("refreshes the panel afterwards", async () => {
@@ -147,6 +153,10 @@ describe("destructive navigator actions", () => {
                 modify: async (_file, next) => {
                     raw = next;
                 },
+                process: async (_file, change) => {
+                    raw = change(raw);
+                    return raw;
+                },
             },
         };
         const navigator = new HighlightNavigatorView(
@@ -159,7 +169,6 @@ describe("destructive navigator actions", () => {
         navigator.app = app;
         navigator.currentFile = file;
         navigator.contentEl = window.document.getElementById("content");
-        navigator.selectionBarEl = window.document.createElement("div");
         navigator.refresh = async () => {};
         navigator.showUndoNotice = () => {};
         navigator.confirmDestructive = async () => false;
@@ -183,6 +192,10 @@ describe("destructive navigator actions", () => {
                 modify: async (_file, next) => {
                     raw = next;
                 },
+                process: async (_file, change) => {
+                    raw = change(raw);
+                    return raw;
+                },
             },
         };
         const navigator = new HighlightNavigatorView(
@@ -197,7 +210,6 @@ describe("destructive navigator actions", () => {
         navigator.app = app;
         navigator.currentFile = file;
         navigator.contentEl = window.document.getElementById("content");
-        navigator.selectionBarEl = window.document.createElement("div");
         navigator.refresh = async () => {};
         navigator.showUndoNotice = () => {};
         navigator.confirmDestructive = async () => true;
@@ -208,6 +220,7 @@ describe("destructive navigator actions", () => {
             line: 2,
             displayNumber: 1,
             refLine: 0,
+            integrity: "resolved",
         });
 
         expect(raw).toBe("Body.\n");

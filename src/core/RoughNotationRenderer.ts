@@ -17,8 +17,11 @@ const MAX_ATTACHMENT_FRAMES = 5;
 
 // Obsidian post-processes a note in sections. Share one layout watcher across
 // those children, so a long document does not create an observer per paragraph.
-type LayoutSubscriber = (force: boolean) => void;
-const layoutWatchers = new WeakMap<HTMLElement, { subscribers: Set<LayoutSubscriber>; stop: () => void }>();
+type LayoutSubscriber = (force: boolean) => boolean;
+const layoutWatchers = new WeakMap<
+    HTMLElement,
+    { subscribers: Set<LayoutSubscriber>; schedule: (forceRedraw?: boolean) => void; stop: () => void }
+>();
 
 function watchNoteLayout(root: HTMLElement, subscriber: LayoutSubscriber): () => void {
     let watcher = layoutWatchers.get(root);
@@ -33,14 +36,21 @@ function watchNoteLayout(root: HTMLElement, subscriber: LayoutSubscriber): () =>
         const subscribers = new Set<LayoutSubscriber>();
         let frame: number | null = null;
         let force = false;
-        const schedule = (forceRedraw = false) => {
+        let recoveryFrames = 0;
+        const schedule = (forceRedraw = false, recovery = false) => {
+            if (!recovery) recoveryFrames = 0;
             force ||= forceRedraw;
             if (!win || frame !== null) return;
             frame = win.requestAnimationFrame(() => {
                 frame = null;
                 const forceNow = force;
                 force = false;
-                for (const notify of subscribers) notify(forceNow);
+                let needsRecovery = false;
+                for (const notify of subscribers) needsRecovery = notify(forceNow) || needsRecovery;
+                if (needsRecovery && recoveryFrames < MAX_ATTACHMENT_FRAMES) {
+                    recoveryFrames++;
+                    schedule(false, true);
+                }
             });
         };
         const widths = new WeakMap<Element, number>();
@@ -82,6 +92,7 @@ function watchNoteLayout(root: HTMLElement, subscriber: LayoutSubscriber): () =>
         root.addEventListener("scroll", onScroll, { passive: true, capture: true });
         watcher = {
             subscribers,
+            schedule,
             stop: () => {
                 root.removeEventListener("scroll", onScroll, true);
                 resize?.disconnect();
@@ -92,6 +103,9 @@ function watchNoteLayout(root: HTMLElement, subscriber: LayoutSubscriber): () =>
         layoutWatchers.set(root, watcher);
     }
     watcher.subscribers.add(subscriber);
+    // The first frame also handles a section that arrived before its marks
+    // became measurable. Subsequent subscribers share the same pending frame.
+    watcher.schedule();
     return () => {
         watcher.subscribers.delete(subscriber);
         if (watcher.subscribers.size === 0) {
@@ -102,12 +116,10 @@ function watchNoteLayout(root: HTMLElement, subscriber: LayoutSubscriber): () =>
 }
 
 function markRects(target: HTMLElement): Rect[] | null {
-    const svg = [target.previousElementSibling, target.nextElementSibling].find((el) =>
-        el?.matches("svg.rough-annotation")
-    );
+    const svg = annotationSvg(target);
     if (!svg) return null;
     const anchor = svg.getBoundingClientRect();
-    return Array.from(target.getClientRects(), (rect) => ({
+    return usableClientRects(target).map((rect) => ({
         x: rect.left - anchor.left,
         y: rect.top - anchor.top,
         width: rect.width,
@@ -115,8 +127,29 @@ function markRects(target: HTMLElement): Rect[] | null {
     }));
 }
 
-function rectsChanged(previous: Rect[] | null, current: Rect[] | null): boolean {
-    if (!previous || !current || previous.length !== current.length) return false;
+function annotationSvg(target: HTMLElement): Element | undefined {
+    return (
+        [target.previousElementSibling, target.nextElementSibling].find((el) => el?.matches("svg.rough-annotation")) ??
+        undefined
+    );
+}
+
+function usableClientRects(target: HTMLElement): DOMRect[] {
+    if (!target.isConnected) return [];
+    return Array.from(target.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+}
+
+function layoutVisible(root: HTMLElement): boolean {
+    if (!root.isConnected) return false;
+    if (elementWindow(root)?.getComputedStyle(root).display === "none") return false;
+    const leaf = root.closest<HTMLElement>(".workspace-leaf") ?? root;
+    const rect = leaf.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+export function rectsChanged(previous: Rect[] | null, current: Rect[] | null): boolean {
+    if (!previous || !current) return false;
+    if (previous.length !== current.length) return true;
     return previous.some((rect, index) => {
         const next = current[index];
         return (Object.keys(rect) as (keyof Rect)[]).some((key) => Math.abs(rect[key] - next[key]) > 0.5);
@@ -191,6 +224,7 @@ export class RoughNotationRenderer extends MarkdownRenderChild {
     private readonly annotateElement: AnnotateElement;
     private readonly annotations = new Map<HTMLElement, RoughAnnotation>();
     private readonly positions = new Map<HTMLElement, Rect[] | null>();
+    private layoutRoot: HTMLElement | null = null;
     private stopLayoutWatch: (() => void) | null = null;
     private animationFrame: number | null = null;
     private attachmentFrames = 0;
@@ -210,7 +244,31 @@ export class RoughNotationRenderer extends MarkdownRenderChild {
     onload(): void {
         this.disposed = false;
         this.attachmentFrames = 0;
+        // A post-processed section may stay detached longer than the initial
+        // frame budget. Register its note watcher while the candidate exists,
+        // so a later attachment/layout signal can rearm that bounded attempt.
+        if (
+            this.containerEl.matches("mark[data-fp-notation]") ||
+            this.containerEl.querySelector("mark[data-fp-notation]")
+        ) {
+            this.watchLayout();
+        }
         this.scheduleRender();
+    }
+
+    private watchLayout(): void {
+        const root =
+            this.containerEl.closest<HTMLElement>(".markdown-reading-view") ??
+            this.containerEl.closest<HTMLElement>(".markdown-preview-view") ??
+            this.containerEl;
+        if (this.stopLayoutWatch && this.layoutRoot === root) return;
+        this.stopLayoutWatch?.();
+        this.layoutRoot = root;
+        this.stopLayoutWatch = watchNoteLayout(root, (force) => {
+            if (!this.containerEl.isConnected) return layoutVisible(root);
+            if (!this.annotations.size) this.renderTargets();
+            return this.refreshMovedMarks(force);
+        });
     }
 
     private scheduleRender(): void {
@@ -257,32 +315,32 @@ export class RoughNotationRenderer extends MarkdownRenderChild {
 
             target.addClass(TARGET_CLASS);
             this.annotations.set(target, annotation);
-            annotation.show();
-            this.positions.set(target, markRects(target));
-            this.onShown?.();
         }
 
-        if (this.annotations.size && !this.stopLayoutWatch) {
-            const root =
-                this.containerEl.closest<HTMLElement>(".markdown-reading-view") ??
-                this.containerEl.closest<HTMLElement>(".markdown-preview-view") ??
-                this.containerEl;
-            this.stopLayoutWatch = watchNoteLayout(root, (force) => this.refreshMovedMarks(force));
-        }
+        if (this.annotations.size) this.watchLayout();
+        this.refreshMovedMarks();
     }
 
-    private refreshMovedMarks(force = false): void {
-        if (this.disposed) return;
+    private refreshMovedMarks(force = false): boolean {
+        if (this.disposed || !this.layoutRoot || !layoutVisible(this.layoutRoot)) return false;
+        let needsRecovery = false;
         for (const [target, annotation] of this.annotations) {
-            if (!target.isConnected) continue;
+            if (usableClientRects(target).length === 0) {
+                needsRecovery = true;
+                continue;
+            }
             const current = markRects(target);
-            if (force || rectsChanged(this.positions.get(target) ?? null, current)) {
+            const pathless = annotationSvg(target)?.querySelector("path") === null;
+            const firstShow = !this.positions.has(target);
+            if (firstShow || force || rectsChanged(this.positions.get(target) ?? null, current) || pathless) {
                 // show() on an already visible annotation redraws it without
                 // animation. The existing seeded instance preserves its shape.
                 annotation.show();
                 this.positions.set(target, markRects(target));
+                if (firstShow) this.onShown?.();
             }
         }
+        return needsRecovery;
     }
 
     onunload(): void {
@@ -302,5 +360,6 @@ export class RoughNotationRenderer extends MarkdownRenderChild {
         }
         this.annotations.clear();
         this.positions.clear();
+        this.layoutRoot = null;
     }
 }

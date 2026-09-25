@@ -113,10 +113,14 @@ export interface PreparedCanvasMark {
 export async function prepareCanvasMarks(highlights: HighlightWithFile[]): Promise<PreparedCanvasMark[]> {
     if (!highlights.length || highlights.length > 2000)
         throw new Error("Choose between 1 and 2,000 highlights per export.");
+    if (highlights.some((highlight) => highlight.integrity === "ambiguous"))
+        throw new Error("Resolve ambiguous annotation identity before exporting to Canvas.");
     const occurrences = new Map<string, number>();
     return Promise.all(
         highlights.map(async (h) => {
-            const identity = h.groupId ? `group:${h.groupId}` : `text:${h.text.replace(/\s+/g, " ").trim()}`;
+            const identity = h.annotationId
+                ? `annotation:${h.annotationId}`
+                : `text:${h.text.replace(/\s+/g, " ").trim()}`;
             const occurrenceKey = `${h.file.path}\u0000${identity}`;
             const occurrence = occurrences.get(occurrenceKey) ?? 0;
             occurrences.set(occurrenceKey, occurrence + 1);

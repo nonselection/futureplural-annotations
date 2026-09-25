@@ -21,12 +21,12 @@ import {
     removeAllFootnotesFromRaw,
     removeFootnoteFromRaw,
     removeHighlightFromRaw,
-    removeHighlightGroupFromRaw,
-    regroupHighlightsInRaw,
+    removeLogicalHighlightFromRaw,
 } from "../utils/highlights";
-import { createNotationGroupId } from "../models/notations";
+import { markdownSourceAdapter } from "../adapters/MarkdownSourceAdapter";
 import { defaultCanvasPath, MAX_CANVAS_ASSOCIATIONS } from "../utils/canvas";
 import { HighlightEditModal } from "../modals/HighlightEditModal";
+import { navigatorPreviewText } from "../utils/navigatorPreview";
 
 export const HIGHLIGHT_NAVIGATOR_VIEW = "highlight-navigator";
 
@@ -36,6 +36,7 @@ interface NavFootnote {
     line: number;
     displayNumber: number | null;
     refLine: number;
+    integrity: "resolved" | "degraded" | "ambiguous" | "missing";
 }
 
 type NavItem = Highlight | NavFootnote;
@@ -93,16 +94,11 @@ export class HighlightNavigatorView extends ItemView {
     sectionCollapsed: Record<ListType, boolean>;
     preSearchCollapsed: Record<ListType, boolean> | null;
     searchQuery: string;
-    selectionMode: boolean;
-    selectedIds: Set<string>;
-    selectionCountEl: HTMLElement | null = null;
-    groupButton: HTMLButtonElement | null = null;
-    ungroupButton: HTMLButtonElement | null = null;
-    selectionBarEl: HTMLElement | null = null;
     canvasButton: HTMLButtonElement | null = null;
     activeMenu: Menu | null = null;
     activeMenuTrigger: HTMLElement | null = null;
     expandedItemIds: Set<string>;
+    private refreshGeneration = 0;
 
     constructor(leaf: WorkspaceLeaf, plugin: ReadingHighlighterPlugin) {
         super(leaf);
@@ -113,8 +109,6 @@ export class HighlightNavigatorView extends ItemView {
         this.sectionCollapsed = { highlights: false, footnotes: true };
         this.preSearchCollapsed = null;
         this.searchQuery = ""; // Search filter
-        this.selectionMode = false;
-        this.selectedIds = new Set();
         this.expandedItemIds = new Set();
     }
 
@@ -166,9 +160,6 @@ export class HighlightNavigatorView extends ItemView {
         setTooltip(overflowBtn, "Navigator actions", { placement: "top" });
         overflowBtn.onclick = (event) => this.openNavigatorMenu(event);
 
-        // Keep selection actions outside the scrolling lists, including in split view.
-        this.selectionBarEl = container.createDiv({ cls: "fp-navigator-selection-controls" });
-
         // Content area
         this.contentEl = container.createDiv({ cls: "highlight-navigator-content" });
 
@@ -190,6 +181,12 @@ export class HighlightNavigatorView extends ItemView {
                 void this.refresh();
             })
         );
+        // On tab close/open, active-leaf-change can fire before the new leaf's
+        // file is committed. file-open supplies the resulting file state.
+        this.registerEvent(this.app.workspace.on("file-open", () => void this.refresh()));
+        // A sidebar can remain the active leaf while a Markdown tab closes.
+        // layout-change then carries the updated document context.
+        this.registerEvent(this.app.workspace.on("layout-change", () => void this.refresh()));
 
         this.registerEvent(
             this.app.vault.on("modify", (file: TAbstractFile) => {
@@ -219,7 +216,6 @@ export class HighlightNavigatorView extends ItemView {
         }
 
         this.searchQuery = nextQuery;
-        this.selectedIds.clear();
 
         if (isSearching) {
             // Search results must never be hidden behind a collapsed section.
@@ -234,44 +230,38 @@ export class HighlightNavigatorView extends ItemView {
     }
 
     async refresh(force = false) {
-        let targetFile: TFile | null;
-
-        if (force) {
-            // Forced refresh (after an edit/removal, or on a modify event):
-            // re-read the file we're already showing. Interacting with this
-            // sidebar makes it the active leaf, so there may be no active
-            // MarkdownView to read from — fall back to currentFile.
-            targetFile = this.currentFile || this.app.workspace.getActiveViewOfType(MarkdownView)?.file || null;
-            if (!targetFile) {
-                return;
+        // The root workspace's most-recent leaf represents the document still
+        // occupying the main editor when a sidebar owns focus. Global active
+        // file may instead fall back to a different recently used note.
+        const targetFile = this.resolveAnnotationSourceFile();
+        if (!targetFile) {
+            // Invalidate an in-flight read even if no source has committed yet.
+            this.refreshGeneration++;
+            if (this.currentFile) {
+                this.currentFile = null;
+                this.highlights = [];
+                this.footnotes = [];
+                this.expandedItemIds.clear();
+                this.sectionCollapsed = { highlights: false, footnotes: false };
+                this.preSearchCollapsed = null;
+                this.renderContent();
+                this.updateCanvasButton();
             }
-        } else {
-            // Following the active note (e.g. user switched files).
-            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-
-            // Prevent wiping list on brief focus loss
-            if (!view || !view.file) {
-                return;
-            }
-
-            // Only re-parse if the file actually changed.
-            if (this.currentFile && view.file.path === this.currentFile.path) {
-                return;
-            }
-
-            targetFile = view.file;
+            return;
         }
-
-        const fileChanged = this.currentFile?.path !== targetFile.path;
-        if (fileChanged || force) this.selectedIds.clear();
-        if (fileChanged) this.expandedItemIds.clear();
-        this.currentFile = targetFile;
-        this.updateCanvasButton();
+        if (!force && this.currentFile?.path === targetFile.path) return;
+        const generation = ++this.refreshGeneration;
 
         try {
             const raw = await this.app.vault.read(targetFile);
+            if (generation !== this.refreshGeneration) return;
+            const fileChanged = this.currentFile?.path !== targetFile.path;
+            if (fileChanged) this.expandedItemIds.clear();
+            this.currentFile = targetFile;
             this.highlights = getHighlightsFromContent(raw);
             this.footnotes = this.getFootnotesFromContent(raw);
+            if (fileChanged) this.initializeSectionsForSource();
+            this.updateCanvasButton();
             const validExpandedIds = new Set([
                 ...this.highlights.map((highlight) => `highlight:${highlight.id}`),
                 ...this.footnotes.map((footnote) => `footnote:${footnote.id}`),
@@ -281,51 +271,45 @@ export class HighlightNavigatorView extends ItemView {
             }
             this.renderContent();
         } catch (err) {
+            if (generation !== this.refreshGeneration) return;
             this.showEmpty("Error loading content.");
             console.error(err);
         }
     }
 
+    private resolveAnnotationSourceFile(): TFile | null {
+        const workspace = this.app.workspace;
+        const rootLeaf = workspace.getMostRecentLeaf(workspace.rootSplit);
+        const view = rootLeaf?.view;
+        if (!(view instanceof MarkdownView)) return null;
+        return view.file instanceof TFile ? view.file : null;
+    }
+
+    private initializeSectionsForSource() {
+        const hasHighlights = this.highlights.length > 0;
+        const hasFootnotes = this.footnotes.length > 0;
+        const initial = {
+            highlights: hasFootnotes && !hasHighlights,
+            footnotes: hasHighlights && !hasFootnotes,
+        };
+        this.preSearchCollapsed = this.searchQuery ? initial : null;
+        this.sectionCollapsed = this.searchQuery ? { highlights: false, footnotes: false } : initial;
+    }
+
     getFootnotesFromContent(raw: string): NavFootnote[] {
-        const lines = raw.split("\n");
-
-        // Pass 1: collect definitions `[^id]: text` (one per line).
-        const definitions: { id: string; text: string; line: number }[] = [];
-        const definedIds = new Set<string>();
-        lines.forEach((line, lineIdx) => {
-            const match = line.match(/^\s*\[\^([^\]]+)\]:\s*(.+)$/);
-            if (match) {
-                definitions.push({ id: match[1], text: match[2].trim(), line: lineIdx });
-                definedIds.add(match[1]);
-            }
-        });
-
-        // Pass 2: walk inline references `[^id]` (the `(?!:)` lookahead skips
-        // definitions) in document order. This reproduces Obsidian's Reading
-        // View numbering: each *defined* id gets the next sequential number on
-        // its first appearance; repeats reuse it; undefined refs (e.g. `[^foo]`
-        // with no definition) render as plain text and get no number. We also
-        // record the first reference line as the jump target, since the
-        // reference lives in the body and scrolls reliably (the definition
-        // section at the bottom is not line-addressable in Reading View).
-        const displayNumberById = new Map<string, number>();
-        const refLineById = new Map<string, number>();
-        let nextNumber = 1;
-        lines.forEach((line, lineIdx) => {
-            const refRe = /\[\^([^\]]+)\](?!:)/g;
-            let m: RegExpExecArray | null;
-            while ((m = refRe.exec(line)) !== null) {
-                const id = m[1];
-                if (!definedIds.has(id)) continue;
-                if (!refLineById.has(id)) refLineById.set(id, lineIdx);
-                if (!displayNumberById.has(id)) displayNumberById.set(id, nextNumber++);
-            }
-        });
-
-        let footnotes: NavFootnote[] = definitions.map((def) => ({
-            ...def,
-            displayNumber: displayNumberById.has(def.id) ? displayNumberById.get(def.id) : null,
-            refLine: refLineById.has(def.id) ? refLineById.get(def.id) : def.line,
+        const observed = markdownSourceAdapter.observeFootnotes(raw);
+        const defined = observed.filter((item) => item.definitions.length > 0);
+        const orderedReferences = defined
+            .filter((item) => item.references.length > 0)
+            .sort((a, b) => a.references[0].start - b.references[0].start);
+        const displayNumberById = new Map(orderedReferences.map((item, index) => [item.label, index + 1]));
+        let footnotes: NavFootnote[] = defined.map((item) => ({
+            id: item.label,
+            text: item.text,
+            line: item.definitions[0].line,
+            displayNumber: displayNumberById.get(item.label) ?? null,
+            refLine: item.references[0]?.line ?? item.definitions[0].line,
+            integrity: item.integrity,
         }));
 
         // Orphan handling is SCOPED, so normal notes are never affected.
@@ -336,9 +320,9 @@ export class HighlightNavigatorView extends ItemView {
         // entry has a clean sequential number matching Reading View. A normal,
         // hand-written note has no `[^0]` marker, so all of its definitions stay
         // visible exactly as before (orphans show their `[^id]`).
-        const isGroupedNotesStyle = definedIds.has("0");
+        const isGroupedNotesStyle = defined.some((item) => item.label === "0");
         if (isGroupedNotesStyle) {
-            footnotes = footnotes.filter((f) => f.displayNumber != null);
+            footnotes = footnotes.filter((f) => f.displayNumber != null || f.id.startsWith("fp-"));
         }
 
         // Order to match Reading View: referenced footnotes by rendered number;
@@ -359,87 +343,20 @@ export class HighlightNavigatorView extends ItemView {
     }
 
     stripMarkdown(text: string): string {
-        if (!text) return "";
-        return text
-            .replace(/\[\[(?:[^\]|]+\|)?([^\]]+)\]\]/g, "$1") // [[Link]] or [[Link|Alias]] -> Link/Alias
-            .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // [Link](URL) -> Link
-            .replace(/[*_~`]+/g, ""); // Bold, Italics, Strikethrough, Code
+        return navigatorPreviewText(text);
     }
 
     renderContent() {
         this.contentEl.empty();
-        this.renderSelectionControls();
         this.renderSection(this.highlights, "highlights");
         this.renderSection(this.footnotes, "footnotes");
-    }
-
-    renderSelectionControls() {
-        const controls = this.selectionBarEl;
-        if (!controls) return;
-        controls.empty();
-        this.selectionCountEl = null;
-        this.groupButton = null;
-        this.ungroupButton = null;
-        controls.toggleClass("is-hidden", !this.selectionMode);
-        if (!this.selectionMode) return;
-        const toggle = controls.createEl("button", { text: "Done" });
-        toggle.setAttribute("aria-pressed", String(this.selectionMode));
-        toggle.onclick = () => this.setSelectionMode(false);
-
-        this.selectionCountEl = controls.createSpan({ cls: "fp-navigator-selected-count" });
-        this.groupButton = controls.createEl("button", { text: "Group" });
-        this.groupButton.setAttribute("aria-label", "Group selected highlights");
-        this.groupButton.onclick = () => void this.regroupSelected(createNotationGroupId());
-        this.ungroupButton = controls.createEl("button", { text: "Ungroup" });
-        this.ungroupButton.setAttribute("aria-label", "Ungroup selected highlights");
-        this.ungroupButton.onclick = () => void this.regroupSelected(null);
-        this.updateSelectionControls();
-    }
-
-    setSelectionMode(active: boolean) {
-        this.selectionMode = active;
-        if (active) this.sectionCollapsed.highlights = false;
-        this.selectedIds.clear();
-        this.renderContent();
-    }
-
-    updateSelectionControls() {
-        if (!this.selectionMode) return;
-        const selected = this.highlights.filter((highlight) => this.selectedIds.has(highlight.id));
-        this.selectionCountEl?.setText(`${selected.length} selected`);
-        if (this.groupButton) this.groupButton.disabled = selected.length < 2;
-        if (this.ungroupButton) this.ungroupButton.disabled = !selected.some((highlight) => highlight.groupId);
-    }
-
-    async regroupSelected(groupId: string | null) {
-        const file = this.currentFile;
-        if (!file) return;
-        const selected = this.highlights.filter(
-            (highlight) => this.selectedIds.has(highlight.id) && (groupId !== null || highlight.groupId)
-        );
-        if ((groupId && selected.length < 2) || (!groupId && !selected.some((highlight) => highlight.groupId))) {
-            return;
-        }
-        try {
-            // Preflight before saving undo or writing. vault.process validates
-            // again against the current version of the note, inside its lock.
-            regroupHighlightsInRaw(await this.app.vault.read(file), selected, groupId);
-            await this.plugin.saveUndoState(file);
-            await this.app.vault.process(file, (raw) => regroupHighlightsInRaw(raw, selected, groupId));
-            this.selectedIds.clear();
-            this.selectionMode = false;
-            await this.refresh(true);
-            new Notice(groupId ? "Highlights grouped." : "Groups separated.");
-        } catch (err) {
-            new Notice(err instanceof Error ? err.message : "Could not change groups.");
-        }
     }
 
     renderSection(items: NavItem[], type: ListType) {
         // Filter items based on search query
         const filteredItems = items.filter((item) => {
             if (!this.searchQuery) return true;
-            return item.text.toLowerCase().includes(this.searchQuery);
+            return this.stripMarkdown(item.text).toLowerCase().includes(this.searchQuery);
         });
 
         const collapsed = this.sectionCollapsed[type];
@@ -484,28 +401,17 @@ export class HighlightNavigatorView extends ItemView {
 
         filteredItems.forEach((item) => {
             const el = fragment.createDiv({ cls: "highlight-navigator-item" });
-
-            if (type === "highlights" && this.selectionMode) {
-                const highlight = item as Highlight;
-                const checkbox = el.createEl("input", { cls: "fp-navigator-select" });
-                checkbox.type = "checkbox";
-                checkbox.checked = this.selectedIds.has(highlight.id);
-                checkbox.setAttribute("aria-label", `Select highlight: ${highlight.text.slice(0, 80)}`);
-                checkbox.onchange = () => {
-                    if (checkbox.checked) this.selectedIds.add(highlight.id);
-                    else this.selectedIds.delete(highlight.id);
-                    el.toggleClass("is-selected", checkbox.checked);
-                    this.updateSelectionControls();
-                };
-                checkbox.onclick = (e) => e.stopPropagation();
-                el.toggleClass("is-selected", checkbox.checked);
+            const integrity = item.integrity;
+            if (integrity !== "resolved") {
+                el.setAttribute("data-integrity", integrity);
+                el.setAttribute("title", `Annotation integrity: ${integrity}. Review before editing.`);
             }
 
             const leading = el.createSpan({ cls: "fp-navigator-leading" });
             const leadingMeta = leading.createSpan({ cls: "fp-navigator-leading-meta" });
             const number = type === "highlights" ? items.indexOf(item) + 1 : (item as NavFootnote).displayNumber;
             const numberEl = leadingMeta.createSpan({ cls: "fp-navigator-number" });
-            numberEl.textContent = number != null ? String(number) : `[^${(item as NavFootnote).id}]`;
+            numberEl.textContent = number != null ? String(number) : "—";
 
             if (type === "highlights") {
                 const highlight = item as Highlight;
@@ -516,11 +422,11 @@ export class HighlightNavigatorView extends ItemView {
                     leadingMeta.createSpan({ cls: "highlight-color-dot highlight-default" });
                 }
                 if (highlight.members && new Set(highlight.members.map((part) => part.color)).size > 1) {
-                    el.addClass("fp-navigator-mixed-group");
+                    el.addClass("fp-navigator-mixed-parts");
                 }
             } else {
                 const footnote = item as NavFootnote;
-                numberEl.setAttribute("title", `[^${footnote.id}]`);
+                numberEl.setAttribute("title", footnote.displayNumber == null ? "No references" : `Footnote ${number}`);
             }
 
             // Create the right-side controls before the text so their float
@@ -542,7 +448,7 @@ export class HighlightNavigatorView extends ItemView {
                 e.preventDefault();
                 e.stopPropagation();
                 if (type === "footnotes") void this.jumpToFootnote(item as NavFootnote);
-                else void this.jumpToLine((item as Highlight).line);
+                else void this.jumpToLine(markdownSourceAdapter.navigationLine(item as Highlight));
             };
 
             // The actions control lives in the narrow metadata rail. Keeping
@@ -576,7 +482,10 @@ export class HighlightNavigatorView extends ItemView {
 
             const itemBody = el.createSpan({ cls: "fp-navigator-item-body" });
             const textSpan = itemBody.createSpan({ cls: "highlight-text" });
-            textSpan.textContent = this.stripMarkdown(item.text);
+            textSpan.textContent = this.stripMarkdown(item.text) || (type === "footnotes" ? "(Empty footnote)" : "");
+            if (type === "footnotes" && (item as NavFootnote).displayNumber == null) {
+                itemBody.createSpan({ cls: "fp-navigator-footnote-status", text: "Unreferenced" });
+            }
             const itemKey =
                 type === "highlights" ? `highlight:${(item as Highlight).id}` : `footnote:${(item as NavFootnote).id}`;
             let expanded = this.expandedItemIds.has(itemKey);
@@ -616,8 +525,8 @@ export class HighlightNavigatorView extends ItemView {
             }
             if (type === "highlights" && (item as Highlight).members?.length) {
                 itemBody.createSpan({
-                    cls: "fp-navigator-group-count",
-                    text: `${(item as Highlight).members?.length} highlights`,
+                    cls: "fp-navigator-part-count",
+                    text: `${(item as Highlight).members?.length} parts`,
                 });
             }
 
@@ -627,10 +536,6 @@ export class HighlightNavigatorView extends ItemView {
             el.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                if (type === "highlights" && this.selectionMode) {
-                    const checkbox = el.querySelector<HTMLInputElement>(".fp-navigator-select");
-                    if (checkbox) checkbox.click();
-                }
             };
         });
 
@@ -668,18 +573,6 @@ export class HighlightNavigatorView extends ItemView {
                 });
         });
 
-        if (item.groupId) {
-            menu.addItem((mi: MenuItem) => {
-                mi.setTitle("Ungroup highlights")
-                    .setIcon("ungroup")
-                    .onClick(() => {
-                        this.selectedIds.clear();
-                        this.selectedIds.add(item.id);
-                        void this.regroupSelected(null);
-                    });
-            });
-        }
-
         menu.addSeparator();
 
         menu.addItem((mi: MenuItem) => {
@@ -705,8 +598,14 @@ export class HighlightNavigatorView extends ItemView {
             await this.app.vault.process(currentFile, (data) => {
                 const highlight = findHighlightById(parseHighlights(data), item.id);
                 if (!highlight) return data;
+                if (
+                    !item.annotationId &&
+                    (highlight.start !== item.start || highlight.text !== item.text || highlight.type !== item.type)
+                ) {
+                    throw new Error("Legacy highlight changed; select it again before removal.");
+                }
                 found = true;
-                return removeHighlightGroupFromRaw(data, highlight);
+                return removeLogicalHighlightFromRaw(data, highlight);
             });
             if (!found) {
                 new Notice("Highlight not found (it may have moved).");
@@ -743,18 +642,32 @@ export class HighlightNavigatorView extends ItemView {
         };
     }
 
+    async writeCheckedSource(file: TFile, observedRaw: string, nextRaw: string, action: string): Promise<boolean> {
+        try {
+            await this.app.vault.process(file, (current) => {
+                if (current !== observedRaw) throw new Error(`Source changed; no ${action} removed.`);
+                return nextRaw;
+            });
+            return true;
+        } catch (err) {
+            new Notice(err instanceof Error ? err.message : `Could not remove ${action}.`);
+            return false;
+        }
+    }
+
     async removeAllHighlightsInNote() {
         const currentFile = this.currentFile;
         if (!currentFile) return;
         const raw = await this.app.vault.read(currentFile);
         const highlights = parseHighlights(raw).highlights;
+        const logicalCount = getHighlightsFromContent(raw).length;
         if (!highlights.length) {
             new Notice("No highlights to remove.");
             return;
         }
         const confirmed = await this.confirmDestructive(
             "Remove all highlights?",
-            `Remove ${highlights.length} highlight${highlights.length === 1 ? "" : "s"} from “${currentFile.basename}”? The text will remain in place.`,
+            `Remove ${logicalCount} highlight${logicalCount === 1 ? "" : "s"} from “${currentFile.basename}”? The text will remain in place.`,
             "Remove all"
         );
         if (!confirmed) return;
@@ -763,11 +676,11 @@ export class HighlightNavigatorView extends ItemView {
             .sort((a, b) => b.openTagStart - a.openTagStart)
             .reduce((content, highlight) => removeHighlightFromRaw(content, highlight), raw);
         await this.plugin.saveUndoState(currentFile, raw);
-        await this.app.vault.modify(currentFile, updated);
+        if (!(await this.writeCheckedSource(currentFile, raw, updated, "highlights"))) return;
         await this.refresh(true);
         this.showUndoNotice(
-            `Removed ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`,
-            `Restored ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`
+            `Removed ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`,
+            `Restored ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`
         );
     }
 
@@ -822,6 +735,10 @@ export class HighlightNavigatorView extends ItemView {
     async removeFootnoteInNote(item: NavFootnote) {
         const currentFile = this.currentFile;
         if (!currentFile) return;
+        if (item.integrity === "ambiguous") {
+            new Notice("Duplicate footnote definitions need review before removal.");
+            return;
+        }
         const raw = await this.app.vault.read(currentFile);
         const result = removeFootnoteFromRaw(raw, item.id);
         if (!result.changed) {
@@ -836,7 +753,7 @@ export class HighlightNavigatorView extends ItemView {
         if (!confirmed) return;
 
         await this.plugin.saveUndoState(currentFile, raw);
-        await this.app.vault.modify(currentFile, result.raw);
+        if (!(await this.writeCheckedSource(currentFile, raw, result.raw, "footnote"))) return;
         await this.refresh(true);
         this.showUndoNotice("Footnote removed.", "Footnote restored.");
     }
@@ -858,7 +775,7 @@ export class HighlightNavigatorView extends ItemView {
         if (!confirmed) return;
 
         await this.plugin.saveUndoState(currentFile, raw);
-        await this.app.vault.modify(currentFile, result.raw);
+        if (!(await this.writeCheckedSource(currentFile, raw, result.raw, "footnotes"))) return;
         await this.refresh(true);
         this.showUndoNotice(
             `Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`,
@@ -908,31 +825,13 @@ export class HighlightNavigatorView extends ItemView {
         // native footnote scroll/flash via the rendered reference link.
         leaf.setEphemeralState({ line: item.refLine ?? item.line, focus: true });
         window.setTimeout(() => {
-            const anchor = this.findFootnoteRefAnchor(view.contentEl, item);
+            const anchor = markdownSourceAdapter.findRenderedFootnoteReference(view.contentEl, item.displayNumber);
             if (anchor) {
                 anchor.click();
             }
         }, 120);
 
         this.collapseSidebarOnMobile();
-    }
-
-    findFootnoteRefAnchor(root: HTMLElement, item: NavFootnote): HTMLAnchorElement | null {
-        if (!root) return null;
-        const anchors = root.querySelectorAll<HTMLAnchorElement>(
-            "sup.footnote-ref a, a.footnote-ref, sup[id^='fnref'] a"
-        );
-        const wanted = item.displayNumber != null ? String(item.displayNumber) : null;
-
-        if (wanted) {
-            for (const a of Array.from(anchors)) {
-                // Reading View renders the sequential number as the link text.
-                if ((a.textContent || "").replace(/\D/g, "") === wanted) {
-                    return a;
-                }
-            }
-        }
-        return anchors.length ? anchors[0] : null;
     }
 
     collapseSidebarOnMobile() {
@@ -965,12 +864,6 @@ export class HighlightNavigatorView extends ItemView {
 
     openNavigatorMenu(event: MouseEvent) {
         const menu = new Menu().setUseNativeMenu(false);
-        menu.addItem((mi: MenuItem) => {
-            mi.setTitle("Select highlights")
-                .setIcon("list-checks")
-                .onClick(() => this.setSelectionMode(true));
-        });
-        menu.addSeparator();
         menu.addItem((mi: MenuItem) => {
             mi.setTitle("Export Markdown")
                 .setIcon("file-text")

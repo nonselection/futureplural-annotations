@@ -10,7 +10,7 @@ import {
 } from "../src/utils/canvas";
 import { TFile } from "obsidian";
 
-const highlight = (file, text, groupId = null) => ({ file, text, groupId });
+const highlight = (file, text, annotationId = null) => ({ file, text, annotationId });
 
 describe("Canvas snapshots", () => {
     it("preserves unknown data and hand-positioned cards while adding only missing marks", async () => {
@@ -54,7 +54,7 @@ describe("Canvas snapshots", () => {
         expect(JSON.stringify(second.data)).toBe(serialized);
     });
 
-    it("uses stable group identity and distinct ordinals for repeated text", async () => {
+    it("uses stable annotation identity and distinct ordinals for repeated legacy text", async () => {
         const file = new TFile("note.md");
         const marks = await prepareCanvasMarks([
             highlight(file, "Same"),
@@ -63,6 +63,13 @@ describe("Canvas snapshots", () => {
         ]);
         expect(new Set(marks.map((m) => m.key)).size).toBe(3);
         expect((await prepareCanvasMarks([highlight(file, "Changed text", "g-1")]))[0].key).toBe(marks[2].key);
+    });
+
+    it("refuses a Canvas snapshot of ambiguous copied managed identity", async () => {
+        const file = new TFile("note.md");
+        await expect(
+            prepareCanvasMarks([{ ...highlight(file, "Copied", "fp-copy"), integrity: "ambiguous" }])
+        ).rejects.toThrow(/ambiguous/);
     });
 
     it("updates source and canvas associations through file or folder renames", () => {

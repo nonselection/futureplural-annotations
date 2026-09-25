@@ -1,8 +1,9 @@
 // Issue 4: extending, overlapping and merging highlights.
 import { describe, it, expect } from "vitest";
 import { setup, textNodes, highlightRange } from "./WritePath.test.js";
+import { getHighlightsFromContent } from "../src/utils/export";
 
-const markers = (s) => (s.match(/==/g) || []).length;
+const marks = (s) => getHighlightsFromContent(s);
 
 /** Select from `startText` to `endText` (inclusive) across the rendered block. */
 async function selectBetween(ctx, startText, endText) {
@@ -21,8 +22,7 @@ describe("extending a highlight forwards", () => {
     it("merges into one highlight, period included", async () => {
         const ctx = await setup(raw, html);
         await selectBetween(ctx, "dos tres", "cinco seis.");
-        expect(ctx.out()).toBe("==Uno dos tres. Cuatro cinco seis.==");
-        expect(markers(ctx.out())).toBe(2);
+        expect(marks(ctx.out())).toMatchObject([{ text: "Uno dos tres. Cuatro cinco seis.", identityMode: "managed" }]);
     });
 });
 
@@ -33,8 +33,7 @@ describe("extending a highlight backwards", () => {
     it("merges into one highlight", async () => {
         const ctx = await setup(raw, html);
         await selectBetween(ctx, "Uno dos", "Cuatro cinco");
-        expect(ctx.out()).toBe("==Uno dos tres. Cuatro cinco seis.==");
-        expect(markers(ctx.out())).toBe(2);
+        expect(marks(ctx.out())).toMatchObject([{ text: "Uno dos tres. Cuatro cinco seis.", identityMode: "managed" }]);
     });
 });
 
@@ -45,9 +44,7 @@ describe("a selection spanning two separate highlights", () => {
     it("merges all of them into one", async () => {
         const ctx = await setup(raw, html);
         await selectBetween(ctx, "Uno.", "Cuatro.");
-        expect(markers(ctx.out())).toBe(2);
-        expect(ctx.out().startsWith("==Uno.")).toBe(true);
-        expect(ctx.out()).toContain("Cuatro.==");
+        expect(marks(ctx.out())).toMatchObject([{ text: "Uno. Dos tres. Cuatro.", identityMode: "managed" }]);
     });
 });
 
@@ -59,7 +56,7 @@ describe("a selection entirely inside an existing highlight", () => {
         const ctx = await setup(raw, html);
         await selectBetween(ctx, "dos", "tres");
         expect(ctx.out()).toBe(raw);
-        expect(markers(ctx.out())).toBe(2);
+        expect(marks(ctx.out())).toHaveLength(1);
     });
 });
 
@@ -71,7 +68,9 @@ describe("footnote reference inside the merged span", () => {
     it("keeps the footnote inside and closes after the final period", async () => {
         const ctx = await setup(raw, html);
         await selectBetween(ctx, "Era del grupo", "un comerciante.");
-        expect(ctx.out()).toBe("==Nació en el norte.[^4] Era del grupo. Su nombre procedió de un comerciante.==");
+        expect(marks(ctx.out())[0].text).toBe(
+            "Nació en el norte.[^4] Era del grupo. Su nombre procedió de un comerciante."
+        );
     });
 });
 
@@ -82,8 +81,8 @@ describe("closing marker goes after the trailing period", () => {
     it("never leaves the period outside", async () => {
         const ctx = await setup(raw, html);
         await selectBetween(ctx, "dos.", "cuatro negros.");
-        expect(ctx.out().endsWith("negros.==")).toBe(true);
-        expect(ctx.out()).not.toContain("negros==.");
+        expect(ctx.out().endsWith("negros.</mark>")).toBe(true);
+        expect(ctx.out()).not.toContain("negros</mark>.");
     });
 });
 
@@ -94,7 +93,7 @@ describe("a selection touching no highlight is unaffected", () => {
     it("adds its own highlight and leaves the other alone", async () => {
         const ctx = await setup(raw, html);
         await selectBetween(ctx, "Dos tres", "tres cuatro.");
-        expect(ctx.out()).toBe("==Uno.== ==Dos tres cuatro.== Cinco.");
-        expect(markers(ctx.out())).toBe(4);
+        expect(marks(ctx.out()).map((mark) => mark.text)).toEqual(["Uno.", "Dos tres cuatro."]);
+        expect(ctx.out()).toContain("==Uno.==");
     });
 });

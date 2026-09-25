@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { exportHighlightsToCSV, exportHighlightsToJSON, exportHighlightsToMD } from "../src/utils/export";
 
-describe("grouped passage exports", () => {
+describe("logical multipart exports", () => {
     it("exports one record for a multi-line annotation while retaining its constituent source lines", async () => {
         let raw = [
-            '- <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-group="list-a">One</mark>',
-            '- <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-group="list-a">Two</mark>',
+            '- <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-id="fp-12345678-abcd-4abc-8abc-123456789abc" data-fp-part="1/2">One</mark>',
+            '- <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-id="fp-12345678-abcd-4abc-8abc-123456789abc" data-fp-part="2/2">Two</mark>',
         ].join("\n");
         const created = new Map();
         const file = { path: "vault/note.md", basename: "note", parent: { path: "vault" } };
@@ -27,7 +27,7 @@ describe("grouped passage exports", () => {
         expect(json.total).toBe(1);
         expect(json.highlights[0]).toMatchObject({
             text: "One\nTwo",
-            groupId: "list-a",
+            annotationId: "fp-12345678-abcd-4abc-8abc-123456789abc",
             notationType: "highlight",
             parts: [
                 { text: "One", line: 0 },
@@ -36,7 +36,7 @@ describe("grouped passage exports", () => {
         });
 
         const csvPath = await exportHighlightsToCSV(app, file);
-        expect(created.get(csvPath).split("\n")[0]).toContain("group_id");
+        expect(created.get(csvPath).split("\n")[0]).toContain("annotation_id");
         expect(created.get(csvPath)).toContain('"One\nTwo"');
 
         const mdPath = await exportHighlightsToMD(app, file);

@@ -2,6 +2,15 @@
 // surface for plugin classes to be constructed and their methods called from
 // Node, so UI and selection code can be tested as written.
 
+import { JSDOM } from "jsdom";
+
+export function sanitizeHTMLToDom(html) {
+    const document = new JSDOM(`<body>${html}</body>`).window.document;
+    const fragment = document.createDocumentFragment();
+    while (document.body.firstChild) fragment.appendChild(document.body.firstChild);
+    return fragment;
+}
+
 export class Events {
     on() {}
     off() {}

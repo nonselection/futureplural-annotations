@@ -1,8 +1,9 @@
 // Issue 3: selecting a whole article. A note mixing headings, lists, footnotes
-// and existing highlights cannot be matched as one giant snippet, so it is
-// highlighted block by block.
+// cannot be matched as one giant snippet, so the writer uses anchored ends.
 import { describe, it, expect } from "vitest";
 import { setup, textNodes, highlightRange } from "./WritePath.test.js";
+import { getHighlightsFromContent } from "../src/utils/export";
+import { parseHighlights } from "../src/utils/highlights";
 
 const raw = [
     "---",
@@ -12,7 +13,7 @@ const raw = [
     "",
     "## Biografía",
     "",
-    "==Nació en la región del norte, en el occidente del país.[^4] Era del grupo.==",
+    "Nació en la región del norte, en el occidente del país.[^4] Era del grupo.",
     "",
     "El pueblo del norte no era favorecido por los comerciantes.[^1] Era común entre ellos.",
     "",
@@ -26,7 +27,7 @@ const raw = [
 
 const html = [
     "<h2>Biografía</h2>",
-    "<p><mark>Nació en la región del norte, en el occidente del país.<sup>1</sup> Era del grupo.</mark></p>",
+    "<p>Nació en la región del norte, en el occidente del país.<sup>1</sup> Era del grupo.</p>",
     "<p>El pueblo del norte no era favorecido por los comerciantes.<sup>2</sup> Era común entre ellos.</p>",
     "<h3>En la cultura</h3>",
     "<ul><li>La novela <em>Segunda parte</em> (1991), del autor del sur.</li>",
@@ -51,24 +52,27 @@ describe("highlighting an entire article", () => {
         const ctx = await setup(raw, html);
         await selectEverything(ctx);
         for (const line of ctx.out().split("\n")) {
-            expect(line).not.toMatch(/^[ \t]*==[ \t]*[-*+][ \t]/);
+            expect(line).not.toMatch(/^[ \t]*<mark[^>]*>[-*+][ \t]/);
         }
-        expect(ctx.out()).toContain("- ==La novela *Primera*");
+        expect(ctx.out()).toMatch(/- <mark[^>]*>La novela \*Primera\*/);
     });
 
     it("never puts the opening marker before a heading hash", async () => {
         const ctx = await setup(raw, html);
         await selectEverything(ctx);
         for (const line of ctx.out().split("\n")) {
-            expect(line).not.toMatch(/^[ \t]*==[ \t]*#/);
+            expect(line).not.toMatch(/^[ \t]*<mark[^>]*>#/);
         }
-        expect(ctx.out()).toContain("## ==Biografía==");
+        expect(ctx.out()).toMatch(/## <mark[^>]*>Biografía<\/mark>/);
     });
 
     it("leaves balanced markers", async () => {
         const ctx = await setup(raw, html);
         await selectEverything(ctx);
-        expect((ctx.out().match(/==/g) || []).length % 2).toBe(0);
+        const parts = parseHighlights(ctx.out()).highlights;
+        expect(parts.length).toBeGreaterThan(3);
+        expect(new Set(parts.map((part) => part.annotationId)).size).toBe(1);
+        expect(getHighlightsFromContent(ctx.out())).toHaveLength(1);
     });
 
     it("does not disturb the frontmatter", async () => {
@@ -77,13 +81,21 @@ describe("highlighting an entire article", () => {
         expect(ctx.out().startsWith("---\ntags:\n  - x\n---\n")).toBe(true);
     });
 
-    it("highlights the already-highlighted paragraph exactly once", async () => {
+    it("keeps the footnote reference inside a managed part", async () => {
         const ctx = await setup(raw, html);
         await selectEverything(ctx);
         const line = ctx
             .out()
             .split("\n")
             .find((l) => l.includes("Nació en la región"));
-        expect((line.match(/==/g) || []).length).toBe(2);
+        expect(line).toMatch(/<mark[^>]*>Nació[^<]*\[\^4\][^<]*<\/mark>/);
+    });
+
+    it("refuses to replace an existing external mark during a broad gesture", async () => {
+        const markedRaw = raw.replace("Nació en la región", "==Nació en la región==");
+        const markedHtml = html.replace("Nació en la región", "<mark>Nació en la región</mark>");
+        const ctx = await setup(markedRaw, markedHtml);
+        await selectEverything(ctx);
+        expect(ctx.out()).toBe(markedRaw);
     });
 });

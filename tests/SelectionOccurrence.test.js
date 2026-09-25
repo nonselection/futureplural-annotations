@@ -19,6 +19,10 @@ async function setup(raw, html) {
     const app = {
         vault: {
             read: async () => current,
+            process: async (_f, change) => {
+                current = change(current);
+                return current;
+            },
             modify: async (_f, content) => {
                 current = content;
             },
@@ -60,14 +64,14 @@ describe("selecting a repeated word in one block", () => {
         const ctx = await setup(raw, html);
         const first = ctx.container.querySelector("p").firstChild;
         await highlight(ctx, first, 4, "apple");
-        expect(ctx.output()).toBe("The ==apple== is red.\nI ate an apple today.");
+        expect(ctx.output()).toMatch(/The <mark [^>]*>apple<\/mark> is red\.\nI ate an apple today\./);
     });
 
     it("highlights the second occurrence when the second is selected", async () => {
         const ctx = await setup(raw, html);
         const second = ctx.container.querySelector("p").lastChild;
         await highlight(ctx, second, 9, "apple");
-        expect(ctx.output()).toBe("The apple is red.\nI ate an ==apple== today.");
+        expect(ctx.output()).toMatch(/The apple is red\.\nI ate an <mark [^>]*>apple<\/mark> today\./);
     });
 });
 
@@ -79,7 +83,7 @@ describe("selecting a word repeated across separate paragraphs", () => {
         const ctx = await setup(raw, html);
         const second = ctx.container.querySelectorAll("p")[1].firstChild;
         await highlight(ctx, second, 6, "apple");
-        expect(ctx.output()).toBe("Alpha apple beta.\n\nGamma ==apple== delta.");
+        expect(ctx.output()).toMatch(/Alpha apple beta\.\n\nGamma <mark [^>]*>apple<\/mark> delta\./);
     });
 });
 
@@ -91,6 +95,8 @@ describe("selecting inside identical duplicated paragraphs", () => {
         const ctx = await setup(raw, html);
         const third = ctx.container.querySelectorAll("p")[2].firstChild;
         await highlight(ctx, third, 9, "apple");
-        expect(ctx.output()).toBe("Repeated apple line.\n\nFiller between.\n\nRepeated ==apple== line.");
+        expect(ctx.output()).toMatch(
+            /Repeated apple line\.\n\nFiller between\.\n\nRepeated <mark [^>]*>apple<\/mark> line\./
+        );
     });
 });

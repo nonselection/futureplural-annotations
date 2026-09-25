@@ -45,6 +45,19 @@ describe("removeFootnoteFromRaw", () => {
         expect(changed).toBe(true);
         expect(out).not.toContain("[^note]");
     });
+
+    it("preserves footnote-looking code, comments and escaped examples while removing real references", () => {
+        const raw = "Real[^note]. `[^note]` \\[^note] <!-- [^note] -->\n\n[^note]: explanation\n";
+        const { raw: out } = removeFootnoteFromRaw(raw, "note");
+        expect(out).toContain("Real. `[^note]` \\[^note] <!-- [^note] -->");
+        expect(out).not.toContain("[^note]: explanation");
+    });
+
+    it("removes a multiline definition without leaving continuation text", () => {
+        const raw = "Text[^note].\n\n[^note]: First\n    second line\n";
+        const { raw: out } = removeFootnoteFromRaw(raw, "note");
+        expect(out).toBe("Text.\n");
+    });
 });
 
 describe("removeAllFootnotesFromRaw", () => {

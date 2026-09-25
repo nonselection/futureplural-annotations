@@ -573,47 +573,13 @@ body .highlight-navigator-container .fp-navigator-section-heading:hover {
     font-style: italic;
 }
 
-.fp-navigator-selection-controls {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 4px 8px 10px;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--background-modifier-border);
-    background: var(--background-primary);
-}
-
-.fp-navigator-selection-controls.is-hidden {
-    display: none;
-}
-
-.fp-navigator-selection-controls button {
-    font-size: 0.82em;
-    padding: 5px 8px;
-}
-
-.fp-navigator-selected-count,
-.fp-navigator-group-count {
+.fp-navigator-part-count {
     font-size: 0.72em;
     color: var(--text-muted);
     white-space: nowrap;
 }
 
-.fp-navigator-selected-count {
-    margin-right: auto;
-}
-
-.fp-navigator-select {
-    flex-shrink: 0;
-    margin-top: 3px;
-}
-
-.highlight-navigator-item.is-selected {
-    background: var(--background-modifier-hover);
-}
-
-.fp-navigator-mixed-group .highlight-color-dot.highlight-default {
+.fp-navigator-mixed-parts .highlight-color-dot.highlight-default {
     background: conic-gradient(var(--text-muted) 0 50%, var(--background-secondary) 0 100%);
 }
 
@@ -703,6 +669,14 @@ body .highlight-navigator-container .highlight-navigator-list {
     overflow: visible;
 }
 
+.fp-navigator-footnote-status {
+    display: block;
+    clear: both;
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 0.72em;
+}
+
 body .highlight-navigator-container .fp-navigator-expand {
     display: block;
     clear: both;
@@ -726,7 +700,7 @@ body .highlight-navigator-container .fp-navigator-expand.is-hidden {
     display: none;
 }
 
-.fp-navigator-group-count {
+.fp-navigator-part-count {
     display: block;
     clear: both;
     padding-top: 2px;

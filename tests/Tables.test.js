@@ -2,6 +2,8 @@
 // than column boundaries, and only the cells the user selected get highlighted.
 import { describe, it, expect } from "vitest";
 import { setup, textNodes, highlightRange, notationRange } from "./WritePath.test.js";
+import { getHighlightsFromContent } from "../src/utils/export";
+import { parseHighlights } from "../src/utils/highlights";
 
 const raw = [
     "# Tabla",
@@ -36,27 +38,36 @@ describe("table cells", () => {
         const ctx = await setup(raw, html);
         const cell = cellOf(ctx, 2, 1);
         await highlightCells(ctx, cell, cell);
-        expect(lineWith(ctx.out(), "A2")).toBe("| A2 | ==Lorem ipsum== | Dolor sit |");
+        expect(parseHighlights(ctx.out()).highlights).toMatchObject([{ text: "Lorem ipsum", partId: "1/1" }]);
+        expect(lineWith(ctx.out(), "A2")).toMatch(/^\| A2 \| <mark [^>]*>Lorem ipsum<\/mark> \| Dolor sit \|$/);
     });
 
     it("never lets a highlight span a column boundary", async () => {
         const ctx = await setup(raw, html);
         await highlightCells(ctx, cellOf(ctx, 2, 0), cellOf(ctx, 2, 2));
-        expect(lineWith(ctx.out(), "A2")).toBe("| ==A2== | ==Lorem ipsum== | ==Dolor sit== |");
+        const parts = parseHighlights(ctx.out()).highlights;
+        expect(parts.map((part) => part.partId)).toEqual(["1/3", "2/3", "3/3"]);
+        expect(new Set(parts.map((part) => part.annotationId)).size).toBe(1);
+        expect(getHighlightsFromContent(ctx.out())).toHaveLength(1);
+        expect(lineWith(ctx.out(), "A2")).not.toMatch(/<mark[^>]*>[^<]*\|/);
     });
 
     it("highlights a header row cell by cell", async () => {
         const ctx = await setup(raw, html);
         await highlightCells(ctx, cellOf(ctx, 0, 0), cellOf(ctx, 0, 2));
-        expect(lineWith(ctx.out(), "Ref")).toBe("| ==Ref== | ==Fuente== | ==Nota== |");
+        expect(parseHighlights(ctx.out()).highlights.map((part) => part.text)).toEqual(["Ref", "Fuente", "Nota"]);
     });
 
     it("treats an escaped pipe as content, not a column boundary", async () => {
         const ctx = await setup(raw, html);
         await highlightCells(ctx, cellOf(ctx, 1, 0), cellOf(ctx, 1, 2));
         const line = lineWith(ctx.out(), "A1");
-        expect(line).toBe("| ==A1== | ==[[Nota\\|Alias]]== | ==`a \\| b`== |");
-        expect(line).not.toContain("\\==|");
+        expect(parseHighlights(ctx.out()).highlights.map((part) => part.text)).toEqual([
+            "A1",
+            "[[Nota\\|Alias]]",
+            "`a \\| b`",
+        ]);
+        expect(line).not.toContain("\\<mark");
     });
 
     it("leaves the delimiter row untouched", async () => {
@@ -76,7 +87,8 @@ describe("table cells", () => {
         const ctx = await setup(raw, html);
         const cell = cellOf(ctx, 2, 2);
         await highlightCells(ctx, cell, cell);
-        expect(lineWith(ctx.out(), "A2")).toBe("| A2 | Lorem ipsum | ==Dolor sit== |");
+        expect(parseHighlights(ctx.out()).highlights.map((part) => part.text)).toEqual(["Dolor sit"]);
+        expect(lineWith(ctx.out(), "A2")).toMatch(/^\| A2 \| Lorem ipsum \| <mark [^>]*>Dolor sit<\/mark> \|$/);
     });
 
     it("writes FuturePlural notation metadata inside a table cell", async () => {
@@ -85,8 +97,8 @@ describe("table cells", () => {
 
         await notationRange(ctx, nodes[0], 0, nodes[0], nodes[0].nodeValue.length, "box", "#ed9275");
 
-        expect(lineWith(ctx.out(), "A2")).toBe(
-            '| A2 | <mark data-fp-notation="box" data-fp-color="#ed9275" data-fp-opacity="0.68">Lorem ipsum</mark> | Dolor sit |'
+        expect(lineWith(ctx.out(), "A2")).toMatch(
+            /<mark data-fp-notation="box" data-fp-color="#ed9275" data-fp-opacity="0.68" data-fp-id="fp-[^"]+" data-fp-part="1\/1">Lorem ipsum<\/mark>/
         );
     });
 });

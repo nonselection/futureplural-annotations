@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createNotationOpenTag, NOTATION_TYPES } from "../src/models/notations";
 import {
-    groupHighlights,
+    logicalHighlights,
     parseHighlights,
-    removeHighlightGroupFromRaw,
+    removeLogicalHighlightFromRaw,
     updateHighlightColorInRaw,
 } from "../src/utils/highlights";
 
@@ -14,7 +14,7 @@ describe("FuturePlural notation parsing", () => {
         expect(highlight.type).toBe("markdown");
         expect(highlight.notationType).toBe("highlight");
         expect(highlight.color).toBeNull();
-        expect(highlight.groupId).toBeNull();
+        expect(highlight.identityMode).toBe("tracked-legacy");
     });
 
     it("normalizes a legacy coloured mark into a highlight notation", () => {
@@ -24,7 +24,7 @@ describe("FuturePlural notation parsing", () => {
         expect(highlight.type).toBe("html");
         expect(highlight.notationType).toBe("highlight");
         expect(highlight.color).toBe("#ffcc66");
-        expect(highlight.groupId).toBeNull();
+        expect(highlight.identityMode).toBe("tracked-legacy");
     });
 
     it.each(NOTATION_TYPES)("parses the %s notation contract", (notationType) => {
@@ -35,16 +35,19 @@ describe("FuturePlural notation parsing", () => {
         expect(highlight.color).toBe("#8fa58f");
     });
 
-    it("round-trips notation type, colour, and logical group through the canonical contract", () => {
-        const openTag = createNotationOpenTag({ notationType: "underline", color: "#8fa58f" }, "reading-list-a");
+    it("round-trips notation type, colour, and managed part identity", () => {
+        const id = "fp-12345678-abcd-4abc-8abc-123456789abc";
+        const openTag = createNotationOpenTag({ notationType: "underline", color: "#8fa58f" }, id, "1/1");
         const [highlight] = parseHighlights(`${openTag}text</mark>`).highlights;
 
         expect(openTag).toBe(
-            '<mark data-fp-notation="underline" data-fp-color="#8fa58f" data-fp-group="reading-list-a">'
+            `<mark data-fp-notation="underline" data-fp-color="#8fa58f" data-fp-id="${id}" data-fp-part="1/1">`
         );
         expect(highlight.notationType).toBe("underline");
         expect(highlight.color).toBe("#8fa58f");
-        expect(highlight.groupId).toBe("reading-list-a");
+        expect(highlight.annotationId).toBe(id);
+        expect(highlight.identityMode).toBe("managed");
+        expect(highlight.integrity).toBe("resolved");
     });
 
     it("treats FuturePlural colour metadata as canonical when legacy style is also present", () => {
@@ -64,17 +67,20 @@ describe("FuturePlural notation parsing", () => {
         expect(highlight.color).toBe("#8fa58f");
     });
 
-    it("preserves a shared logical group across separate source-safe wrappers", () => {
+    it("projects ordered physical parts into one logical annotation", () => {
+        const id = "fp-12345678-abcd-4abc-8abc-123456789abc";
         const raw = [
-            '- <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-group="list-a">One</mark>',
-            '- <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-group="list-a">Two</mark>',
+            `- <mark data-fp-id="${id}" data-fp-part="1/2">One</mark>`,
+            `- <mark data-fp-id="${id}" data-fp-part="2/2">Two</mark>`,
         ].join("\n");
         const highlights = parseHighlights(raw).highlights;
 
         expect(highlights).toHaveLength(2);
-        expect(highlights.map((highlight) => highlight.groupId)).toEqual(["list-a", "list-a"]);
-        expect(groupHighlights(highlights)).toMatchObject([{ text: "One\nTwo", groupId: "list-a" }]);
-        expect(removeHighlightGroupFromRaw(raw, groupHighlights(highlights)[0])).toBe("- One\n- Two");
+        expect(highlights.map((highlight) => highlight.partId)).toEqual(["1/2", "2/2"]);
+        expect(logicalHighlights(highlights)).toMatchObject([
+            { text: "One\nTwo", annotationId: id, integrity: "resolved" },
+        ]);
+        expect(removeLogicalHighlightFromRaw(raw, logicalHighlights(highlights)[0])).toBe("- One\n- Two");
     });
 
     it("recolours a FuturePlural mark through its canonical color metadata", () => {
@@ -119,7 +125,7 @@ describe("FuturePlural notation parsing", () => {
             '<mark style="background-color: #eabe98">a passage\r\nthat continues</mark>'
         );
         expect(raw.slice(highlight.innerStart, highlight.innerEnd)).toBe(highlight.text);
-        expect(removeHighlightGroupFromRaw(raw, highlight)).toBe(raw.replace(/<mark[^>]*>|<\/mark>/g, ""));
+        expect(removeLogicalHighlightFromRaw(raw, highlight)).toBe(raw.replace(/<mark[^>]*>|<\/mark>/g, ""));
     });
 
     it("ignores Markdown examples in fences, inline code, comments and indented code", () => {

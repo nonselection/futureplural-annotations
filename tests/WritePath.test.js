@@ -5,7 +5,7 @@ import { SelectionLogic } from "../src/core/SelectionLogic";
 import { TFile } from "./obsidian-stub.js";
 import { createObsidianWindow } from "./dom-helpers.js";
 import { getHighlightsFromContent } from "../src/utils/export";
-import { parseHighlights, removeHighlightGroupFromRaw } from "../src/utils/highlights";
+import { parseHighlights, removeLogicalHighlightFromRaw } from "../src/utils/highlights";
 
 export async function setup(raw, html) {
     const window = createObsidianWindow();
@@ -27,6 +27,10 @@ export async function setup(raw, html) {
         vault: {
             read: async () => {
                 readCount += 1;
+                return current;
+            },
+            process: async (_f, transform) => {
+                current = transform(current);
                 return current;
             },
             modify: async (_f, c) => {
@@ -105,8 +109,10 @@ describe("issue 3: list marker must stay outside the highlight", () => {
         const li = ctx.content.querySelectorAll("li")[0];
         const nodes = textNodes(li);
         await highlightRange(ctx, nodes[0], 0, nodes[nodes.length - 1], nodes[nodes.length - 1].nodeValue.length);
-        expect(ctx.out()).toContain("- ==La novela *Primera* (2023), del autor regional.==");
-        expect(ctx.out()).not.toContain("==- ");
+        expect(ctx.out()).toMatch(
+            /- <mark [^>]*data-fp-part="1\/1">La novela \*Primera\* \(2023\), del autor regional\.<\/mark>/
+        );
+        expect(ctx.out()).not.toMatch(/<mark[^>]*>- /);
     });
 
     it("selecting the whole article keeps every marker outside", async () => {
@@ -114,8 +120,7 @@ describe("issue 3: list marker must stay outside the highlight", () => {
         const nodes = textNodes(ctx.content);
         const last = nodes[nodes.length - 1];
         await highlightRange(ctx, nodes[0], 0, last, last.nodeValue.length);
-        expect(ctx.out()).not.toContain("==- ");
-        expect(ctx.out()).not.toContain("==# ");
+        expect(ctx.out()).not.toMatch(/<mark[^>]*>[-#] /);
     });
 });
 
@@ -135,10 +140,10 @@ describe("issue 4: extending an existing highlight", () => {
         await highlightRange(ctx, inner, startOff, last, last.nodeValue.length);
 
         const out = ctx.out();
-        // Exactly one highlight, spanning the whole paragraph, period included.
-        expect((out.match(/==/g) || []).length).toBe(2);
-        expect(out.startsWith("==Nació")).toBe(true);
-        expect(out.trimEnd().endsWith("lejano.==")).toBe(true);
+        const [mark] = getHighlightsFromContent(out);
+        expect(mark.text).toContain("Nació en el norte");
+        expect(mark.text).toContain("lejano.");
+        expect(mark.annotationId).toMatch(/^fp-/);
     });
 });
 
@@ -157,12 +162,13 @@ describe("FuturePlural notation write path", () => {
         const parts = parseHighlights(ctx.out()).highlights;
         expect(parts).toHaveLength(3);
         expect(parts.every((part) => part.notationType === "underline")).toBe(true);
-        expect(parts.map((part) => part.groupId)).toEqual([parts[0].groupId, parts[0].groupId, parts[0].groupId]);
-        expect(parts[0].groupId).toMatch(/^fp-/);
+        expect(new Set(parts.map((part) => part.annotationId)).size).toBe(1);
+        expect(parts[0].annotationId).toMatch(/^fp-/);
+        expect(parts.map((part) => part.partId)).toEqual(["1/3", "2/3", "3/3"]);
         const [logical] = getHighlightsFromContent(ctx.out());
         expect(logical.text).toBe("Alpha one\nBeta two\nGamma three");
         expect(logical.members).toHaveLength(3);
-        expect(removeHighlightGroupFromRaw(ctx.out(), logical)).toBe("- Alpha one\n- Beta two\n- Gamma three");
+        expect(removeLogicalHighlightFromRaw(ctx.out(), logical)).toBe("- Alpha one\n- Beta two\n- Gamma three");
     });
 
     it("does not replace existing marks when grouping a passage", async () => {
@@ -174,7 +180,7 @@ describe("FuturePlural notation write path", () => {
         expect(ctx.out()).toBe(raw);
     });
 
-    it("can leave multi-block marks separate for later Navigator grouping", async () => {
+    it("keeps one logical ID across blocks regardless of obsolete settings data", async () => {
         const ctx = await setup("- Alpha one\n- Beta two", "<ul><li>Alpha one</li><li>Beta two</li></ul>");
         ctx.plugin.settings.autoGroupMultiBlock = false;
         const items = ctx.content.querySelectorAll("li");
@@ -182,8 +188,9 @@ describe("FuturePlural notation write path", () => {
         const last = textNodes(items[1])[0];
         await notationRange(ctx, first, 0, last, last.nodeValue.length, "highlight");
 
-        expect(parseHighlights(ctx.out()).highlights.map((part) => part.groupId)).toEqual([null, null]);
-        expect(getHighlightsFromContent(ctx.out())).toHaveLength(2);
+        const parts = parseHighlights(ctx.out()).highlights;
+        expect(new Set(parts.map((part) => part.annotationId)).size).toBe(1);
+        expect(getHighlightsFromContent(ctx.out())).toHaveLength(1);
     });
 
     it("writes the selected notation type and semantic colour", async () => {
@@ -192,8 +199,8 @@ describe("FuturePlural notation write path", () => {
 
         await notationRange(ctx, node, 6, node, 10, "underline");
 
-        expect(ctx.out()).toBe(
-            'Alpha <mark data-fp-notation="underline" data-fp-color="#8fa58f" data-fp-opacity="0.8">beta</mark> gamma.'
+        expect(ctx.out()).toMatch(
+            /Alpha <mark data-fp-notation="underline" data-fp-color="#8fa58f" data-fp-opacity="0.8" data-fp-id="fp-[^"]+" data-fp-part="1\/1">beta<\/mark> gamma\./
         );
         expect(ctx.reads()).toBe(1);
     });
@@ -205,8 +212,8 @@ describe("FuturePlural notation write path", () => {
 
         await notationRange(ctx, node, 6, node, 10, "highlight", "#f3c969");
 
-        expect(ctx.out()).toBe(
-            'Alpha <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-opacity="0.6">beta</mark> gamma.'
+        expect(ctx.out()).toMatch(
+            /Alpha <mark data-fp-notation="highlight" data-fp-color="#f3c969" data-fp-opacity="0.6" data-fp-id="fp-[^"]+" data-fp-part="1\/1">beta<\/mark> gamma\./
         );
     });
 });

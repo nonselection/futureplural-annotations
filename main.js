@@ -30,9 +30,6 @@ function normalizeOpacity(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : null;
 }
-function createNotationGroupId() {
-  return `fp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
 function isNotationType(value) {
   return NOTATION_TYPES.includes(value);
 }
@@ -43,15 +40,14 @@ function normalizeNotationType(value) {
 function escapeAttribute(value) {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-function createNotationOpenTag(spec, groupId = null) {
+function createNotationOpenTag(spec, id, part) {
   var _a;
   const attributes = [`data-fp-notation="${spec.notationType}"`];
   const color = (_a = spec.color) == null ? void 0 : _a.trim();
-  const group = groupId == null ? void 0 : groupId.trim();
   if (color) attributes.push(`data-fp-color="${escapeAttribute(color)}"`);
   const opacity = normalizeOpacity(spec.opacity);
   if (opacity !== null) attributes.push(`data-fp-opacity="${opacity}"`);
-  if (group) attributes.push(`data-fp-group="${escapeAttribute(group)}"`);
+  attributes.push(`data-fp-id="${escapeAttribute(id)}"`, `data-fp-part="${escapeAttribute(part)}"`);
   return `<mark ${attributes.join(" ")}>`;
 }
 var NOTATION_TYPES, DEFAULT_NOTATION_OPACITY, DEFAULT_NOTATION_TYPE;
@@ -67,6 +63,18 @@ var init_notations = __esm({
       "crossed-off": 0.72
     };
     DEFAULT_NOTATION_TYPE = "highlight";
+  }
+});
+
+// src/models/annotation.ts
+function createAnnotationId() {
+  return `fp-${crypto.randomUUID()}`;
+}
+function isAnnotationId(value) {
+  return /^fp-[A-Za-z0-9-]{8,124}$/.test(value);
+}
+var init_annotation = __esm({
+  "src/models/annotation.ts"() {
   }
 });
 
@@ -109,6 +117,38 @@ function extractAttribute(openTag, attributeName) {
   const value = (_a = match == null ? void 0 : match[2]) == null ? void 0 : _a.trim();
   return value || null;
 }
+function identityAttribute(openTag, attributeName) {
+  var _a, _b, _c, _d, _e, _f, _g, _h;
+  const attributes = /* @__PURE__ */ new Map();
+  let index = (_b = (_a = /^<mark\b/i.exec(openTag)) == null ? void 0 : _a[0].length) != null ? _b : 0;
+  while (index < openTag.length) {
+    while (/\s/.test((_c = openTag[index]) != null ? _c : "")) index++;
+    if (openTag[index] === ">" || openTag[index] === "/" || index >= openTag.length) break;
+    const name = (_d = /^[^\s=/>]+/.exec(openTag.slice(index))) == null ? void 0 : _d[0];
+    if (!name) {
+      index++;
+      continue;
+    }
+    index += name.length;
+    while (/\s/.test((_e = openTag[index]) != null ? _e : "")) index++;
+    if (openTag[index] !== "=") continue;
+    index++;
+    while (/\s/.test((_f = openTag[index]) != null ? _f : "")) index++;
+    const quote = openTag[index];
+    if (quote !== '"' && quote !== "'") {
+      while (index < openTag.length && !/[\s>]/.test(openTag[index])) index++;
+      continue;
+    }
+    const start = ++index;
+    while (index < openTag.length && openTag[index] !== quote) index++;
+    const value = openTag.slice(start, index).trim();
+    if (index < openTag.length) index++;
+    const key = name.toLowerCase();
+    attributes.set(key, [...(_g = attributes.get(key)) != null ? _g : [], value]);
+  }
+  const values = (_h = attributes.get(attributeName.toLowerCase())) != null ? _h : [];
+  return { value: values[0] || null, duplicate: values.length > 1 };
+}
 function normalizeTagsText(tagsText) {
   const tokens = String(tagsText || "").split(/\s+/).map((token) => token.trim()).filter(Boolean);
   const cleaned = tokens.map((token) => token.replace(/^#/, "")).filter(Boolean).map((token) => `#${token}`);
@@ -149,7 +189,7 @@ function visibleSource(raw) {
   for (let i2 = 0; i2 < raw.length; i2++) {
     if (hidden[i2] === " " && raw[i2] !== " ") continue;
     if (raw[i2] === "\\") {
-      if (i2 + 1 < raw.length && /[\\`<>=]/.test(raw[i2 + 1])) hide(i2, i2 + 2);
+      if (i2 + 1 < raw.length && /[\\`<>=[]/.test(raw[i2 + 1])) hide(i2, i2 + 2);
       i2++;
       continue;
     }
@@ -204,22 +244,34 @@ function sourceLineAt(lineStarts, offset) {
   return low;
 }
 function parseFootnotes(raw) {
-  var _a;
   const newline = detectNewline(raw);
   const lines = raw.split(/\r?\n/);
+  const visibleLines = visibleSource(raw).split(/\r?\n/);
   const results = /* @__PURE__ */ new Map();
   let offset = 0;
+  let active = null;
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
-    const match = line.match(/^\[\^([^\]]+)\]:\s*(.*)$/);
+    const match = visibleLines[lineIdx].match(/^\s{0,3}\[\^([^\]]+)\]:\s*/);
     if (match) {
-      results.set(match[1], {
-        id: match[1],
-        text: (_a = match[2]) != null ? _a : "",
-        line: lineIdx,
-        start: offset,
-        end: offset + line.length
-      });
+      if (results.has(match[1])) {
+        active = null;
+      } else {
+        active = {
+          id: match[1],
+          text: line.slice(match[0].length),
+          line: lineIdx,
+          start: offset,
+          end: offset + line.length
+        };
+        results.set(match[1], active);
+      }
+    } else if (active && /^(?: {4}|\t)\S/.test(line)) {
+      active.text += `
+${line.replace(/^(?: {4}|\t)/, "")}`;
+      active.end = offset + line.length;
+    } else {
+      active = null;
     }
     offset += line.length + (lineIdx < lines.length - 1 ? newline.length : 0);
   }
@@ -244,7 +296,6 @@ function parseHighlights(raw) {
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
     lineStarts.push(lineOffset);
-    let matchIndex = 0;
     const markdownPattern = /==(?=\S)(.*?)==/g;
     let match;
     while ((match = markdownPattern.exec(visibleLines[lineIdx])) !== null) {
@@ -262,14 +313,19 @@ function parseHighlights(raw) {
         innerStart
       });
       highlights.push({
-        id: `${lineIdx}:${matchIndex}`,
+        id: `legacy:markdown:${start}`,
         text: innerText.trim(),
         line: lineIdx,
         type: "markdown",
         notationType: "highlight",
         opacity: null,
         color: null,
-        groupId: null,
+        annotationId: null,
+        partId: null,
+        partIndex: null,
+        partTotal: null,
+        identityMode: "tracked-legacy",
+        integrity: "resolved",
         start,
         end,
         innerStart,
@@ -287,7 +343,6 @@ function parseHighlights(raw) {
         footnotePlacement: (_d = footnote == null ? void 0 : footnote.placement) != null ? _d : null,
         annotation: (footnote == null ? void 0 : footnote.id) ? (_f = (_e = footnotes.get(footnote.id)) == null ? void 0 : _e.text) != null ? _f : "" : ""
       });
-      matchIndex++;
     }
     lineOffset += line.length + (lineIdx < lines.length - 1 ? newline.length : 0);
   }
@@ -330,15 +385,30 @@ function parseHighlights(raw) {
       innerText,
       innerStart
     });
+    const idAttribute = identityAttribute(openTag, "data-fp-id");
+    const partAttribute = identityAttribute(openTag, "data-fp-part");
+    const rawId = idAttribute.value;
+    const metadataConflict = idAttribute.duplicate || partAttribute.duplicate;
+    const annotationId = !idAttribute.duplicate && rawId && isAnnotationId(rawId) ? rawId : null;
+    const partId = partAttribute.value;
+    const part = partId == null ? void 0 : partId.match(/^([1-9]\d*)\/([1-9]\d*)$/);
+    const partIndex = part ? Number(part[1]) : null;
+    const partTotal = part ? Number(part[2]) : null;
+    const validPart = partIndex !== null && partTotal !== null && partIndex <= partTotal;
     highlights.push({
-      id: `${lineIdx}:${start - lineOffset2}`,
+      id: annotationId != null ? annotationId : `legacy:html:${start}`,
       text: innerText.trim(),
       line: lineIdx,
       type: "html",
       notationType: normalizeNotationType(extractAttribute(openTag, "data-fp-notation")),
       opacity: normalizeOpacity(extractAttribute(openTag, "data-fp-opacity")),
       color: color ? color.trim() : null,
-      groupId: extractAttribute(openTag, "data-fp-group"),
+      annotationId,
+      partId,
+      partIndex: validPart ? partIndex : null,
+      partTotal: validPart ? partTotal : null,
+      identityMode: annotationId ? "managed" : "tracked-legacy",
+      integrity: metadataConflict ? "ambiguous" : annotationId ? validPart ? "resolved" : "degraded" : rawId || partId ? "degraded" : "resolved",
       start,
       end,
       innerStart,
@@ -415,76 +485,57 @@ function detectFootnoteForHighlight({
   };
 }
 function findHighlightById(parsed, id) {
-  return parsed.highlights.find((h2) => h2.id === id) || null;
+  return logicalHighlights(parsed.highlights).find((h2) => h2.id === id) || null;
 }
-function groupHighlights(highlights) {
+function logicalHighlights(highlights) {
   var _a;
-  const grouped = /* @__PURE__ */ new Map();
-  for (const highlight of highlights) {
-    if (!highlight.groupId) continue;
-    const members = (_a = grouped.get(highlight.groupId)) != null ? _a : [];
-    members.push(highlight);
-    grouped.set(highlight.groupId, members);
+  const byId = /* @__PURE__ */ new Map();
+  for (const mark of highlights) {
+    if (!mark.annotationId) continue;
+    const parts = (_a = byId.get(mark.annotationId)) != null ? _a : [];
+    parts.push(mark);
+    byId.set(mark.annotationId, parts);
   }
   const seen = /* @__PURE__ */ new Set();
-  return highlights.flatMap((highlight) => {
-    var _a2;
-    if (!highlight.groupId) return [highlight];
-    if (seen.has(highlight.groupId)) return [];
-    seen.add(highlight.groupId);
-    const members = (_a2 = grouped.get(highlight.groupId)) != null ? _a2 : [highlight];
+  return highlights.flatMap((mark) => {
+    var _a2, _b, _c, _d, _e, _f;
+    if (!mark.annotationId) return [mark];
+    if (seen.has(mark.annotationId)) return [];
+    seen.add(mark.annotationId);
+    const members = ((_a2 = byId.get(mark.annotationId)) != null ? _a2 : [mark]).sort(
+      (a2, b) => {
+        var _a3, _b2;
+        return ((_a3 = a2.partIndex) != null ? _a3 : Number.MAX_SAFE_INTEGER) - ((_b2 = b.partIndex) != null ? _b2 : Number.MAX_SAFE_INTEGER) || a2.start - b.start;
+      }
+    );
+    const totals = new Set(members.map((part) => part.partTotal));
+    const ordinals = members.map((part) => part.partIndex);
+    const duplicate = ordinals.some((ordinal, index) => ordinal !== null && ordinals.indexOf(ordinal) !== index) || members.length > 1 && ordinals.some((ordinal) => ordinal === null);
+    const total = members[0].partTotal;
+    const missing = total !== null && members.length < total;
+    const integrity = duplicate || totals.size > 1 || members.length > (total != null ? total : Infinity) || members.some((part) => part.integrity === "ambiguous") ? "ambiguous" : missing || members.some((part) => part.integrity === "degraded") ? "degraded" : "resolved";
+    const attachedFootnote = members.find((part) => part.footnoteId);
     return [
       {
-        ...highlight,
-        color: members.every((member) => member.color === highlight.color) ? highlight.color : null,
-        text: members.map((member) => member.text).join("\n"),
-        end: members[members.length - 1].end,
+        ...members[0],
+        text: members.map((part) => part.text).join("\n"),
+        color: members.every((part) => part.color === members[0].color) ? members[0].color : null,
+        end: Math.max(...members.map((part) => part.end)),
+        integrity,
+        footnoteId: (_b = attachedFootnote == null ? void 0 : attachedFootnote.footnoteId) != null ? _b : null,
+        footnoteStart: (_c = attachedFootnote == null ? void 0 : attachedFootnote.footnoteStart) != null ? _c : null,
+        footnoteEnd: (_d = attachedFootnote == null ? void 0 : attachedFootnote.footnoteEnd) != null ? _d : null,
+        footnotePlacement: (_e = attachedFootnote == null ? void 0 : attachedFootnote.footnotePlacement) != null ? _e : null,
+        annotation: (_f = attachedFootnote == null ? void 0 : attachedFootnote.annotation) != null ? _f : "",
         members
       }
     ];
   });
 }
-function regroupHighlightsInRaw(raw, selected, groupId) {
-  if (!selected.length || groupId && selected.length < 2) {
-    throw new Error("Select at least two annotations to group.");
-  }
-  if (groupId !== null && !/^[A-Za-z0-9-]+$/.test(groupId)) {
-    throw new Error("Invalid group ID.");
-  }
-  const logical = groupHighlights(parseHighlights(raw).highlights);
-  const chosen = selected.map((item) => {
-    const current = logical.find((entry) => entry.id === item.id);
-    if (!current || current.text !== item.text || current.groupId !== item.groupId) {
-      throw new Error("Annotations changed while you were selecting them. Select them again.");
-    }
-    return current;
-  });
-  if (!groupId && chosen.some((entry) => !entry.groupId)) {
-    throw new Error("Select grouped annotations to ungroup.");
-  }
-  const parts = [
-    ...new Map(chosen.flatMap((entry) => {
-      var _a;
-      return (_a = entry.members) != null ? _a : [entry];
-    }).map((part) => [part.id, part])).values()
-  ];
-  if (groupId && parts.length < 2) throw new Error("Select at least two distinct annotations to group.");
-  return parts.sort((a2, b) => b.openTagStart - a2.openTagStart).reduce((content, part) => {
-    if (part.type === "markdown") {
-      if (groupId === null) throw new Error("Cannot ungroup an ungrouped Markdown highlight.");
-      const text = content.slice(part.innerStart, part.innerEnd);
-      const openTag2 = `<mark data-fp-notation="highlight" data-fp-group="${groupId}">`;
-      return content.slice(0, part.start) + openTag2 + text + "</mark>" + content.slice(part.end);
-    }
-    const openTag = content.slice(part.openTagStart, part.openTagEnd);
-    const withoutGroup = openTag.replace(/\sdata-fp-group\s*=\s*(["'])[^"']*\1/i, "");
-    const updated = groupId ? withoutGroup.replace(/>$/, ` data-fp-group="${groupId}">`) : withoutGroup;
-    return content.slice(0, part.openTagStart) + updated + content.slice(part.openTagEnd);
-  }, raw);
-}
-function removeHighlightGroupFromRaw(raw, highlight) {
+function removeLogicalHighlightFromRaw(raw, highlight) {
   if (!highlight) return raw;
-  const members = highlight.groupId ? parseHighlights(raw).highlights.filter((member) => member.groupId === highlight.groupId) : [highlight];
+  if (highlight.integrity === "ambiguous") throw new Error("Annotation identity is ambiguous; no source changed.");
+  const members = highlight.annotationId ? parseHighlights(raw).highlights.filter((member) => member.annotationId === highlight.annotationId) : [highlight];
   return members.sort((a2, b) => b.start - a2.start).reduce((content, member) => {
     return removeHighlightFromRaw(content, member);
   }, raw);
@@ -554,20 +605,21 @@ function updateHighlightColorInRaw(raw, highlight, newColor) {
   const replacement = `<mark style="background: ${newColor}; color: black;">${inner}</mark>`;
   return raw.slice(0, highlight.openTagStart) + replacement + raw.slice(highlight.closeTagEnd);
 }
-function nextNumericFootnoteId(raw) {
-  const pattern = /\[\^(\d+)\]/g;
-  let maxNumber = 0;
-  let match;
-  while ((match = pattern.exec(raw)) !== null) {
-    const num = parseInt(match[1]);
-    if (num > maxNumber) maxNumber = num;
-  }
-  return String(maxNumber + 1);
+function nextManagedFootnoteId(raw) {
+  let id = createAnnotationId();
+  while (raw.includes(`[^${id}]`)) id = createAnnotationId();
+  return id;
 }
 function countFootnoteRefs(raw, footnoteId) {
-  const re = new RegExp(`\\[\\^${escapeRegex(footnoteId)}\\]`, "g");
-  const matches = raw.match(re);
+  const re = new RegExp(`\\[\\^${escapeRegex(footnoteId)}\\](?!:)`, "g");
+  const matches = visibleSource(raw).match(re);
   return matches ? matches.length : 0;
+}
+function countFootnoteDefinitions(raw, footnoteId) {
+  return visibleSource(raw).split(/\r?\n/).filter((line) => new RegExp(`^\\s{0,3}\\[\\^${escapeRegex(footnoteId)}\\]:`).test(line)).length;
+}
+function formatFootnoteDefinition(id, annotation, newline) {
+  return `[^${id}]: ${annotation.replace(/\r?\n/g, `${newline}    `)}`;
 }
 function updateHighlightAnnotationInRaw(raw, highlight, newAnnotationText) {
   if (!highlight) return raw;
@@ -575,6 +627,9 @@ function updateHighlightAnnotationInRaw(raw, highlight, newAnnotationText) {
   const newline = detectNewline(raw);
   const parsed = parseFootnotes(raw);
   const existingId = highlight.footnoteId;
+  if (existingId && countFootnoteDefinitions(raw, existingId) > 1) {
+    throw new Error("Duplicate footnote definitions; no source changed.");
+  }
   const existingRefStart = highlight.footnoteStart;
   const existingRefEnd = highlight.footnoteEnd;
   if (!annotation) {
@@ -606,18 +661,18 @@ function updateHighlightAnnotationInRaw(raw, highlight, newAnnotationText) {
   void existingRefStart;
   void existingRefEnd;
   if (!footnoteId) {
-    footnoteId = nextNumericFootnoteId(updatedRaw);
+    footnoteId = nextManagedFootnoteId(updatedRaw);
     const footnoteRef = `[^${footnoteId}]`;
     const insertAt = highlight.innerEnd;
     updatedRaw = updatedRaw.slice(0, insertAt) + footnoteRef + updatedRaw.slice(insertAt);
   }
   const def = parsed.get(footnoteId);
   if (def) {
-    const newLine = `[^${footnoteId}]: ${annotation}`;
+    const newLine = formatFootnoteDefinition(footnoteId, annotation, newline);
     updatedRaw = updatedRaw.slice(0, def.start) + newLine + updatedRaw.slice(def.end);
     return updatedRaw;
   }
-  const defText = `${newline}${newline}[^${footnoteId}]: ${annotation}${newline}`;
+  const defText = `${newline}${newline}${formatFootnoteDefinition(footnoteId, annotation, newline)}${newline}`;
   updatedRaw = updatedRaw.trimEnd() + defText;
   return updatedRaw;
 }
@@ -625,11 +680,18 @@ function removeFootnoteFromRaw(raw, footnoteId) {
   let updated = String(raw != null ? raw : "");
   const id = String(footnoteId != null ? footnoteId : "").trim();
   if (!id) return { raw: updated, changed: false };
+  if (countFootnoteDefinitions(updated, id) > 1) {
+    throw new Error("Duplicate footnote definitions; no source changed.");
+  }
   const newline = detectNewline(updated);
   let changed = false;
   const refRe = new RegExp(`\\[\\^${escapeRegex(id)}\\](?!:)`, "g");
-  if (refRe.test(updated)) {
-    updated = updated.replace(refRe, "");
+  const refs = [...visibleSource(updated).matchAll(refRe)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length
+  }));
+  if (refs.length) {
+    updated = applyDeletions(updated, refs);
     changed = true;
   }
   const def = parseFootnotes(updated).get(id);
@@ -683,6 +745,7 @@ function mergeAdjacentHighlightsInRaw(raw) {
       const b = highlights[i2 + 1];
       if (a2.line !== b.line) continue;
       if (a2.type !== b.type) continue;
+      if (a2.annotationId || b.annotationId) continue;
       if ((a2.tagsText || "").trim() || (b.tagsText || "").trim()) continue;
       if (a2.footnoteId || b.footnoteId) continue;
       const between = updated.slice(a2.closeTagEnd, b.openTagStart);
@@ -756,6 +819,1077 @@ function migrateSpanHighlightsInRaw(raw) {
 var init_highlights = __esm({
   "src/utils/highlights.ts"() {
     init_notations();
+    init_annotation();
+  }
+});
+
+// node_modules/rough-notation/lib/rough-notation.esm.js
+function s(t2, e2, s2, i2, n2) {
+  return { type: "path", ops: c(t2, e2, s2, i2, n2) };
+}
+function i(t2, e2, i2) {
+  const n2 = (t2 || []).length;
+  if (n2 > 2) {
+    const s2 = [];
+    for (let e3 = 0; e3 < n2 - 1; e3++) s2.push(...c(t2[e3][0], t2[e3][1], t2[e3 + 1][0], t2[e3 + 1][1], i2));
+    return e2 && s2.push(...c(t2[n2 - 1][0], t2[n2 - 1][1], t2[0][0], t2[0][1], i2)), { type: "path", ops: s2 };
+  }
+  return 2 === n2 ? s(t2[0][0], t2[0][1], t2[1][0], t2[1][1], i2) : { type: "path", ops: [] };
+}
+function n(t2, e2, s2, n2, o2) {
+  return (function(t3, e3) {
+    return i(t3, true, e3);
+  })([[t2, e2], [t2 + s2, e2], [t2 + s2, e2 + n2], [t2, e2 + n2]], o2);
+}
+function o(t2, e2, s2, i2, n2) {
+  return (function(t3, e3, s3, i3) {
+    const [n3, o2] = l(i3.increment, t3, e3, i3.rx, i3.ry, 1, i3.increment * h(0.1, h(0.4, 1, s3), s3), s3);
+    let r2 = f(n3, null, s3);
+    if (!s3.disableMultiStroke) {
+      const [n4] = l(i3.increment, t3, e3, i3.rx, i3.ry, 1.5, 0, s3), o3 = f(n4, null, s3);
+      r2 = r2.concat(o3);
+    }
+    return { estimatedPoints: o2, opset: { type: "path", ops: r2 } };
+  })(t2, e2, n2, (function(t3, e3, s3) {
+    const i3 = Math.sqrt(2 * Math.PI * Math.sqrt((Math.pow(t3 / 2, 2) + Math.pow(e3 / 2, 2)) / 2)), n3 = Math.max(s3.curveStepCount, s3.curveStepCount / Math.sqrt(200) * i3), o2 = 2 * Math.PI / n3;
+    let r2 = Math.abs(t3 / 2), h2 = Math.abs(e3 / 2);
+    const c2 = 1 - s3.curveFitting;
+    return r2 += a(r2 * c2, s3), h2 += a(h2 * c2, s3), { increment: o2, rx: r2, ry: h2 };
+  })(s2, i2, n2)).opset;
+}
+function r(t2) {
+  return t2.randomizer || (t2.randomizer = new e(t2.seed || 0)), t2.randomizer.next();
+}
+function h(t2, e2, s2, i2 = 1) {
+  return s2.roughness * i2 * (r(s2) * (e2 - t2) + t2);
+}
+function a(t2, e2, s2 = 1) {
+  return h(-t2, t2, e2, s2);
+}
+function c(t2, e2, s2, i2, n2, o2 = false) {
+  const r2 = o2 ? n2.disableMultiStrokeFill : n2.disableMultiStroke, h2 = u(t2, e2, s2, i2, n2, true, false);
+  if (r2) return h2;
+  const a2 = u(t2, e2, s2, i2, n2, true, true);
+  return h2.concat(a2);
+}
+function u(t2, e2, s2, i2, n2, o2, h2) {
+  const c2 = Math.pow(t2 - s2, 2) + Math.pow(e2 - i2, 2), u2 = Math.sqrt(c2);
+  let f2 = 1;
+  f2 = u2 < 200 ? 1 : u2 > 500 ? 0.4 : -16668e-7 * u2 + 1.233334;
+  let l2 = n2.maxRandomnessOffset || 0;
+  l2 * l2 * 100 > c2 && (l2 = u2 / 10);
+  const g2 = l2 / 2, d2 = 0.2 + 0.2 * r(n2);
+  let p2 = n2.bowing * n2.maxRandomnessOffset * (i2 - e2) / 200, _2 = n2.bowing * n2.maxRandomnessOffset * (t2 - s2) / 200;
+  p2 = a(p2, n2, f2), _2 = a(_2, n2, f2);
+  const m = [], w = () => a(g2, n2, f2), v = () => a(l2, n2, f2);
+  return o2 && (h2 ? m.push({ op: "move", data: [t2 + w(), e2 + w()] }) : m.push({ op: "move", data: [t2 + a(l2, n2, f2), e2 + a(l2, n2, f2)] })), h2 ? m.push({ op: "bcurveTo", data: [p2 + t2 + (s2 - t2) * d2 + w(), _2 + e2 + (i2 - e2) * d2 + w(), p2 + t2 + 2 * (s2 - t2) * d2 + w(), _2 + e2 + 2 * (i2 - e2) * d2 + w(), s2 + w(), i2 + w()] }) : m.push({ op: "bcurveTo", data: [p2 + t2 + (s2 - t2) * d2 + v(), _2 + e2 + (i2 - e2) * d2 + v(), p2 + t2 + 2 * (s2 - t2) * d2 + v(), _2 + e2 + 2 * (i2 - e2) * d2 + v(), s2 + v(), i2 + v()] }), m;
+}
+function f(t2, e2, s2) {
+  const i2 = t2.length, n2 = [];
+  if (i2 > 3) {
+    const o2 = [], r2 = 1 - s2.curveTightness;
+    n2.push({ op: "move", data: [t2[1][0], t2[1][1]] });
+    for (let e3 = 1; e3 + 2 < i2; e3++) {
+      const s3 = t2[e3];
+      o2[0] = [s3[0], s3[1]], o2[1] = [s3[0] + (r2 * t2[e3 + 1][0] - r2 * t2[e3 - 1][0]) / 6, s3[1] + (r2 * t2[e3 + 1][1] - r2 * t2[e3 - 1][1]) / 6], o2[2] = [t2[e3 + 1][0] + (r2 * t2[e3][0] - r2 * t2[e3 + 2][0]) / 6, t2[e3 + 1][1] + (r2 * t2[e3][1] - r2 * t2[e3 + 2][1]) / 6], o2[3] = [t2[e3 + 1][0], t2[e3 + 1][1]], n2.push({ op: "bcurveTo", data: [o2[1][0], o2[1][1], o2[2][0], o2[2][1], o2[3][0], o2[3][1]] });
+    }
+    if (e2 && 2 === e2.length) {
+      const t3 = s2.maxRandomnessOffset;
+      n2.push({ op: "lineTo", data: [e2[0] + a(t3, s2), e2[1] + a(t3, s2)] });
+    }
+  } else 3 === i2 ? (n2.push({ op: "move", data: [t2[1][0], t2[1][1]] }), n2.push({ op: "bcurveTo", data: [t2[1][0], t2[1][1], t2[2][0], t2[2][1], t2[2][0], t2[2][1]] })) : 2 === i2 && n2.push(...c(t2[0][0], t2[0][1], t2[1][0], t2[1][1], s2));
+  return n2;
+}
+function l(t2, e2, s2, i2, n2, o2, r2, h2) {
+  const c2 = [], u2 = [], f2 = a(0.5, h2) - Math.PI / 2;
+  u2.push([a(o2, h2) + e2 + 0.9 * i2 * Math.cos(f2 - t2), a(o2, h2) + s2 + 0.9 * n2 * Math.sin(f2 - t2)]);
+  for (let r3 = f2; r3 < 2 * Math.PI + f2 - 0.01; r3 += t2) {
+    const t3 = [a(o2, h2) + e2 + i2 * Math.cos(r3), a(o2, h2) + s2 + n2 * Math.sin(r3)];
+    c2.push(t3), u2.push(t3);
+  }
+  return u2.push([a(o2, h2) + e2 + i2 * Math.cos(f2 + 2 * Math.PI + 0.5 * r2), a(o2, h2) + s2 + n2 * Math.sin(f2 + 2 * Math.PI + 0.5 * r2)]), u2.push([a(o2, h2) + e2 + 0.98 * i2 * Math.cos(f2 + r2), a(o2, h2) + s2 + 0.98 * n2 * Math.sin(f2 + r2)]), u2.push([a(o2, h2) + e2 + 0.9 * i2 * Math.cos(f2 + 0.5 * r2), a(o2, h2) + s2 + 0.9 * n2 * Math.sin(f2 + 0.5 * r2)]), [u2, c2];
+}
+function g(t2, e2) {
+  return { maxRandomnessOffset: 2, roughness: "highlight" === t2 ? 3 : 1.5, bowing: 1, stroke: "#000", strokeWidth: 1.5, curveTightness: 0, curveFitting: 0.95, curveStepCount: 9, fillStyle: "hachure", fillWeight: -1, hachureAngle: -41, hachureGap: -1, dashOffset: -1, dashGap: -1, zigzagOffset: -1, combineNestedSvgPaths: false, disableMultiStroke: "double" !== t2, disableMultiStrokeFill: false, seed: e2 };
+}
+function d(e2, r2, h2, a2, c2, u2) {
+  const f2 = [];
+  let l2 = h2.strokeWidth || 2;
+  const d2 = (function(t2) {
+    const e3 = t2.padding;
+    if (e3 || 0 === e3) {
+      if ("number" == typeof e3) return [e3, e3, e3, e3];
+      if (Array.isArray(e3)) {
+        const t3 = e3;
+        if (t3.length) switch (t3.length) {
+          case 4:
+            return [...t3];
+          case 1:
+            return [t3[0], t3[0], t3[0], t3[0]];
+          case 2:
+            return [...t3, ...t3];
+          case 3:
+            return [...t3, t3[1]];
+          default:
+            return [t3[0], t3[1], t3[2], t3[3]];
+        }
+      }
+    }
+    return [5, 5, 5, 5];
+  })(h2), p2 = void 0 === h2.animate || !!h2.animate, _2 = h2.iterations || 2, m = h2.rtl ? 1 : 0, w = g("single", u2);
+  switch (h2.type) {
+    case "underline": {
+      const t2 = r2.y + r2.h + d2[2];
+      for (let e3 = m; e3 < _2 + m; e3++) e3 % 2 ? f2.push(s(r2.x + r2.w, t2, r2.x, t2, w)) : f2.push(s(r2.x, t2, r2.x + r2.w, t2, w));
+      break;
+    }
+    case "strike-through": {
+      const t2 = r2.y + r2.h / 2;
+      for (let e3 = m; e3 < _2 + m; e3++) e3 % 2 ? f2.push(s(r2.x + r2.w, t2, r2.x, t2, w)) : f2.push(s(r2.x, t2, r2.x + r2.w, t2, w));
+      break;
+    }
+    case "box": {
+      const t2 = r2.x - d2[3], e3 = r2.y - d2[0], s2 = r2.w + (d2[1] + d2[3]), i2 = r2.h + (d2[0] + d2[2]);
+      for (let o2 = 0; o2 < _2; o2++) f2.push(n(t2, e3, s2, i2, w));
+      break;
+    }
+    case "bracket": {
+      const t2 = Array.isArray(h2.brackets) ? h2.brackets : h2.brackets ? [h2.brackets] : ["right"], e3 = r2.x - 2 * d2[3], s2 = r2.x + r2.w + 2 * d2[1], n2 = r2.y - 2 * d2[0], o2 = r2.y + r2.h + 2 * d2[2];
+      for (const h3 of t2) {
+        let t3;
+        switch (h3) {
+          case "bottom":
+            t3 = [[e3, r2.y + r2.h], [e3, o2], [s2, o2], [s2, r2.y + r2.h]];
+            break;
+          case "top":
+            t3 = [[e3, r2.y], [e3, n2], [s2, n2], [s2, r2.y]];
+            break;
+          case "left":
+            t3 = [[r2.x, n2], [e3, n2], [e3, o2], [r2.x, o2]];
+            break;
+          case "right":
+            t3 = [[r2.x + r2.w, n2], [s2, n2], [s2, o2], [r2.x + r2.w, o2]];
+        }
+        t3 && f2.push(i(t3, false, w));
+      }
+      break;
+    }
+    case "crossed-off": {
+      const t2 = r2.x, e3 = r2.y, i2 = t2 + r2.w, n2 = e3 + r2.h;
+      for (let o2 = m; o2 < _2 + m; o2++) o2 % 2 ? f2.push(s(i2, n2, t2, e3, w)) : f2.push(s(t2, e3, i2, n2, w));
+      for (let o2 = m; o2 < _2 + m; o2++) o2 % 2 ? f2.push(s(t2, n2, i2, e3, w)) : f2.push(s(i2, e3, t2, n2, w));
+      break;
+    }
+    case "circle": {
+      const t2 = g("double", u2), e3 = r2.w + (d2[1] + d2[3]), s2 = r2.h + (d2[0] + d2[2]), i2 = r2.x - d2[3] + e3 / 2, n2 = r2.y - d2[0] + s2 / 2, h3 = Math.floor(_2 / 2), a3 = _2 - 2 * h3;
+      for (let r3 = 0; r3 < h3; r3++) f2.push(o(i2, n2, e3, s2, t2));
+      for (let t3 = 0; t3 < a3; t3++) f2.push(o(i2, n2, e3, s2, w));
+      break;
+    }
+    case "highlight": {
+      const t2 = g("highlight", u2);
+      l2 = 0.95 * r2.h;
+      const e3 = r2.y + r2.h / 2;
+      for (let i2 = m; i2 < _2 + m; i2++) i2 % 2 ? f2.push(s(r2.x + r2.w, e3, r2.x, e3, t2)) : f2.push(s(r2.x, e3, r2.x + r2.w, e3, t2));
+      break;
+    }
+  }
+  if (f2.length) {
+    const s2 = (function(t2) {
+      const e3 = [];
+      for (const s3 of t2) {
+        let t3 = "";
+        for (const i3 of s3.ops) {
+          const s4 = i3.data;
+          switch (i3.op) {
+            case "move":
+              t3.trim() && e3.push(t3.trim()), t3 = `M${s4[0]} ${s4[1]} `;
+              break;
+            case "bcurveTo":
+              t3 += `C${s4[0]} ${s4[1]}, ${s4[2]} ${s4[3]}, ${s4[4]} ${s4[5]} `;
+              break;
+            case "lineTo":
+              t3 += `L${s4[0]} ${s4[1]} `;
+          }
+        }
+        t3.trim() && e3.push(t3.trim());
+      }
+      return e3;
+    })(f2), i2 = [], n2 = [];
+    let o2 = 0;
+    const r3 = (t2, e3, s3) => t2.setAttribute(e3, s3);
+    for (const a3 of s2) {
+      const s3 = document.createElementNS(t, "path");
+      if (r3(s3, "d", a3), r3(s3, "fill", "none"), r3(s3, "stroke", h2.color || "currentColor"), r3(s3, "stroke-width", "" + l2), p2) {
+        const t2 = s3.getTotalLength();
+        i2.push(t2), o2 += t2;
+      }
+      e2.appendChild(s3), n2.push(s3);
+    }
+    if (p2) {
+      let t2 = 0;
+      for (let e3 = 0; e3 < n2.length; e3++) {
+        const s3 = n2[e3], r4 = i2[e3], h3 = o2 ? c2 * (r4 / o2) : 0, u3 = a2 + t2, f3 = s3.style;
+        f3.strokeDashoffset = "" + r4, f3.strokeDasharray = "" + r4, f3.animation = `rough-notation-dash ${h3}ms ease-out ${u3}ms forwards`, t2 += h3;
+      }
+    }
+  }
+}
+function _(t2, e2) {
+  return new p(t2, e2);
+}
+var t, e, p;
+var init_rough_notation_esm = __esm({
+  "node_modules/rough-notation/lib/rough-notation.esm.js"() {
+    t = "http://www.w3.org/2000/svg";
+    e = class {
+      constructor(t2) {
+        this.seed = t2;
+      }
+      next() {
+        return this.seed ? (2 ** 31 - 1 & (this.seed = Math.imul(48271, this.seed))) / 2 ** 31 : Math.random();
+      }
+    };
+    p = class {
+      constructor(t2, e2) {
+        this._state = "unattached", this._resizing = false, this._seed = Math.floor(Math.random() * 2 ** 31), this._lastSizes = [], this._animationDelay = 0, this._resizeListener = () => {
+          this._resizing || (this._resizing = true, setTimeout(() => {
+            this._resizing = false, "showing" === this._state && this.haveRectsChanged() && this.show();
+          }, 400));
+        }, this._e = t2, this._config = JSON.parse(JSON.stringify(e2)), this.attach();
+      }
+      get animate() {
+        return this._config.animate;
+      }
+      set animate(t2) {
+        this._config.animate = t2;
+      }
+      get animationDuration() {
+        return this._config.animationDuration;
+      }
+      set animationDuration(t2) {
+        this._config.animationDuration = t2;
+      }
+      get iterations() {
+        return this._config.iterations;
+      }
+      set iterations(t2) {
+        this._config.iterations = t2;
+      }
+      get color() {
+        return this._config.color;
+      }
+      set color(t2) {
+        this._config.color !== t2 && (this._config.color = t2, this.refresh());
+      }
+      get strokeWidth() {
+        return this._config.strokeWidth;
+      }
+      set strokeWidth(t2) {
+        this._config.strokeWidth !== t2 && (this._config.strokeWidth = t2, this.refresh());
+      }
+      get padding() {
+        return this._config.padding;
+      }
+      set padding(t2) {
+        this._config.padding !== t2 && (this._config.padding = t2, this.refresh());
+      }
+      attach() {
+        if ("unattached" === this._state && this._e.parentElement) {
+          !(function() {
+            if (!window.__rno_kf_s) {
+              const t2 = window.__rno_kf_s = document.createElement("style");
+              t2.textContent = "@keyframes rough-notation-dash { to { stroke-dashoffset: 0; } }", document.head.appendChild(t2);
+            }
+          })();
+          const e2 = this._svg = document.createElementNS(t, "svg");
+          e2.setAttribute("class", "rough-annotation");
+          const s2 = e2.style;
+          s2.position = "absolute", s2.top = "0", s2.left = "0", s2.overflow = "visible", s2.pointerEvents = "none", s2.width = "100px", s2.height = "100px";
+          const i2 = "highlight" === this._config.type;
+          if (this._e.insertAdjacentElement(i2 ? "beforebegin" : "afterend", e2), this._state = "not-showing", i2) {
+            const t2 = window.getComputedStyle(this._e).position;
+            (!t2 || "static" === t2) && (this._e.style.position = "relative");
+          }
+          this.attachListeners();
+        }
+      }
+      detachListeners() {
+        window.removeEventListener("resize", this._resizeListener), this._ro && this._ro.unobserve(this._e);
+      }
+      attachListeners() {
+        this.detachListeners(), window.addEventListener("resize", this._resizeListener, { passive: true }), !this._ro && "ResizeObserver" in window && (this._ro = new window.ResizeObserver((t2) => {
+          for (const e2 of t2) e2.contentRect && this._resizeListener();
+        })), this._ro && this._ro.observe(this._e);
+      }
+      haveRectsChanged() {
+        if (this._lastSizes.length) {
+          const t2 = this.rects();
+          if (t2.length !== this._lastSizes.length) return true;
+          for (let e2 = 0; e2 < t2.length; e2++) if (!this.isSameRect(t2[e2], this._lastSizes[e2])) return true;
+        }
+        return false;
+      }
+      isSameRect(t2, e2) {
+        const s2 = (t3, e3) => Math.round(t3) === Math.round(e3);
+        return s2(t2.x, e2.x) && s2(t2.y, e2.y) && s2(t2.w, e2.w) && s2(t2.h, e2.h);
+      }
+      isShowing() {
+        return "not-showing" !== this._state;
+      }
+      refresh() {
+        this.isShowing() && !this.pendingRefresh && (this.pendingRefresh = Promise.resolve().then(() => {
+          this.isShowing() && this.show(), delete this.pendingRefresh;
+        }));
+      }
+      show() {
+        switch (this._state) {
+          case "unattached":
+            break;
+          case "showing":
+            this.hide(), this._svg && this.render(this._svg, true);
+            break;
+          case "not-showing":
+            this.attach(), this._svg && this.render(this._svg, false);
+        }
+      }
+      hide() {
+        if (this._svg) for (; this._svg.lastChild; ) this._svg.removeChild(this._svg.lastChild);
+        this._state = "not-showing";
+      }
+      remove() {
+        this._svg && this._svg.parentElement && this._svg.parentElement.removeChild(this._svg), this._svg = void 0, this._state = "unattached", this.detachListeners();
+      }
+      render(t2, e2) {
+        let s2 = this._config;
+        e2 && (s2 = JSON.parse(JSON.stringify(this._config)), s2.animate = false);
+        const i2 = this.rects();
+        let n2 = 0;
+        i2.forEach((t3) => n2 += t3.w);
+        const o2 = s2.animationDuration || 800;
+        let r2 = 0;
+        for (let e3 = 0; e3 < i2.length; e3++) {
+          const h2 = o2 * (i2[e3].w / n2);
+          d(t2, i2[e3], s2, r2 + this._animationDelay, h2, this._seed), r2 += h2;
+        }
+        this._lastSizes = i2, this._state = "showing";
+      }
+      rects() {
+        const t2 = [];
+        if (this._svg) if (this._config.multiline) {
+          const e2 = this._e.getClientRects();
+          for (let s2 = 0; s2 < e2.length; s2++) t2.push(this.svgRect(this._svg, e2[s2]));
+        } else t2.push(this.svgRect(this._svg, this._e.getBoundingClientRect()));
+        return t2;
+      }
+      svgRect(t2, e2) {
+        const s2 = t2.getBoundingClientRect(), i2 = e2;
+        return { x: (i2.x || i2.left) - (s2.x || s2.left), y: (i2.y || i2.top) - (s2.y || s2.top), w: i2.width, h: i2.height };
+      }
+    };
+  }
+});
+
+// src/core/RoughNotationRenderer.ts
+function watchNoteLayout(root, subscriber) {
+  let watcher = layoutWatchers.get(root);
+  if (!watcher) {
+    const win = elementWindow(root);
+    const observers = win;
+    const subscribers = /* @__PURE__ */ new Set();
+    let frame = null;
+    let force = false;
+    let recoveryFrames = 0;
+    const schedule = (forceRedraw = false, recovery = false) => {
+      if (!recovery) recoveryFrames = 0;
+      force || (force = forceRedraw);
+      if (!win || frame !== null) return;
+      frame = win.requestAnimationFrame(() => {
+        frame = null;
+        const forceNow = force;
+        force = false;
+        let needsRecovery = false;
+        for (const notify of subscribers) needsRecovery = notify(forceNow) || needsRecovery;
+        if (needsRecovery && recoveryFrames < MAX_ATTACHMENT_FRAMES) {
+          recoveryFrames++;
+          schedule(false, true);
+        }
+      });
+    };
+    const widths = /* @__PURE__ */ new WeakMap();
+    const resize = (observers == null ? void 0 : observers.ResizeObserver) ? new observers.ResizeObserver((entries) => {
+      let widthChanged = false;
+      for (const entry of entries) {
+        const width = entry.target.getBoundingClientRect().width;
+        const previous = widths.get(entry.target);
+        if (previous === void 0 || Math.abs(width - previous) > 0.5) widthChanged = true;
+        widths.set(entry.target, width);
+      }
+      schedule(widthChanged);
+    }) : null;
+    const observeSize = (element) => {
+      if (!element || !resize) return;
+      widths.set(element, element.getBoundingClientRect().width);
+      resize.observe(element);
+    };
+    observeSize(root);
+    const sizer = root.querySelector(".markdown-preview-sizer");
+    observeSize(sizer);
+    observeSize(root.closest(".workspace-leaf"));
+    const mutation = (observers == null ? void 0 : observers.MutationObserver) ? new observers.MutationObserver(() => schedule(true)) : null;
+    mutation == null ? void 0 : mutation.observe(root, {
+      attributes: true,
+      attributeFilter: [
+        "class",
+        "style",
+        "data-has-sidenotes",
+        "data-sidenote-position",
+        "data-sidenote-page-offset",
+        "data-sidenote-has-opposite",
+        "data-sidenote-mode"
+      ]
+    });
+    const onScroll = () => schedule();
+    root.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    watcher = {
+      subscribers,
+      schedule,
+      stop: () => {
+        root.removeEventListener("scroll", onScroll, true);
+        resize == null ? void 0 : resize.disconnect();
+        mutation == null ? void 0 : mutation.disconnect();
+        if (frame !== null) win == null ? void 0 : win.cancelAnimationFrame(frame);
+      }
+    };
+    layoutWatchers.set(root, watcher);
+  }
+  watcher.subscribers.add(subscriber);
+  watcher.schedule();
+  return () => {
+    watcher.subscribers.delete(subscriber);
+    if (watcher.subscribers.size === 0) {
+      watcher.stop();
+      layoutWatchers.delete(root);
+    }
+  };
+}
+function markRects(target) {
+  const svg = annotationSvg(target);
+  if (!svg) return null;
+  const anchor = svg.getBoundingClientRect();
+  return usableClientRects(target).map((rect) => ({
+    x: rect.left - anchor.left,
+    y: rect.top - anchor.top,
+    width: rect.width,
+    height: rect.height
+  }));
+}
+function annotationSvg(target) {
+  var _a;
+  return (_a = [target.previousElementSibling, target.nextElementSibling].find((el) => el == null ? void 0 : el.matches("svg.rough-annotation"))) != null ? _a : void 0;
+}
+function usableClientRects(target) {
+  if (!target.isConnected) return [];
+  return Array.from(target.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+}
+function layoutVisible(root) {
+  var _a, _b;
+  if (!root.isConnected) return false;
+  if (((_a = elementWindow(root)) == null ? void 0 : _a.getComputedStyle(root).display) === "none") return false;
+  const leaf = (_b = root.closest(".workspace-leaf")) != null ? _b : root;
+  const rect = leaf.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+function rectsChanged(previous, current) {
+  if (!previous || !current) return false;
+  if (previous.length !== current.length) return true;
+  return previous.some((rect, index) => {
+    const next = current[index];
+    return Object.keys(rect).some((key) => Math.abs(rect[key] - next[key]) > 0.5);
+  });
+}
+function elementWindow(element) {
+  return element.ownerDocument.defaultView;
+}
+function resolveNotationColor(element) {
+  var _a;
+  const explicitColor = (_a = element.dataset.fpColor) == null ? void 0 : _a.trim();
+  if (explicitColor) return explicitColor;
+  const inlineColor = element.style.backgroundColor.trim();
+  if (inlineColor && !TRANSPARENT_COLORS.has(inlineColor)) return inlineColor;
+  const win = elementWindow(element);
+  const computedColor = win == null ? void 0 : win.getComputedStyle(element).backgroundColor.trim();
+  if (computedColor && !TRANSPARENT_COLORS.has(computedColor)) return computedColor;
+  return "currentColor";
+}
+function colorWithOpacity(color, opacity) {
+  if (opacity === 1) return color;
+  const hex = /^#([\da-f]{6})$/i.exec(color);
+  if (hex)
+    return `#${hex[1]}${Math.round(opacity * 255).toString(16).padStart(2, "0")}`;
+  return `color-mix(in srgb, ${color} ${Math.round(opacity * 100)}%, transparent)`;
+}
+function createRoughNotationConfig(element, opacityByType = DEFAULT_NOTATION_OPACITY) {
+  var _a;
+  const type = normalizeNotationType(element.dataset.fpNotation);
+  const opacity = (_a = normalizeOpacity(element.dataset.fpOpacity)) != null ? _a : opacityByType[type];
+  const config = {
+    type,
+    color: colorWithOpacity(resolveNotationColor(element), opacity),
+    animate: false,
+    multiline: true
+  };
+  if (type === "underline") config.padding = [0, 0, 1, 0];
+  if (type === "box" || type === "circle") config.padding = [2, 3, 2, 3];
+  return config;
+}
+function notationSeed(element, sourcePath) {
+  var _a, _b, _c, _d, _e, _f;
+  const block = (_a = element.closest("p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th")) != null ? _a : element.parentElement;
+  const text = (_c = (_b = element.textContent) == null ? void 0 : _b.trim()) != null ? _c : "";
+  const type = normalizeNotationType(element.dataset.fpNotation);
+  const peers = Array.from((_d = block == null ? void 0 : block.querySelectorAll("mark")) != null ? _d : []);
+  const occurrence = peers.slice(0, peers.indexOf(element)).filter((peer) => {
+    var _a2;
+    return ((_a2 = peer.textContent) == null ? void 0 : _a2.trim()) === text && normalizeNotationType(peer.dataset.fpNotation) === type;
+  }).length;
+  const key = `${sourcePath}\0${(_f = (_e = block == null ? void 0 : block.textContent) == null ? void 0 : _e.replace(/\s+/g, " ").trim()) != null ? _f : ""}\0${type}\0${text}\0${occurrence}`;
+  let hash = 2166136261;
+  for (let i2 = 0; i2 < key.length; i2++) {
+    hash = Math.imul(hash ^ key.charCodeAt(i2), 16777619);
+  }
+  return hash & 2147483647 || 1;
+}
+var import_obsidian4, TARGET_CLASS, TRANSPARENT_COLORS, MAX_ATTACHMENT_FRAMES, layoutWatchers, RoughNotationRenderer;
+var init_RoughNotationRenderer = __esm({
+  "src/core/RoughNotationRenderer.ts"() {
+    import_obsidian4 = require("obsidian");
+    init_rough_notation_esm();
+    init_notations();
+    TARGET_CLASS = "fp-rough-notation-target";
+    TRANSPARENT_COLORS = /* @__PURE__ */ new Set(["transparent", "rgba(0, 0, 0, 0)", "rgba(0,0,0,0)"]);
+    MAX_ATTACHMENT_FRAMES = 5;
+    layoutWatchers = /* @__PURE__ */ new WeakMap();
+    RoughNotationRenderer = class extends import_obsidian4.MarkdownRenderChild {
+      constructor(containerEl, annotateElement = _, onShown, sourcePath = "", opacityByType = DEFAULT_NOTATION_OPACITY) {
+        super(containerEl);
+        this.onShown = onShown;
+        this.sourcePath = sourcePath;
+        this.opacityByType = opacityByType;
+        this.annotations = /* @__PURE__ */ new Map();
+        this.positions = /* @__PURE__ */ new Map();
+        this.layoutRoot = null;
+        this.stopLayoutWatch = null;
+        this.animationFrame = null;
+        this.attachmentFrames = 0;
+        this.disposed = false;
+        this.annotateElement = annotateElement;
+      }
+      onload() {
+        this.disposed = false;
+        this.attachmentFrames = 0;
+        if (this.containerEl.matches("mark[data-fp-notation]") || this.containerEl.querySelector("mark[data-fp-notation]")) {
+          this.watchLayout();
+        }
+        this.scheduleRender();
+      }
+      watchLayout() {
+        var _a, _b, _c;
+        const root = (_b = (_a = this.containerEl.closest(".markdown-reading-view")) != null ? _a : this.containerEl.closest(".markdown-preview-view")) != null ? _b : this.containerEl;
+        if (this.stopLayoutWatch && this.layoutRoot === root) return;
+        (_c = this.stopLayoutWatch) == null ? void 0 : _c.call(this);
+        this.layoutRoot = root;
+        this.stopLayoutWatch = watchNoteLayout(root, (force) => {
+          if (!this.containerEl.isConnected) return layoutVisible(root);
+          if (!this.annotations.size) this.renderTargets();
+          return this.refreshMovedMarks(force);
+        });
+      }
+      scheduleRender() {
+        const win = elementWindow(this.containerEl);
+        if (!win || typeof win.requestAnimationFrame !== "function") {
+          if (this.containerEl.isConnected) this.renderTargets();
+          return;
+        }
+        this.animationFrame = win.requestAnimationFrame(() => {
+          this.animationFrame = null;
+          if (this.disposed) return;
+          if (!this.containerEl.isConnected) {
+            this.attachmentFrames += 1;
+            if (this.attachmentFrames < MAX_ATTACHMENT_FRAMES) this.scheduleRender();
+            return;
+          }
+          this.renderTargets();
+        });
+      }
+      renderTargets() {
+        var _a;
+        const targets = Array.from(this.containerEl.querySelectorAll("mark[data-fp-notation]"));
+        if (this.containerEl.matches("mark[data-fp-notation]")) {
+          targets.unshift(this.containerEl);
+        }
+        for (const target of targets) {
+          if (target.hasClass(TARGET_CLASS) || !((_a = target.textContent) == null ? void 0 : _a.trim())) continue;
+          const config = createRoughNotationConfig(target, this.opacityByType);
+          const annotation = this.annotateElement(target, config);
+          if (Object.prototype.hasOwnProperty.call(annotation, "_seed")) {
+            annotation._seed = notationSeed(target, this.sourcePath);
+          }
+          target.addClass(TARGET_CLASS);
+          this.annotations.set(target, annotation);
+        }
+        if (this.annotations.size) this.watchLayout();
+        this.refreshMovedMarks();
+      }
+      refreshMovedMarks(force = false) {
+        var _a, _b, _c;
+        if (this.disposed || !this.layoutRoot || !layoutVisible(this.layoutRoot)) return false;
+        let needsRecovery = false;
+        for (const [target, annotation] of this.annotations) {
+          if (usableClientRects(target).length === 0) {
+            needsRecovery = true;
+            continue;
+          }
+          const current = markRects(target);
+          const pathless = ((_a = annotationSvg(target)) == null ? void 0 : _a.querySelector("path")) === null;
+          const firstShow = !this.positions.has(target);
+          if (firstShow || force || rectsChanged((_b = this.positions.get(target)) != null ? _b : null, current) || pathless) {
+            annotation.show();
+            this.positions.set(target, markRects(target));
+            if (firstShow) (_c = this.onShown) == null ? void 0 : _c.call(this);
+          }
+        }
+        return needsRecovery;
+      }
+      onunload() {
+        var _a;
+        this.disposed = true;
+        (_a = this.stopLayoutWatch) == null ? void 0 : _a.call(this);
+        this.stopLayoutWatch = null;
+        const win = elementWindow(this.containerEl);
+        if (this.animationFrame !== null && win) {
+          win.cancelAnimationFrame(this.animationFrame);
+          this.animationFrame = null;
+        }
+        for (const [target, annotation] of this.annotations) {
+          annotation.remove();
+          target.removeClass(TARGET_CLASS);
+        }
+        this.annotations.clear();
+        this.positions.clear();
+        this.layoutRoot = null;
+      }
+    };
+  }
+});
+
+// src/adapters/MarkdownSourceAdapter.ts
+var MarkdownSourceAdapter, markdownSourceAdapter;
+var init_MarkdownSourceAdapter = __esm({
+  "src/adapters/MarkdownSourceAdapter.ts"() {
+    init_annotation();
+    init_highlights();
+    init_notations();
+    init_RoughNotationRenderer();
+    MarkdownSourceAdapter = class {
+      constructor() {
+        this.sourceType = "markdown";
+        this.capabilities = { marking: true, footnotes: true, readingNavigation: true, sourceEditing: true };
+      }
+      openMark(spec, id, ordinal, total) {
+        if (ordinal < 1 || total < ordinal) throw new Error("Invalid managed mark part order.");
+        return createNotationOpenTag(spec, id, `${ordinal}/${total}`);
+      }
+      unusedId(raw, occupied = /* @__PURE__ */ new Set()) {
+        for (let attempt = 0; attempt < 32; attempt++) {
+          const id = createAnnotationId();
+          if (!occupied.has(id) && !raw.includes(id)) return id;
+        }
+        throw new Error("Could not allocate a unique annotation ID; no source changed.");
+      }
+      navigationLine(highlight) {
+        var _a;
+        return ((_a = highlight.members) != null ? _a : [highlight])[0].line;
+      }
+      findRenderedFootnoteReference(root, displayNumber) {
+        const anchors = root.querySelectorAll(
+          "sup.footnote-ref a, a.footnote-ref, sup[id^='fnref'] a"
+        );
+        if (displayNumber !== null) {
+          for (const anchor of Array.from(anchors)) {
+            if ((anchor.textContent || "").replace(/\D/g, "") === String(displayNumber)) return anchor;
+          }
+        }
+        return anchors.length ? anchors[0] : null;
+      }
+      renderChild(element, sourcePath, onRendered, opacityByType) {
+        return new RoughNotationRenderer(element, void 0, onRendered, sourcePath, opacityByType);
+      }
+      splitMarkdownLine(line) {
+        const indentMatch = line.match(/^\s*/);
+        const indent = indentMatch ? indentMatch[0] : "";
+        let remainder = line.substring(indent.length);
+        let prefix = "";
+        const prefixPatterns = [
+          /^>\s*/,
+          /^#{1,6}\s+/,
+          /^-\s\[[ xX]\]\s+/,
+          /^[-*+]\s+/,
+          /^\d{1,3}[.)]\s+/,
+          /^\[\^[^\]]+\]:\s*/,
+          /^\[![^\]]+\]\s*/
+        ];
+        let matched = true;
+        while (matched && remainder) {
+          matched = false;
+          for (const pattern of prefixPatterns) {
+            const match = remainder.match(pattern);
+            if (match) {
+              prefix += match[0];
+              remainder = remainder.substring(match[0].length);
+              matched = true;
+              break;
+            }
+          }
+        }
+        return { indent, prefix, content: remainder };
+      }
+      getLineStart(raw, offset) {
+        const lineBreak = raw.lastIndexOf("\n", Math.max(0, offset - 1));
+        return lineBreak === -1 ? 0 : lineBreak + 1;
+      }
+      getLineEnd(raw, offset) {
+        const lineBreak = raw.indexOf("\n", offset);
+        return lineBreak === -1 ? raw.length : lineBreak;
+      }
+      /** The full line of `raw` containing `offset`. */
+      lineContaining(raw, offset) {
+        return raw.substring(this.getLineStart(raw, offset), this.getLineEnd(raw, offset));
+      }
+      /**
+       * Cell ranges of a table row, split on unescaped pipes only.
+       *
+       * `\|` is an escaped pipe: it is content, not a column boundary. Splitting
+       * on it tears wiki links (`[[Note\|Alias]]`) and code spans (`` `a \| b` ``)
+       * in half and writes a marker into the middle of them.
+       */
+      splitTableCells(line) {
+        const cells = [];
+        let cursor = 0;
+        for (let i2 = 0; i2 < line.length; i2++) {
+          if (line[i2] === "\\") {
+            i2++;
+            continue;
+          }
+          if (line[i2] === "|") {
+            cells.push({ start: cursor, end: i2 });
+            cursor = i2 + 1;
+          }
+        }
+        cells.push({ start: cursor, end: line.length });
+        return cells;
+      }
+      /**
+       * Rewrite one table row, wrapping only the cells the selection covers.
+       *
+       * Highlighting a row cannot be done by wrapping the selected span: a `==`
+       * pair spanning a `|` swallows the column boundary and the table stops
+       * rendering as a table. Each covered cell gets its own pair instead.
+       */
+      applyToTableRow(line, lineStart, selectionStart, selectionEnd, mode, wrapManaged = null) {
+        const cells = this.splitTableCells(line);
+        const pieces = [];
+        cells.forEach((cell, index) => {
+          var _a, _b, _c, _d;
+          const text = line.substring(cell.start, cell.end);
+          const stripped = text.replace(/<mark[^>]*>/g, "").replace(/<\/mark>/g, "").split("==").join("");
+          const trimmed = stripped.trim();
+          const isEdge = index === 0 || index === cells.length - 1;
+          let contentStart = cell.start;
+          let contentEnd = cell.end;
+          while (contentStart < contentEnd && /\s/.test(line[contentStart])) contentStart++;
+          while (contentEnd > contentStart && /\s/.test(line[contentEnd - 1])) contentEnd--;
+          const covered = lineStart + contentEnd > selectionStart && lineStart + contentStart < selectionEnd;
+          if (isEdge || !trimmed || !covered || mode === "remove") {
+            pieces.push(mode === "remove" ? stripped : covered && !isEdge ? stripped : text);
+            return;
+          }
+          const leadWS = (_b = (_a = stripped.match(/^(\s*)/)) == null ? void 0 : _a[1]) != null ? _b : "";
+          const trailWS = (_d = (_c = stripped.match(/(\s*)$/)) == null ? void 0 : _c[1]) != null ? _d : "";
+          const wrapped = wrapManaged ? wrapManaged(trimmed) : trimmed;
+          pieces.push(`${leadWS}${wrapped}${trailWS}`);
+        });
+        return pieces.join("|");
+      }
+      isTableAlignmentRow(line) {
+        return /^\s*\|(\s*:?-+:?\s*\|)+\s*$/.test(line);
+      }
+      isTableDataRow(line) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("|")) return false;
+        if (this.isTableAlignmentRow(line)) return false;
+        return (trimmed.match(/\|/g) || []).length >= 2;
+      }
+      rewriteSelection(raw, start, end, mode, payload, autoTag, notationType, settings) {
+        if ((mode === "highlight" || mode === "color") && parseHighlights(raw).highlights.some((mark) => mark.start <= start && mark.end >= end)) {
+          return raw;
+        }
+        let expandedStart = start;
+        let expandedEnd = end;
+        let bodyStart = 0;
+        if (raw.startsWith("---")) {
+          const secondDash = raw.indexOf("---", 3);
+          if (secondDash !== -1) {
+            bodyStart = secondDash + 3;
+          }
+        }
+        let expanded = true;
+        while (expanded) {
+          expanded = false;
+          const preceding = raw.substring(0, expandedStart);
+          const matchBack = preceding.match(/(<mark[^>]*>|\*\*|==|~~|\*|_|\[\[|\[\^[^\]]+\]:?\s?|[([{"'«“‘‹])$/);
+          if (matchBack && expandedStart > bodyStart) {
+            const newStart = expandedStart - matchBack[0].length;
+            if (newStart >= bodyStart) {
+              expandedStart = newStart;
+              expanded = true;
+            }
+          }
+          const following = raw.substring(expandedEnd);
+          const matchForward = following.match(
+            /^(<\/mark>|\*\*|==|~~|\*|_|\]\]|\]\([^)]+\)|\[\^[^\]]+\]|[.?!,;:]["']?|[)\]}"'»”’›.?!,;:](\s|$)?)/
+          );
+          if (matchForward) {
+            expandedEnd += matchForward[0].length;
+            expanded = true;
+          }
+        }
+        if (mode === "highlight" || mode === "color" || mode === "tag" || mode === "remove") {
+          for (const existing of parseHighlights(raw).highlights) {
+            const overlaps = existing.openTagStart < expandedEnd && existing.closeTagEnd > expandedStart;
+            if (!overlaps) continue;
+            if ((mode === "highlight" || mode === "color") && existing.annotationId) {
+              throw new Error("This selection overlaps a managed annotation. No source changed.");
+            }
+            expandedStart = Math.min(expandedStart, existing.openTagStart);
+            expandedEnd = Math.max(expandedEnd, existing.closeTagEnd);
+          }
+        }
+        const initiallySelectedText = raw.substring(expandedStart, expandedEnd);
+        if (/\r?\n/.test(initiallySelectedText)) {
+          expandedStart = this.getLineStart(raw, expandedStart);
+          expandedEnd = this.getLineEnd(raw, expandedEnd);
+        }
+        const selectionStart = expandedStart;
+        const selectionEnd = expandedEnd;
+        if (this.isTableDataRow(this.lineContaining(raw, expandedStart)) || this.isTableDataRow(this.lineContaining(raw, expandedEnd))) {
+          expandedStart = this.getLineStart(raw, expandedStart);
+          expandedEnd = this.getLineEnd(raw, expandedEnd);
+        }
+        const selectedText = raw.substring(expandedStart, expandedEnd);
+        const newline = raw.includes("\r\n") ? "\r\n" : "\n";
+        const lines = selectedText.split(/\r?\n/);
+        const lineOffsets = [];
+        let runningOffset = expandedStart;
+        for (const line of lines) {
+          lineOffsets.push(runningOffset);
+          runningOffset += line.length + newline.length;
+        }
+        let fullTag = "";
+        const sanitizeTag = (t2) => t2.trim().replace(/^#/, "").replace(/\s+/g, "_");
+        if (mode === "tag" && payload) {
+          const prefix = settings.defaultTagPrefix ? sanitizeTag(settings.defaultTagPrefix) : "";
+          const cleanPayload = payload.split(/\s+/).map(sanitizeTag).filter((t2) => t2).map((t2) => `#${t2}`).join(" ");
+          if (prefix) {
+            fullTag = `#${sanitizeTag(prefix)} ${cleanPayload}`;
+          } else {
+            fullTag = cleanPayload;
+          }
+        } else if ((mode === "highlight" || mode === "color") && settings.defaultTagPrefix) {
+          const autoTagSetting = sanitizeTag(settings.defaultTagPrefix);
+          if (autoTagSetting) {
+            fullTag = `#${autoTagSetting}`;
+          }
+        }
+        if (autoTag) {
+          const cleanAutoTag = sanitizeTag(autoTag);
+          fullTag = fullTag ? `${fullTag} #${cleanAutoTag}` : `#${cleanAutoTag}`;
+        }
+        const managedMode = mode === "highlight" || mode === "color";
+        const annotationId = managedMode ? this.unusedId(raw) : null;
+        const partTokens = [];
+        const wrapManaged = (text) => {
+          const token = `\uE000fp-part-${partTokens.length}\uE001`;
+          partTokens.push(token);
+          return `${token}${text}</mark>`;
+        };
+        const processedLines = lines.map((line, lineIndex) => {
+          var _a, _b;
+          let cleanLine = line.replace(/<mark[^>]*>/g, "").replace(/<\/mark>/g, "");
+          if (this.isTableAlignmentRow(line)) return line;
+          if (this.isTableDataRow(line)) {
+            return this.applyToTableRow(
+              line,
+              lineOffsets[lineIndex],
+              selectionStart,
+              selectionEnd,
+              mode,
+              managedMode ? wrapManaged : null
+            );
+          }
+          if (mode === "highlight" || mode === "color" || mode === "tag" || mode === "remove") {
+            cleanLine = cleanLine.split("==").join("");
+          } else if (mode === "bold") {
+            cleanLine = cleanLine.split("**").join("");
+          } else if (mode === "italic") {
+            cleanLine = cleanLine.split("*").join("");
+          }
+          if (mode === "remove") return cleanLine;
+          const { indent, prefix, content } = this.splitMarkdownLine(cleanLine);
+          if (!content.trim()) return line;
+          const leadWS = ((_a = content.match(/^(\s*)/)) == null ? void 0 : _a[1]) || "";
+          const trailWS = ((_b = content.match(/(\s*)$/)) == null ? void 0 : _b[1]) || "";
+          const actualContent = content.substring(leadWS.length, content.length - trailWS.length);
+          if (!actualContent) return line;
+          const tagStr = fullTag ? `${fullTag} ` : "";
+          let wrappedContent = actualContent;
+          if (managedMode) {
+            wrappedContent = wrapManaged(actualContent);
+          } else if (mode === "bold") {
+            wrappedContent = `**${actualContent}**`;
+          } else if (mode === "italic") {
+            wrappedContent = `*${actualContent}*`;
+          }
+          return `${indent}${prefix}${leadWS}${tagStr}${wrappedContent}${trailWS}`;
+        });
+        let replaceBlock = processedLines.join(newline);
+        if (annotationId) {
+          const color = mode === "color" ? payload : settings.enableColorHighlighting ? settings.highlightColor : null;
+          const spec = { notationType, color, opacity: settings.notationOpacity[notationType] };
+          partTokens.forEach((token, index) => {
+            replaceBlock = replaceBlock.replace(
+              token,
+              this.openMark(spec, annotationId, index + 1, partTokens.length)
+            );
+          });
+        }
+        const result = raw.substring(0, expandedStart) + replaceBlock + raw.substring(expandedEnd);
+        if (annotationId) {
+          const matching = this.observe(result).filter((observation) => observation.managedId === annotationId);
+          if (matching.length !== 1 || matching[0].integrity !== "resolved" || matching[0].anchor.parts.length !== partTokens.length) {
+            throw new Error("Managed annotation failed source verification; no write made.");
+          }
+        }
+        return result;
+      }
+      observe(raw) {
+        return logicalHighlights(parseHighlights(raw).highlights).map((highlight) => {
+          var _a;
+          return {
+            managedId: highlight.annotationId,
+            observationKey: highlight.id,
+            identityMode: highlight.identityMode,
+            integrity: highlight.integrity,
+            anchor: {
+              sourceType: "markdown",
+              parts: ((_a = highlight.members) != null ? _a : [highlight]).map((part, index) => {
+                var _a2, _b;
+                return {
+                  partId: (_a2 = part.partId) != null ? _a2 : `observed-${index + 1}`,
+                  order: (_b = part.partIndex) != null ? _b : index + 1,
+                  start: part.start,
+                  end: part.end
+                };
+              })
+            },
+            highlight
+          };
+        });
+      }
+      observeFootnotes(raw) {
+        const records = /* @__PURE__ */ new Map();
+        const lines = raw.split(/\r?\n/);
+        const visibleLines = visibleSource(raw).split(/\r?\n/);
+        const newlineLength = raw.includes("\r\n") ? 2 : 1;
+        let offset = 0;
+        let active = null;
+        for (let line = 0; line < lines.length; line++) {
+          const text = lines[line];
+          const definition = visibleLines[line].match(/^\s{0,3}\[\^([^\]]+)\]:/);
+          if (definition) {
+            const record = this.footnoteRecord(records, definition[1]);
+            const span = { line, start: offset, end: offset + text.length };
+            record.definitions.push(span);
+            if (record.definitions.length === 1) record.text = text.slice(definition[0].length).trim();
+            active = record.definitions.length === 1 ? { record, definition: span } : null;
+          } else if (active && /^(?: {4}|\t)\S/.test(text)) {
+            active.definition.end = offset + text.length;
+            active.record.text += `
+${text.replace(/^(?: {4}|\t)/, "")}`;
+          } else {
+            active = null;
+          }
+          const refs = /\[\^([^\]]+)\](?!:)/g;
+          let match;
+          while (match = refs.exec(visibleLines[line])) {
+            const record = this.footnoteRecord(records, match[1]);
+            record.references.push({
+              line,
+              start: offset + match.index,
+              end: offset + match.index + match[0].length
+            });
+          }
+          offset += text.length + (line < lines.length - 1 ? newlineLength : 0);
+        }
+        for (const record of records.values()) {
+          record.integrity = record.definitions.length > 1 ? "ambiguous" : record.definitions.length === 0 ? "missing" : "resolved";
+          record.anchor.parts = (record.references.length ? record.references : record.definitions).map(
+            (part, i2) => ({
+              partId: String(i2 + 1),
+              order: i2 + 1,
+              start: part.start,
+              end: part.end
+            })
+          );
+        }
+        return [...records.values()];
+      }
+      footnoteRecord(records, label) {
+        let record = records.get(label);
+        if (!record) {
+          const managed = isAnnotationId(label);
+          record = {
+            managedId: managed ? label : null,
+            observationKey: `footnote:${label}`,
+            identityMode: managed ? "managed" : "tracked-legacy",
+            integrity: "missing",
+            anchor: { sourceType: "markdown", parts: [] },
+            label,
+            text: "",
+            definitions: [],
+            references: []
+          };
+          records.set(label, record);
+        }
+        return record;
+      }
+      createFootnote(raw, end, comment) {
+        if (end < 0 || end > raw.length) throw new Error("Invalid footnote insertion point.");
+        const used = new Set(this.observeFootnotes(raw).map((record) => record.label));
+        const id = this.unusedId(raw, used);
+        const newline = raw.includes("\r\n") ? "\r\n" : "\n";
+        const reference = `[^${id}]`;
+        const inserted = raw.slice(0, end) + reference + raw.slice(end);
+        const definitionText = comment.replace(/\r?\n/g, `${newline}    `);
+        const result = inserted.trimEnd() + `${newline}${newline}[^${id}]: ${definitionText}${newline}`;
+        const observed = this.observeFootnotes(result).find((item) => item.label === id);
+        if (!observed || observed.definitions.length !== 1 || observed.references.length !== 1) {
+          throw new Error("Managed footnote failed source verification; no write made.");
+        }
+        return { raw: result, id, label: id };
+      }
+    };
+    markdownSourceAdapter = new MarkdownSourceAdapter();
   }
 });
 
@@ -835,7 +1969,7 @@ async function exportHighlightsToMD(app, file) {
   const raw = await app.vault.read(file);
   const parsed = parseHighlights(raw);
   const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
-  const highlights = groupHighlights(parsed.highlights).map((highlight) => {
+  const highlights = logicalHighlights(parsed.highlights).map((highlight) => {
     var _a;
     return {
       text: ((_a = highlight.members) != null ? _a : [highlight]).map((part) => `![[${file.basename}#${ensured.lineToBlockId.get(part.line)}]]`).join("\n   ")
@@ -872,8 +2006,7 @@ ${highlights.map((h2, i2) => `${i2 + 1}. ${h2.text}`).join("\n\n")}
   return exportPath;
 }
 function getHighlightsFromContent(raw) {
-  const parsed = parseHighlights(raw);
-  return groupHighlights(parsed.highlights);
+  return markdownSourceAdapter.observe(raw).map((observation) => observation.highlight);
 }
 async function exportHighlightsToJSON(app, file) {
   let raw = await app.vault.read(file);
@@ -891,15 +2024,17 @@ async function exportHighlightsToJSON(app, file) {
     exported: date,
     source: { path: file.path, basename: file.basename },
     total: getHighlightsFromContent(raw).length,
-    highlights: groupHighlights(parsed.highlights).map((h2) => {
-      var _a, _b, _c, _d;
+    highlights: logicalHighlights(parsed.highlights).map((h2) => {
+      var _a, _b, _c, _d, _e;
       const blockId = ensured.lineToBlockId.get(h2.line) || null;
       return {
         id: h2.id,
         text: h2.text,
         type: h2.type,
         notationType: h2.notationType,
-        groupId: h2.groupId,
+        annotationId: h2.annotationId,
+        identityMode: h2.identityMode,
+        integrity: h2.integrity,
         color: (_a = h2.color) != null ? _a : null,
         tagsText: (_b = h2.tagsText) != null ? _b : "",
         tags: (h2.tagsText || "").split(/\s+/).filter(Boolean),
@@ -908,13 +2043,14 @@ async function exportHighlightsToJSON(app, file) {
         line: h2.line,
         blockId,
         blockEmbed: blockId ? `![[${file.basename}#${blockId}]]` : null,
-        ...h2.members ? {
+        ...((_e = h2.members) == null ? void 0 : _e.length) && h2.members.length > 1 ? {
           parts: h2.members.map((part) => ({
             text: part.text,
             line: part.line,
             notationType: part.notationType,
             color: part.color,
-            opacity: part.opacity
+            opacity: part.opacity,
+            partId: part.partId
           }))
         } : {}
       };
@@ -946,7 +2082,7 @@ async function exportHighlightsToCSV(app, file) {
     "highlight_id",
     "type",
     "notation_type",
-    "group_id",
+    "annotation_id",
     "color",
     "tags",
     "annotation",
@@ -956,7 +2092,7 @@ async function exportHighlightsToCSV(app, file) {
     "block_embed",
     "text"
   ].join(",");
-  const rows = groupHighlights(parsed.highlights).map((h2) => {
+  const rows = logicalHighlights(parsed.highlights).map((h2) => {
     var _a, _b, _c, _d, _e;
     const blockId = ensured.lineToBlockId.get(h2.line) || "";
     const blockEmbed = blockId ? `![[${file.basename}#${blockId}]]` : "";
@@ -966,7 +2102,7 @@ async function exportHighlightsToCSV(app, file) {
       csvEscape(h2.id),
       csvEscape(h2.type),
       csvEscape(h2.notationType),
-      csvEscape((_a = h2.groupId) != null ? _a : ""),
+      csvEscape((_a = h2.annotationId) != null ? _a : ""),
       csvEscape((_b = h2.color) != null ? _b : ""),
       csvEscape((h2.tagsText || "").trim()),
       csvEscape((_c = h2.annotation) != null ? _c : ""),
@@ -990,6 +2126,7 @@ async function exportHighlightsToCSV(app, file) {
 var init_export = __esm({
   "src/utils/export.ts"() {
     init_highlights();
+    init_MarkdownSourceAdapter();
     init_time();
   }
 });
@@ -1051,11 +2188,13 @@ function parseCanvas(raw) {
 async function prepareCanvasMarks(highlights) {
   if (!highlights.length || highlights.length > 2e3)
     throw new Error("Choose between 1 and 2,000 highlights per export.");
+  if (highlights.some((highlight) => highlight.integrity === "ambiguous"))
+    throw new Error("Resolve ambiguous annotation identity before exporting to Canvas.");
   const occurrences = /* @__PURE__ */ new Map();
   return Promise.all(
     highlights.map(async (h2) => {
       var _a;
-      const identity = h2.groupId ? `group:${h2.groupId}` : `text:${h2.text.replace(/\s+/g, " ").trim()}`;
+      const identity = h2.annotationId ? `annotation:${h2.annotationId}` : `text:${h2.text.replace(/\s+/g, " ").trim()}`;
       const occurrenceKey = `${h2.file.path}\0${identity}`;
       const occurrence = (_a = occurrences.get(occurrenceKey)) != null ? _a : 0;
       occurrences.set(occurrenceKey, occurrence + 1);
@@ -1140,7 +2279,7 @@ async function exportHighlightsToCanvas(app, highlights, options) {
       return output;
     };
     if (existing) {
-      if (!options.allowExisting || !(existing instanceof import_obsidian4.TFile))
+      if (!options.allowExisting || !(existing instanceof import_obsidian5.TFile))
         throw new Error(
           "That path already exists. Use Annotations manager \u2192 Canvas\u2026 to explicitly append, or choose another name."
         );
@@ -1151,7 +2290,7 @@ async function exportHighlightsToCanvas(app, highlights, options) {
       for (let i2 = 1; i2 <= folders.length; i2++) {
         const folder = folders.slice(0, i2).join("/");
         const entry = app.vault.getAbstractFileByPath(folder);
-        if (entry instanceof import_obsidian4.TFile) throw new Error(`A file occupies the folder path: ${folder}`);
+        if (entry instanceof import_obsidian5.TFile) throw new Error(`A file occupies the folder path: ${folder}`);
         if (!entry) await app.vault.createFolder(folder);
       }
       await app.vault.create(path, output);
@@ -1161,10 +2300,10 @@ async function exportHighlightsToCanvas(app, highlights, options) {
     locks.delete(path);
   }
 }
-var import_obsidian4, DEFAULT_CANVAS_SETTINGS, MAX_CANVAS_ASSOCIATIONS, MAX_NODES, MAX_BYTES, pendingExports;
+var import_obsidian5, DEFAULT_CANVAS_SETTINGS, MAX_CANVAS_ASSOCIATIONS, MAX_NODES, MAX_BYTES, pendingExports;
 var init_canvas = __esm({
   "src/utils/canvas.ts"() {
-    import_obsidian4 = require("obsidian");
+    import_obsidian5 = require("obsidian");
     DEFAULT_CANVAS_SETTINGS = {
       location: "adjacent",
       folder: "Canvases",
@@ -1188,7 +2327,7 @@ __export(main_exports, {
   default: () => ReadingHighlighterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian14 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/ui/FloatingManager.ts
 var import_obsidian = require("obsidian");
@@ -3343,19 +4482,20 @@ var AnnotationModal = class extends import_obsidian3.Modal {
 };
 
 // src/views/HighlightNavigator.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 init_export();
 init_highlights();
-init_notations();
+init_MarkdownSourceAdapter();
 init_canvas();
 
 // src/modals/HighlightEditModal.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 init_highlights();
-var HighlightEditModal = class extends import_obsidian5.Modal {
+var HighlightEditModal = class extends import_obsidian6.Modal {
   constructor(plugin, file, highlightId, onApplied = () => {
   }) {
     super(plugin.app);
+    this.observedLegacy = null;
     this.plugin = plugin;
     this.file = file;
     this.highlightId = highlightId;
@@ -3381,11 +4521,16 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
       return;
     }
     const parsed = parseHighlights(raw);
-    const highlight = groupHighlights(parsed.highlights).find((item) => item.id === this.highlightId);
+    const highlight = logicalHighlights(parsed.highlights).find((item) => item.id === this.highlightId);
     if (!highlight) {
       contentEl.createDiv({ cls: "highlight-edit-error", text: "Highlight not found (it may have moved)." });
       return;
     }
+    this.observedLegacy = highlight.annotationId ? null : {
+      start: highlight.start,
+      text: highlight.text,
+      type: highlight.type
+    };
     this.state.color = highlight.color || "";
     this.state.tags = highlight.tagsText || "";
     this.state.annotation = highlight.annotation || "";
@@ -3394,7 +4539,7 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
     preview.createDiv({ cls: "highlight-edit-preview-text", text: highlight.text || "" });
     this.colorSettingEl = contentEl.createDiv({ cls: "highlight-edit-color-setting" });
     this.renderColorControls();
-    const tagsSetting = new import_obsidian5.Setting(contentEl).setName("Tags").setDesc("Tags applied immediately before the highlight.");
+    const tagsSetting = new import_obsidian6.Setting(contentEl).setName("Tags").setDesc("Tags applied immediately before the highlight.");
     this.tagsInput = tagsSetting.controlEl.createEl("input", {
       type: "text",
       cls: "highlight-edit-tags-input"
@@ -3411,7 +4556,7 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
         }).open();
       })
     );
-    const annotationSetting = new import_obsidian5.Setting(contentEl).setName("Footnote").setDesc("Stored as a standard footnote definition in the note.");
+    const annotationSetting = new import_obsidian6.Setting(contentEl).setName("Footnote").setDesc("Stored as a standard footnote definition in the note.");
     this.annotationInput = annotationSetting.controlEl.createEl("textarea", {
       cls: "highlight-edit-annotation-input"
     });
@@ -3486,8 +4631,14 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
         if (!highlight) {
           throw new Error("Highlight not found (it may have moved).");
         }
+        if (highlight.integrity === "ambiguous") {
+          throw new Error("Annotation identity is ambiguous; no source changed.");
+        }
+        if (this.observedLegacy && (highlight.start !== this.observedLegacy.start || highlight.text !== this.observedLegacy.text || highlight.type !== this.observedLegacy.type)) {
+          throw new Error("Legacy highlight changed; reopen it before editing.");
+        }
         if (remove) {
-          raw = removeHighlightGroupFromRaw(raw, highlight);
+          raw = removeLogicalHighlightFromRaw(raw, highlight);
           return raw;
         }
         raw = updateHighlightTagsInRaw(raw, highlight, this.state.tags);
@@ -3498,7 +4649,7 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
         }
         const color = String(this.state.color || "").trim();
         if (color) {
-          const parts = highlight.groupId ? updatedParsed.highlights.filter((part) => part.groupId === highlight.groupId) : [updatedHighlight];
+          const parts = highlight.annotationId ? updatedParsed.highlights.filter((part) => part.annotationId === highlight.annotationId) : [updatedHighlight];
           for (const part of parts.sort((a2, b) => b.openTagStart - a2.openTagStart)) {
             raw = updateHighlightColorInRaw(raw, part, color);
           }
@@ -3513,10 +4664,10 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
       });
       this.onApplied(finalRaw);
       this.close();
-      new import_obsidian5.Notice(remove ? "Highlight removed." : "Highlight updated.");
+      new import_obsidian6.Notice(remove ? "Highlight removed." : "Highlight updated.");
     } catch (err) {
       console.error(err);
-      new import_obsidian5.Notice(err instanceof Error ? err.message : "Failed to update highlight.");
+      new import_obsidian6.Notice(err instanceof Error ? err.message : "Failed to update highlight.");
     }
   }
   onClose() {
@@ -3524,9 +4675,18 @@ var HighlightEditModal = class extends import_obsidian5.Modal {
   }
 };
 
+// src/utils/navigatorPreview.ts
+var import_obsidian7 = require("obsidian");
+function navigatorPreviewText(source) {
+  var _a;
+  if (!source) return "";
+  const markdownText = source.replace(/<!--[^]*?-->/g, " ").replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1").replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/\[\[([^\]]+)\]\]/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/\[\^[^\]]+\]/g, "").replace(/<(https?:\/\/[^>]+)>/g, "$1").replace(/<br\s*\/?>/gi, " ").replace(/[*_~`]+/g, "");
+  return ((_a = (0, import_obsidian7.sanitizeHTMLToDom)(markdownText).textContent) != null ? _a : "").replace(/\s+/g, " ").trim();
+}
+
 // src/views/HighlightNavigator.ts
 var HIGHLIGHT_NAVIGATOR_VIEW = "highlight-navigator";
-var NavigatorConfirmationModal = class extends import_obsidian6.Modal {
+var NavigatorConfirmationModal = class extends import_obsidian8.Modal {
   constructor(app, title, message, confirmLabel, resolveChoice) {
     super(app);
     this.title = title;
@@ -3559,16 +4719,13 @@ var NavigatorConfirmationModal = class extends import_obsidian6.Modal {
     this.close();
   }
 };
-var HighlightNavigatorView = class extends import_obsidian6.ItemView {
+var HighlightNavigatorView = class extends import_obsidian8.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
-    this.selectionCountEl = null;
-    this.groupButton = null;
-    this.ungroupButton = null;
-    this.selectionBarEl = null;
     this.canvasButton = null;
     this.activeMenu = null;
     this.activeMenuTrigger = null;
+    this.refreshGeneration = 0;
     this.plugin = plugin;
     this.highlights = [];
     this.footnotes = [];
@@ -3576,8 +4733,6 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     this.sectionCollapsed = { highlights: false, footnotes: true };
     this.preSearchCollapsed = null;
     this.searchQuery = "";
-    this.selectionMode = false;
-    this.selectedIds = /* @__PURE__ */ new Set();
     this.expandedItemIds = /* @__PURE__ */ new Set();
   }
   getViewType() {
@@ -3604,9 +4759,9 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     const clearSearchBtn = searchField.createEl("button", {
       cls: "fp-navigator-search-clear is-hidden"
     });
-    (0, import_obsidian6.setIcon)(clearSearchBtn, "x");
+    (0, import_obsidian8.setIcon)(clearSearchBtn, "x");
     clearSearchBtn.setAttribute("aria-label", "Clear search");
-    (0, import_obsidian6.setTooltip)(clearSearchBtn, "Clear search", { placement: "top" });
+    (0, import_obsidian8.setTooltip)(clearSearchBtn, "Clear search", { placement: "top" });
     const applySearch = (value) => {
       this.setSearchQuery(value);
       clearSearchBtn.toggleClass("is-hidden", !this.searchQuery);
@@ -3618,17 +4773,16 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       searchInput.focus();
     };
     const overflowBtn = searchContainer.createEl("button", { cls: "fp-navigator-overflow" });
-    (0, import_obsidian6.setIcon)(overflowBtn, "ellipsis-vertical");
+    (0, import_obsidian8.setIcon)(overflowBtn, "ellipsis-vertical");
     overflowBtn.setAttribute("aria-label", "Navigator actions");
-    (0, import_obsidian6.setTooltip)(overflowBtn, "Navigator actions", { placement: "top" });
+    (0, import_obsidian8.setTooltip)(overflowBtn, "Navigator actions", { placement: "top" });
     overflowBtn.onclick = (event) => this.openNavigatorMenu(event);
-    this.selectionBarEl = container.createDiv({ cls: "fp-navigator-selection-controls" });
     this.contentEl = container.createDiv({ cls: "highlight-navigator-content" });
     const footer = container.createDiv({ cls: "highlight-navigator-footer" });
     const footerBtnGroup = footer.createDiv({ cls: "highlight-navigator-footer-buttons" });
     const researchBtn = footerBtnGroup.createEl("button", { text: "Manage", cls: "mod-cta" });
     researchBtn.onclick = () => void this.plugin.activateResearchView();
-    (0, import_obsidian6.setTooltip)(researchBtn, "Manage annotations across this vault", { placement: "top" });
+    (0, import_obsidian8.setTooltip)(researchBtn, "Manage annotations across this vault", { placement: "top" });
     this.canvasButton = footerBtnGroup.createEl("button", { cls: "mod-cta" });
     this.canvasButton.onclick = () => void this.exportCurrentFileToCanvas();
     this.updateCanvasButton();
@@ -3637,6 +4791,8 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
         void this.refresh();
       })
     );
+    this.registerEvent(this.app.workspace.on("file-open", () => void this.refresh()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => void this.refresh()));
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (this.currentFile && file.path === this.currentFile.path) {
@@ -3657,7 +4813,6 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       this.preSearchCollapsed = { ...this.sectionCollapsed };
     }
     this.searchQuery = nextQuery;
-    this.selectedIds.clear();
     if (isSearching) {
       this.sectionCollapsed.highlights = false;
       this.sectionCollapsed.footnotes = false;
@@ -3669,31 +4824,33 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
   }
   async refresh(force = false) {
     var _a, _b;
-    let targetFile;
-    if (force) {
-      targetFile = this.currentFile || ((_a = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView)) == null ? void 0 : _a.file) || null;
-      if (!targetFile) {
-        return;
+    const targetFile = this.resolveAnnotationSourceFile();
+    if (!targetFile) {
+      this.refreshGeneration++;
+      if (this.currentFile) {
+        this.currentFile = null;
+        this.highlights = [];
+        this.footnotes = [];
+        this.expandedItemIds.clear();
+        this.sectionCollapsed = { highlights: false, footnotes: false };
+        this.preSearchCollapsed = null;
+        this.renderContent();
+        this.updateCanvasButton();
       }
-    } else {
-      const view = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
-      if (!view || !view.file) {
-        return;
-      }
-      if (this.currentFile && view.file.path === this.currentFile.path) {
-        return;
-      }
-      targetFile = view.file;
+      return;
     }
-    const fileChanged = ((_b = this.currentFile) == null ? void 0 : _b.path) !== targetFile.path;
-    if (fileChanged || force) this.selectedIds.clear();
-    if (fileChanged) this.expandedItemIds.clear();
-    this.currentFile = targetFile;
-    this.updateCanvasButton();
+    if (!force && ((_a = this.currentFile) == null ? void 0 : _a.path) === targetFile.path) return;
+    const generation = ++this.refreshGeneration;
     try {
       const raw = await this.app.vault.read(targetFile);
+      if (generation !== this.refreshGeneration) return;
+      const fileChanged = ((_b = this.currentFile) == null ? void 0 : _b.path) !== targetFile.path;
+      if (fileChanged) this.expandedItemIds.clear();
+      this.currentFile = targetFile;
       this.highlights = getHighlightsFromContent(raw);
       this.footnotes = this.getFootnotesFromContent(raw);
+      if (fileChanged) this.initializeSectionsForSource();
+      this.updateCanvasButton();
       const validExpandedIds = /* @__PURE__ */ new Set([
         ...this.highlights.map((highlight) => `highlight:${highlight.id}`),
         ...this.footnotes.map((footnote) => `footnote:${footnote.id}`)
@@ -3703,42 +4860,47 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       }
       this.renderContent();
     } catch (err) {
+      if (generation !== this.refreshGeneration) return;
       this.showEmpty("Error loading content.");
       console.error(err);
     }
   }
+  resolveAnnotationSourceFile() {
+    const workspace = this.app.workspace;
+    const rootLeaf = workspace.getMostRecentLeaf(workspace.rootSplit);
+    const view = rootLeaf == null ? void 0 : rootLeaf.view;
+    if (!(view instanceof import_obsidian8.MarkdownView)) return null;
+    return view.file instanceof import_obsidian8.TFile ? view.file : null;
+  }
+  initializeSectionsForSource() {
+    const hasHighlights = this.highlights.length > 0;
+    const hasFootnotes = this.footnotes.length > 0;
+    const initial = {
+      highlights: hasFootnotes && !hasHighlights,
+      footnotes: hasHighlights && !hasFootnotes
+    };
+    this.preSearchCollapsed = this.searchQuery ? initial : null;
+    this.sectionCollapsed = this.searchQuery ? { highlights: false, footnotes: false } : initial;
+  }
   getFootnotesFromContent(raw) {
-    const lines = raw.split("\n");
-    const definitions = [];
-    const definedIds = /* @__PURE__ */ new Set();
-    lines.forEach((line, lineIdx) => {
-      const match = line.match(/^\s*\[\^([^\]]+)\]:\s*(.+)$/);
-      if (match) {
-        definitions.push({ id: match[1], text: match[2].trim(), line: lineIdx });
-        definedIds.add(match[1]);
-      }
+    const observed = markdownSourceAdapter.observeFootnotes(raw);
+    const defined = observed.filter((item) => item.definitions.length > 0);
+    const orderedReferences = defined.filter((item) => item.references.length > 0).sort((a2, b) => a2.references[0].start - b.references[0].start);
+    const displayNumberById = new Map(orderedReferences.map((item, index) => [item.label, index + 1]));
+    let footnotes = defined.map((item) => {
+      var _a, _b, _c;
+      return {
+        id: item.label,
+        text: item.text,
+        line: item.definitions[0].line,
+        displayNumber: (_a = displayNumberById.get(item.label)) != null ? _a : null,
+        refLine: (_c = (_b = item.references[0]) == null ? void 0 : _b.line) != null ? _c : item.definitions[0].line,
+        integrity: item.integrity
+      };
     });
-    const displayNumberById = /* @__PURE__ */ new Map();
-    const refLineById = /* @__PURE__ */ new Map();
-    let nextNumber = 1;
-    lines.forEach((line, lineIdx) => {
-      const refRe = /\[\^([^\]]+)\](?!:)/g;
-      let m;
-      while ((m = refRe.exec(line)) !== null) {
-        const id = m[1];
-        if (!definedIds.has(id)) continue;
-        if (!refLineById.has(id)) refLineById.set(id, lineIdx);
-        if (!displayNumberById.has(id)) displayNumberById.set(id, nextNumber++);
-      }
-    });
-    let footnotes = definitions.map((def) => ({
-      ...def,
-      displayNumber: displayNumberById.has(def.id) ? displayNumberById.get(def.id) : null,
-      refLine: refLineById.has(def.id) ? refLineById.get(def.id) : def.line
-    }));
-    const isGroupedNotesStyle = definedIds.has("0");
+    const isGroupedNotesStyle = defined.some((item) => item.label === "0");
     if (isGroupedNotesStyle) {
-      footnotes = footnotes.filter((f2) => f2.displayNumber != null);
+      footnotes = footnotes.filter((f2) => f2.displayNumber != null || f2.id.startsWith("fp-"));
     }
     footnotes.sort((a2, b) => {
       if (a2.displayNumber == null && b.displayNumber == null) return a2.line - b.line;
@@ -3753,75 +4915,17 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     container.createDiv({ cls: "highlight-navigator-empty", text: message });
   }
   stripMarkdown(text) {
-    if (!text) return "";
-    return text.replace(/\[\[(?:[^\]|]+\|)?([^\]]+)\]\]/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_~`]+/g, "");
+    return navigatorPreviewText(text);
   }
   renderContent() {
     this.contentEl.empty();
-    this.renderSelectionControls();
     this.renderSection(this.highlights, "highlights");
     this.renderSection(this.footnotes, "footnotes");
-  }
-  renderSelectionControls() {
-    const controls = this.selectionBarEl;
-    if (!controls) return;
-    controls.empty();
-    this.selectionCountEl = null;
-    this.groupButton = null;
-    this.ungroupButton = null;
-    controls.toggleClass("is-hidden", !this.selectionMode);
-    if (!this.selectionMode) return;
-    const toggle = controls.createEl("button", { text: "Done" });
-    toggle.setAttribute("aria-pressed", String(this.selectionMode));
-    toggle.onclick = () => this.setSelectionMode(false);
-    this.selectionCountEl = controls.createSpan({ cls: "fp-navigator-selected-count" });
-    this.groupButton = controls.createEl("button", { text: "Group" });
-    this.groupButton.setAttribute("aria-label", "Group selected highlights");
-    this.groupButton.onclick = () => void this.regroupSelected(createNotationGroupId());
-    this.ungroupButton = controls.createEl("button", { text: "Ungroup" });
-    this.ungroupButton.setAttribute("aria-label", "Ungroup selected highlights");
-    this.ungroupButton.onclick = () => void this.regroupSelected(null);
-    this.updateSelectionControls();
-  }
-  setSelectionMode(active) {
-    this.selectionMode = active;
-    if (active) this.sectionCollapsed.highlights = false;
-    this.selectedIds.clear();
-    this.renderContent();
-  }
-  updateSelectionControls() {
-    var _a;
-    if (!this.selectionMode) return;
-    const selected = this.highlights.filter((highlight) => this.selectedIds.has(highlight.id));
-    (_a = this.selectionCountEl) == null ? void 0 : _a.setText(`${selected.length} selected`);
-    if (this.groupButton) this.groupButton.disabled = selected.length < 2;
-    if (this.ungroupButton) this.ungroupButton.disabled = !selected.some((highlight) => highlight.groupId);
-  }
-  async regroupSelected(groupId) {
-    const file = this.currentFile;
-    if (!file) return;
-    const selected = this.highlights.filter(
-      (highlight) => this.selectedIds.has(highlight.id) && (groupId !== null || highlight.groupId)
-    );
-    if (groupId && selected.length < 2 || !groupId && !selected.some((highlight) => highlight.groupId)) {
-      return;
-    }
-    try {
-      regroupHighlightsInRaw(await this.app.vault.read(file), selected, groupId);
-      await this.plugin.saveUndoState(file);
-      await this.app.vault.process(file, (raw) => regroupHighlightsInRaw(raw, selected, groupId));
-      this.selectedIds.clear();
-      this.selectionMode = false;
-      await this.refresh(true);
-      new import_obsidian6.Notice(groupId ? "Highlights grouped." : "Groups separated.");
-    } catch (err) {
-      new import_obsidian6.Notice(err instanceof Error ? err.message : "Could not change groups.");
-    }
   }
   renderSection(items, type) {
     const filteredItems = items.filter((item) => {
       if (!this.searchQuery) return true;
-      return item.text.toLowerCase().includes(this.searchQuery);
+      return this.stripMarkdown(item.text).toLowerCase().includes(this.searchQuery);
     });
     const collapsed = this.sectionCollapsed[type];
     const title = type === "highlights" ? "Highlights" : "Footnotes";
@@ -3833,7 +4937,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       attr: { "aria-expanded": String(!collapsed), "aria-label": `${collapsed ? "Show" : "Hide"} ${title}` }
     });
     const disclosure = heading.createSpan({ cls: "fp-navigator-section-disclosure" });
-    (0, import_obsidian6.setIcon)(disclosure, collapsed ? "chevron-right" : "chevron-down");
+    (0, import_obsidian8.setIcon)(disclosure, collapsed ? "chevron-right" : "chevron-down");
     heading.createSpan({ cls: "fp-navigator-section-title", text: title });
     heading.createSpan({
       cls: "fp-navigator-section-count",
@@ -3858,26 +4962,16 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     filteredItems.forEach((item) => {
       var _a, _b;
       const el = fragment.createDiv({ cls: "highlight-navigator-item" });
-      if (type === "highlights" && this.selectionMode) {
-        const highlight = item;
-        const checkbox = el.createEl("input", { cls: "fp-navigator-select" });
-        checkbox.type = "checkbox";
-        checkbox.checked = this.selectedIds.has(highlight.id);
-        checkbox.setAttribute("aria-label", `Select highlight: ${highlight.text.slice(0, 80)}`);
-        checkbox.onchange = () => {
-          if (checkbox.checked) this.selectedIds.add(highlight.id);
-          else this.selectedIds.delete(highlight.id);
-          el.toggleClass("is-selected", checkbox.checked);
-          this.updateSelectionControls();
-        };
-        checkbox.onclick = (e2) => e2.stopPropagation();
-        el.toggleClass("is-selected", checkbox.checked);
+      const integrity = item.integrity;
+      if (integrity !== "resolved") {
+        el.setAttribute("data-integrity", integrity);
+        el.setAttribute("title", `Annotation integrity: ${integrity}. Review before editing.`);
       }
       const leading = el.createSpan({ cls: "fp-navigator-leading" });
       const leadingMeta = leading.createSpan({ cls: "fp-navigator-leading-meta" });
       const number = type === "highlights" ? items.indexOf(item) + 1 : item.displayNumber;
       const numberEl = leadingMeta.createSpan({ cls: "fp-navigator-number" });
-      numberEl.textContent = number != null ? String(number) : `[^${item.id}]`;
+      numberEl.textContent = number != null ? String(number) : "\u2014";
       if (type === "highlights") {
         const highlight = item;
         if (highlight.color) {
@@ -3887,27 +4981,27 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
           leadingMeta.createSpan({ cls: "highlight-color-dot highlight-default" });
         }
         if (highlight.members && new Set(highlight.members.map((part) => part.color)).size > 1) {
-          el.addClass("fp-navigator-mixed-group");
+          el.addClass("fp-navigator-mixed-parts");
         }
       } else {
         const footnote = item;
-        numberEl.setAttribute("title", `[^${footnote.id}]`);
+        numberEl.setAttribute("title", footnote.displayNumber == null ? "No references" : `Footnote ${number}`);
       }
       const rowActions = el.createSpan({ cls: "fp-navigator-row-actions" });
       const sourceBtn = rowActions.createEl("button", { cls: "fp-navigator-source-link" });
-      (0, import_obsidian6.setIcon)(sourceBtn, "arrow-up-right");
+      (0, import_obsidian8.setIcon)(sourceBtn, "arrow-up-right");
       sourceBtn.setAttribute(
         "aria-label",
         type === "highlights" ? "Go to highlight in note" : "Go to footnote in note"
       );
-      (0, import_obsidian6.setTooltip)(sourceBtn, type === "highlights" ? "Go to highlight in note" : "Go to footnote in note", {
+      (0, import_obsidian8.setTooltip)(sourceBtn, type === "highlights" ? "Go to highlight in note" : "Go to footnote in note", {
         placement: "top"
       });
       sourceBtn.onclick = (e2) => {
         e2.preventDefault();
         e2.stopPropagation();
         if (type === "footnotes") void this.jumpToFootnote(item);
-        else void this.jumpToLine(item.line);
+        else void this.jumpToLine(markdownSourceAdapter.navigationLine(item));
       };
       const openMenu = (e2) => {
         if (type === "highlights") {
@@ -3921,8 +5015,8 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
         "aria-label",
         `Actions for ${type === "highlights" ? "highlight" : "footnote"}: ${item.text.slice(0, 80)}`
       );
-      (0, import_obsidian6.setTooltip)(menuBtn, "Actions", { placement: "top" });
-      (0, import_obsidian6.setIcon)(menuBtn, "ellipsis-vertical");
+      (0, import_obsidian8.setTooltip)(menuBtn, "Actions", { placement: "top" });
+      (0, import_obsidian8.setIcon)(menuBtn, "ellipsis-vertical");
       menuBtn.onclick = (e2) => {
         e2.preventDefault();
         e2.stopPropagation();
@@ -3935,7 +5029,10 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       };
       const itemBody = el.createSpan({ cls: "fp-navigator-item-body" });
       const textSpan = itemBody.createSpan({ cls: "highlight-text" });
-      textSpan.textContent = this.stripMarkdown(item.text);
+      textSpan.textContent = this.stripMarkdown(item.text) || (type === "footnotes" ? "(Empty footnote)" : "");
+      if (type === "footnotes" && item.displayNumber == null) {
+        itemBody.createSpan({ cls: "fp-navigator-footnote-status", text: "Unreferenced" });
+      }
       const itemKey = type === "highlights" ? `highlight:${item.id}` : `footnote:${item.id}`;
       let expanded = this.expandedItemIds.has(itemKey);
       let expandable = expanded;
@@ -3974,17 +5071,13 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       }
       if (type === "highlights" && ((_a = item.members) == null ? void 0 : _a.length)) {
         itemBody.createSpan({
-          cls: "fp-navigator-group-count",
-          text: `${(_b = item.members) == null ? void 0 : _b.length} highlights`
+          cls: "fp-navigator-part-count",
+          text: `${(_b = item.members) == null ? void 0 : _b.length} parts`
         });
       }
       el.onclick = (e2) => {
         e2.preventDefault();
         e2.stopPropagation();
-        if (type === "highlights" && this.selectionMode) {
-          const checkbox = el.querySelector(".fp-navigator-select");
-          if (checkbox) checkbox.click();
-        }
       };
     });
     list.appendChild(fragment);
@@ -3993,16 +5086,16 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     var _a;
     const text = ((_a = item == null ? void 0 : item.text) != null ? _a : "").trim();
     if (!text) {
-      new import_obsidian6.Notice("Nothing to copy.");
+      new import_obsidian8.Notice("Nothing to copy.");
       return;
     }
     const ok = await this.plugin.writeClipboardText(text);
-    new import_obsidian6.Notice(ok ? "Copied to clipboard." : "Failed to copy.");
+    new import_obsidian8.Notice(ok ? "Copied to clipboard." : "Failed to copy.");
   }
   openHighlightActionsMenu(item, event) {
     const currentFile = this.currentFile;
     if (!currentFile) return;
-    const menu = new import_obsidian6.Menu().setUseNativeMenu(false);
+    const menu = new import_obsidian8.Menu().setUseNativeMenu(false);
     menu.addItem((mi) => {
       mi.setTitle("Copy").setIcon("copy").onClick(() => void this.copyItemText(item));
     });
@@ -4013,15 +5106,6 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
         }).open();
       });
     });
-    if (item.groupId) {
-      menu.addItem((mi) => {
-        mi.setTitle("Ungroup highlights").setIcon("ungroup").onClick(() => {
-          this.selectedIds.clear();
-          this.selectedIds.add(item.id);
-          void this.regroupSelected(null);
-        });
-      });
-    }
     menu.addSeparator();
     menu.addItem((mi) => {
       mi.setTitle("Remove highlight").setIcon("trash-2").onClick(() => void this.removeSingleHighlight(item));
@@ -4042,18 +5126,21 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       await this.app.vault.process(currentFile, (data) => {
         const highlight = findHighlightById(parseHighlights(data), item.id);
         if (!highlight) return data;
+        if (!item.annotationId && (highlight.start !== item.start || highlight.text !== item.text || highlight.type !== item.type)) {
+          throw new Error("Legacy highlight changed; select it again before removal.");
+        }
         found = true;
-        return removeHighlightGroupFromRaw(data, highlight);
+        return removeLogicalHighlightFromRaw(data, highlight);
       });
       if (!found) {
-        new import_obsidian6.Notice("Highlight not found (it may have moved).");
+        new import_obsidian8.Notice("Highlight not found (it may have moved).");
       } else {
         this.showUndoNotice("Highlight removed.", "Highlight restored.");
       }
       await this.refresh(true);
     } catch (err) {
       console.error("Reader Highlighter Tags: failed to remove highlight.", err);
-      new import_obsidian6.Notice("Failed to remove highlight.");
+      new import_obsidian8.Notice("Failed to remove highlight.");
     }
   }
   async confirmDestructive(title, message, confirmLabel) {
@@ -4068,7 +5155,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     const progress = fragment.createDiv({ cls: "fp-navigator-undo-progress" });
     progress.setAttribute("aria-hidden", "true");
     progress.createSpan({ cls: "fp-navigator-undo-progress-bar" });
-    const notice = new import_obsidian6.Notice(fragment, 1e4);
+    const notice = new import_obsidian8.Notice(fragment, 1e4);
     undo.onclick = () => {
       void (async () => {
         await this.plugin.undoLastHighlight(undoMessage);
@@ -4077,34 +5164,47 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       })();
     };
   }
+  async writeCheckedSource(file, observedRaw, nextRaw, action) {
+    try {
+      await this.app.vault.process(file, (current) => {
+        if (current !== observedRaw) throw new Error(`Source changed; no ${action} removed.`);
+        return nextRaw;
+      });
+      return true;
+    } catch (err) {
+      new import_obsidian8.Notice(err instanceof Error ? err.message : `Could not remove ${action}.`);
+      return false;
+    }
+  }
   async removeAllHighlightsInNote() {
     const currentFile = this.currentFile;
     if (!currentFile) return;
     const raw = await this.app.vault.read(currentFile);
     const highlights = parseHighlights(raw).highlights;
+    const logicalCount = getHighlightsFromContent(raw).length;
     if (!highlights.length) {
-      new import_obsidian6.Notice("No highlights to remove.");
+      new import_obsidian8.Notice("No highlights to remove.");
       return;
     }
     const confirmed = await this.confirmDestructive(
       "Remove all highlights?",
-      `Remove ${highlights.length} highlight${highlights.length === 1 ? "" : "s"} from \u201C${currentFile.basename}\u201D? The text will remain in place.`,
+      `Remove ${logicalCount} highlight${logicalCount === 1 ? "" : "s"} from \u201C${currentFile.basename}\u201D? The text will remain in place.`,
       "Remove all"
     );
     if (!confirmed) return;
     const updated = [...highlights].sort((a2, b) => b.openTagStart - a2.openTagStart).reduce((content, highlight) => removeHighlightFromRaw(content, highlight), raw);
     await this.plugin.saveUndoState(currentFile, raw);
-    await this.app.vault.modify(currentFile, updated);
+    if (!await this.writeCheckedSource(currentFile, raw, updated, "highlights")) return;
     await this.refresh(true);
     this.showUndoNotice(
-      `Removed ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`,
-      `Restored ${highlights.length} highlight${highlights.length === 1 ? "" : "s"}.`
+      `Removed ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`,
+      `Restored ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`
     );
   }
   openFootnoteActionsMenu(item, event) {
     const currentFile = this.currentFile;
     if (!currentFile) return;
-    const menu = new import_obsidian6.Menu().setUseNativeMenu(false);
+    const menu = new import_obsidian8.Menu().setUseNativeMenu(false);
     menu.addItem((mi) => {
       mi.setTitle("Copy").setIcon("copy").onClick(() => void this.copyItemText(item));
     });
@@ -4140,10 +5240,14 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     var _a;
     const currentFile = this.currentFile;
     if (!currentFile) return;
+    if (item.integrity === "ambiguous") {
+      new import_obsidian8.Notice("Duplicate footnote definitions need review before removal.");
+      return;
+    }
     const raw = await this.app.vault.read(currentFile);
     const result = removeFootnoteFromRaw(raw, item.id);
     if (!result.changed) {
-      new import_obsidian6.Notice("Footnote not found.");
+      new import_obsidian8.Notice("Footnote not found.");
       return;
     }
     const confirmed = await this.confirmDestructive(
@@ -4153,7 +5257,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     );
     if (!confirmed) return;
     await this.plugin.saveUndoState(currentFile, raw);
-    await this.app.vault.modify(currentFile, result.raw);
+    if (!await this.writeCheckedSource(currentFile, raw, result.raw, "footnote")) return;
     await this.refresh(true);
     this.showUndoNotice("Footnote removed.", "Footnote restored.");
   }
@@ -4163,7 +5267,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     const raw = await this.app.vault.read(currentFile);
     const result = removeAllFootnotesFromRaw(raw);
     if (!result.removedCount) {
-      new import_obsidian6.Notice("No footnotes to remove.");
+      new import_obsidian8.Notice("No footnotes to remove.");
       return;
     }
     const confirmed = await this.confirmDestructive(
@@ -4173,7 +5277,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     );
     if (!confirmed) return;
     await this.plugin.saveUndoState(currentFile, raw);
-    await this.app.vault.modify(currentFile, result.raw);
+    if (!await this.writeCheckedSource(currentFile, raw, result.raw, "footnotes")) return;
     await this.refresh(true);
     this.showUndoNotice(
       `Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`,
@@ -4182,7 +5286,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
   }
   async jumpToLine(line) {
     const leaf = this.app.workspace.getMostRecentLeaf();
-    if (leaf && leaf.view instanceof import_obsidian6.MarkdownView) {
+    if (leaf && leaf.view instanceof import_obsidian8.MarkdownView) {
       leaf.setEphemeralState({
         line,
         focus: true
@@ -4203,7 +5307,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
   async jumpToFootnote(item) {
     var _a;
     const leaf = this.app.workspace.getMostRecentLeaf();
-    const view = leaf && leaf.view instanceof import_obsidian6.MarkdownView ? leaf.view : null;
+    const view = leaf && leaf.view instanceof import_obsidian8.MarkdownView ? leaf.view : null;
     if (!leaf || !view) {
       this.collapseSidebarOnMobile();
       return;
@@ -4215,30 +5319,15 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     }
     leaf.setEphemeralState({ line: (_a = item.refLine) != null ? _a : item.line, focus: true });
     window.setTimeout(() => {
-      const anchor = this.findFootnoteRefAnchor(view.contentEl, item);
+      const anchor = markdownSourceAdapter.findRenderedFootnoteReference(view.contentEl, item.displayNumber);
       if (anchor) {
         anchor.click();
       }
     }, 120);
     this.collapseSidebarOnMobile();
   }
-  findFootnoteRefAnchor(root, item) {
-    if (!root) return null;
-    const anchors = root.querySelectorAll(
-      "sup.footnote-ref a, a.footnote-ref, sup[id^='fnref'] a"
-    );
-    const wanted = item.displayNumber != null ? String(item.displayNumber) : null;
-    if (wanted) {
-      for (const a2 of Array.from(anchors)) {
-        if ((a2.textContent || "").replace(/\D/g, "") === wanted) {
-          return a2;
-        }
-      }
-    }
-    return anchors.length ? anchors[0] : null;
-  }
   collapseSidebarOnMobile() {
-    if (!import_obsidian6.Platform.isMobile) return;
+    if (!import_obsidian8.Platform.isMobile) return;
     const root = this.leaf.getRoot();
     if (root === this.app.workspace.leftSplit) {
       this.app.workspace.leftSplit.collapse();
@@ -4253,7 +5342,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       const { exportHighlightsToMD: exportHighlightsToMD2 } = await Promise.resolve().then(() => (init_export(), export_exports));
       const exportPath = await exportHighlightsToMD2(this.app, currentFile);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian6.TFile) {
+      if (exportFile instanceof import_obsidian8.TFile) {
         await this.app.workspace.getLeaf("tab").openFile(exportFile);
       }
     } catch (err) {
@@ -4261,11 +5350,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
     }
   }
   openNavigatorMenu(event) {
-    const menu = new import_obsidian6.Menu().setUseNativeMenu(false);
-    menu.addItem((mi) => {
-      mi.setTitle("Select highlights").setIcon("list-checks").onClick(() => this.setSelectionMode(true));
-    });
-    menu.addSeparator();
+    const menu = new import_obsidian8.Menu().setUseNativeMenu(false);
     menu.addItem((mi) => {
       mi.setTitle("Export Markdown").setIcon("file-text").onClick(() => void this.exportHighlights());
     });
@@ -4291,7 +5376,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       const { exportHighlightsToJSON: exportHighlightsToJSON2 } = await Promise.resolve().then(() => (init_export(), export_exports));
       const exportPath = await exportHighlightsToJSON2(this.app, currentFile);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian6.TFile) {
+      if (exportFile instanceof import_obsidian8.TFile) {
         await this.app.workspace.getLeaf("tab").openFile(exportFile);
       }
     } catch (err) {
@@ -4305,7 +5390,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       const { exportHighlightsToCSV: exportHighlightsToCSV2 } = await Promise.resolve().then(() => (init_export(), export_exports));
       const exportPath = await exportHighlightsToCSV2(this.app, currentFile);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian6.TFile) {
+      if (exportFile instanceof import_obsidian8.TFile) {
         await this.app.workspace.getLeaf("tab").openFile(exportFile);
       }
     } catch (err) {
@@ -4322,14 +5407,14 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
         file: currentFile
       }));
       if (fresh.length === 0) {
-        new import_obsidian6.Notice("No highlights to export.");
+        new import_obsidian8.Notice("No highlights to export.");
         return;
       }
       const associations = this.plugin.settings.canvasAssociations;
       const associationIndex = associations.findIndex((item) => item.source === currentFile.path);
       const association = associationIndex >= 0 ? associations[associationIndex] : null;
       const associatedFile = association ? this.app.vault.getAbstractFileByPath(association.canvas) : null;
-      const hasExistingCanvas = associatedFile instanceof import_obsidian6.TFile;
+      const hasExistingCanvas = associatedFile instanceof import_obsidian8.TFile;
       if (!association && associations.length >= MAX_CANVAS_ASSOCIATIONS)
         throw new Error(
           "Canvas association limit reached. Use Annotations manager \u2192 Canvas\u2026 for an explicit export."
@@ -4350,19 +5435,19 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       }
       this.updateCanvasButton();
       if (!hasExistingCanvas) {
-        new import_obsidian6.Notice(`Created canvas with ${result.added} card${result.added === 1 ? "" : "s"}.`);
+        new import_obsidian8.Notice(`Created canvas with ${result.added} card${result.added === 1 ? "" : "s"}.`);
       } else if (result.added) {
-        new import_obsidian6.Notice(`Added ${result.added} new card${result.added === 1 ? "" : "s"}. Existing cards preserved.`);
+        new import_obsidian8.Notice(`Added ${result.added} new card${result.added === 1 ? "" : "s"}. Existing cards preserved.`);
       } else {
-        new import_obsidian6.Notice("Canvas already contains all current highlights. No cards added.");
+        new import_obsidian8.Notice("Canvas already contains all current highlights. No cards added.");
       }
       const file = this.app.vault.getAbstractFileByPath(exportPath);
-      if (file instanceof import_obsidian6.TFile) {
+      if (file instanceof import_obsidian8.TFile) {
         await this.app.workspace.getLeaf("tab").openFile(file);
       }
     } catch (err) {
       console.error(err);
-      new import_obsidian6.Notice(err instanceof Error ? err.message : String(err));
+      new import_obsidian8.Notice(err instanceof Error ? err.message : String(err));
     }
   }
   updateCanvasButton() {
@@ -4372,9 +5457,9 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
       return item.source === ((_a = this.currentFile) == null ? void 0 : _a.path);
     }) : null;
     const associatedFile = association ? this.app.vault.getAbstractFileByPath(association.canvas) : null;
-    const willAppend = associatedFile instanceof import_obsidian6.TFile;
+    const willAppend = associatedFile instanceof import_obsidian8.TFile;
     this.canvasButton.setText(willAppend ? "Add to Canvas" : "Create Canvas");
-    (0, import_obsidian6.setTooltip)(
+    (0, import_obsidian8.setTooltip)(
       this.canvasButton,
       willAppend ? "Add new highlights to this note\u2019s associated canvas" : "Create a canvas from this note\u2019s highlights",
       { placement: "top" }
@@ -4389,7 +5474,7 @@ var HighlightNavigatorView = class extends import_obsidian6.ItemView {
 };
 
 // src/views/ResearchView.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 
 // src/core/VaultScanner.ts
 init_export();
@@ -4449,11 +5534,11 @@ var VaultScanner = class {
 };
 
 // src/modals/CanvasExportModal.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 init_canvas();
 
 // src/ui/canvasSettings.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 init_canvas();
 function canvasSettingsItems(value, save, layoutOnly = false) {
   const items = [];
@@ -4554,12 +5639,12 @@ function renderCanvasSettings(container, value, save, layoutOnly = false) {
   var _a;
   for (const item of canvasSettingsItems(value, save, layoutOnly)) {
     if ("render" in item && item.render)
-      item.render(new import_obsidian7.Setting(container).setName(item.name).setDesc((_a = item.desc) != null ? _a : ""));
+      item.render(new import_obsidian9.Setting(container).setName(item.name).setDesc((_a = item.desc) != null ? _a : ""));
   }
 }
 
 // src/modals/CanvasExportModal.ts
-var CanvasExportModal = class extends import_obsidian8.Modal {
+var CanvasExportModal = class extends import_obsidian10.Modal {
   constructor(plugin, highlights) {
     super(plugin.app);
     this.plugin = plugin;
@@ -4575,13 +5660,13 @@ var CanvasExportModal = class extends import_obsidian8.Modal {
     contentEl.createEl("p", {
       text: `${this.highlights.length} selected highlights from ${fileCount} files. Existing cards remain unchanged; new cards are appended below the saved layout. These are snapshots, not live synchronized text.`
     });
-    new import_obsidian8.Setting(contentEl).setName("Canvas path").setDesc("Include the folder and filename ending in .canvas. Multi-file exports require a name.").addText(
+    new import_obsidian10.Setting(contentEl).setName("Canvas path").setDesc("Include the folder and filename ending in .canvas. Multi-file exports require a name.").addText(
       (t2) => t2.setPlaceholder("Canvases/my annotations.canvas").setValue(path).onChange((v) => {
         path = v.trim();
         update();
       })
     );
-    new import_obsidian8.Setting(contentEl).setName("Append to an existing canvas").setDesc("Explicit permission for this export only. No existing cards or arrows will be replaced.").addToggle(
+    new import_obsidian10.Setting(contentEl).setName("Append to an existing canvas").setDesc("Explicit permission for this export only. No existing cards or arrows will be replaced.").addToggle(
       (t2) => t2.onChange((v) => {
         allowExisting = v;
         update();
@@ -4621,11 +5706,11 @@ var CanvasExportModal = class extends import_obsidian8.Modal {
             allowExisting
           });
           const file = this.app.vault.getAbstractFileByPath(result.path);
-          new import_obsidian8.Notice(`${result.added} new cards added. Existing cards preserved.`);
-          if (file instanceof import_obsidian8.TFile) await this.app.workspace.getLeaf("tab").openFile(file);
+          new import_obsidian10.Notice(`${result.added} new cards added. Existing cards preserved.`);
+          if (file instanceof import_obsidian10.TFile) await this.app.workspace.getLeaf("tab").openFile(file);
           this.close();
         } catch (e2) {
-          new import_obsidian8.Notice(e2 instanceof Error ? e2.message : String(e2));
+          new import_obsidian10.Notice(e2 instanceof Error ? e2.message : String(e2));
           update();
         }
       })();
@@ -4638,7 +5723,7 @@ var CanvasExportModal = class extends import_obsidian8.Modal {
 };
 
 // src/modals/MaintenanceModal.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 init_highlights();
 function maintenancePreview(raw, operation, fromColor, toColor) {
   if (new TextEncoder().encode(raw).length > 2 * 1024 * 1024)
@@ -4656,7 +5741,7 @@ function maintenancePreview(raw, operation, fromColor, toColor) {
   const r2 = recolorMarkHighlightsInRaw(raw, { fromColor, toColor });
   return { raw: r2.raw, count: r2.changedCount };
 }
-var MaintenanceModal = class extends import_obsidian9.Modal {
+var MaintenanceModal = class extends import_obsidian11.Modal {
   constructor(plugin, file, changed) {
     super(plugin.app);
     this.plugin = plugin;
@@ -4678,7 +5763,7 @@ var MaintenanceModal = class extends import_obsidian9.Modal {
       previewText.setText("Preview again after changing options.");
     };
     const options = contentEl.createEl("fieldset");
-    new import_obsidian9.Setting(options).setName("Operation").addDropdown(
+    new import_obsidian11.Setting(options).setName("Operation").addDropdown(
       (d2) => d2.addOptions({
         merge: "Merge adjacent highlights",
         recolor: "Recolor colored marks",
@@ -4691,13 +5776,13 @@ var MaintenanceModal = class extends import_obsidian9.Modal {
     contentEl.createEl("p", {
       text: "Merge joins compatible adjacent marks within a line, not separate list items. Span conversion preserves attributes and skips code, comments and nested spans. Use grouping in the navigator for separate items."
     });
-    new import_obsidian9.Setting(options).setName("Old color (recolor only)").setDesc("Blank matches all colored marks; otherwise an exact hex match.").addText(
+    new import_obsidian11.Setting(options).setName("Old color (recolor only)").setDesc("Blank matches all colored marks; otherwise an exact hex match.").addText(
       (t2) => t2.onChange((v) => {
         from = v.trim();
         invalidate();
       })
     );
-    new import_obsidian9.Setting(options).setName("New color (recolor only)").addText(
+    new import_obsidian11.Setting(options).setName("New color (recolor only)").addText(
       (t2) => t2.setValue(to).onChange((v) => {
         to = v.trim();
         invalidate();
@@ -4736,7 +5821,7 @@ var MaintenanceModal = class extends import_obsidian9.Modal {
           apply.disabled = !result.count;
           undo.disabled = true;
         } catch (e2) {
-          new import_obsidian9.Notice(e2 instanceof Error ? e2.message : String(e2));
+          new import_obsidian11.Notice(e2 instanceof Error ? e2.message : String(e2));
           apply.disabled = true;
         } finally {
           busy = false;
@@ -4755,13 +5840,13 @@ var MaintenanceModal = class extends import_obsidian9.Modal {
             if (current !== before) throw new Error("The note changed. Preview again before applying.");
             return after;
           });
-          new import_obsidian9.Notice("Changes applied. Undo is available in this dialog.");
+          new import_obsidian11.Notice("Changes applied. Undo is available in this dialog.");
           undo.disabled = false;
           preview.disabled = true;
           this.changed();
         } catch (e2) {
           options.disabled = false;
-          new import_obsidian9.Notice(e2 instanceof Error ? e2.message : String(e2));
+          new import_obsidian11.Notice(e2 instanceof Error ? e2.message : String(e2));
         } finally {
           busy = false;
         }
@@ -4782,10 +5867,10 @@ var MaintenanceModal = class extends import_obsidian9.Modal {
           undo.disabled = true;
           preview.disabled = false;
           options.disabled = false;
-          new import_obsidian9.Notice("Operation undone.");
+          new import_obsidian11.Notice("Operation undone.");
           this.changed();
         } catch (e2) {
-          new import_obsidian9.Notice(e2 instanceof Error ? e2.message : String(e2));
+          new import_obsidian11.Notice(e2 instanceof Error ? e2.message : String(e2));
         } finally {
           busy = false;
         }
@@ -4807,7 +5892,7 @@ function asText3(value) {
   }
   return "";
 }
-var ResearchView = class extends import_obsidian10.ItemView {
+var ResearchView = class extends import_obsidian12.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.selectedFiles = null;
@@ -5124,7 +6209,7 @@ var ResearchView = class extends import_obsidian10.ItemView {
       const setExpanded = (expanded) => {
         toggleBtn.setAttribute("aria-expanded", String(expanded));
         listEl.toggleClass("is-collapsed", !expanded);
-        (0, import_obsidian10.setIcon)(expandIcon, expanded ? "chevron-down" : "chevron-right");
+        (0, import_obsidian12.setIcon)(expandIcon, expanded ? "chevron-down" : "chevron-right");
         if (expanded) this.expandedFiles.add(group.file.path);
         else this.expandedFiles.delete(group.file.path);
       };
@@ -5134,7 +6219,6 @@ var ResearchView = class extends import_obsidian10.ItemView {
     }
   }
   renderHighlightItem(listEl, highlight) {
-    var _a;
     const rowKey = `${highlight.file.path}\0${highlight.id}`;
     const itemEl = listEl.createDiv({ cls: "research-highlight-item", attr: { "aria-expanded": "false" } });
     const disclosureBtn = itemEl.createEl("button", { cls: "fp-manager-row-disclosure" });
@@ -5144,7 +6228,8 @@ var ResearchView = class extends import_obsidian10.ItemView {
     const textEl = bodyEl.createSpan({ cls: "research-item-text" });
     const detailsEl = bodyEl.createDiv({ cls: "fp-manager-item-details" });
     const detailParts = [this.notationLabel(highlight.notationType), `Line ${highlight.line + 1}`];
-    if ((_a = highlight.members) == null ? void 0 : _a.length) detailParts.push(`${highlight.members.length} passages grouped`);
+    if (highlight.members && highlight.members.length > 1)
+      detailParts.push(`${highlight.members.length} source parts`);
     detailsEl.setText(detailParts.join(" \xB7 "));
     this.addEditButton(itemEl, highlight);
     this.addSourceButton(itemEl, highlight);
@@ -5156,7 +6241,7 @@ var ResearchView = class extends import_obsidian10.ItemView {
       );
       detailsEl.toggleClass("is-hidden", !expanded);
       disclosureBtn.setAttribute("aria-label", expanded ? "Hide highlight details" : "Show highlight details");
-      (0, import_obsidian10.setIcon)(disclosureBtn, expanded ? "chevron-down" : "chevron-right");
+      (0, import_obsidian12.setIcon)(disclosureBtn, expanded ? "chevron-down" : "chevron-right");
       if (expanded) this.expandedHighlights.add(rowKey);
       else this.expandedHighlights.delete(rowKey);
     };
@@ -5180,9 +6265,9 @@ var ResearchView = class extends import_obsidian10.ItemView {
   }
   addEditButton(itemEl, highlight) {
     const editBtn = itemEl.createEl("button", { cls: "fp-manager-edit-link" });
-    (0, import_obsidian10.setIcon)(editBtn, "pencil");
+    (0, import_obsidian12.setIcon)(editBtn, "pencil");
     editBtn.setAttribute("aria-label", "Edit highlight");
-    (0, import_obsidian10.setTooltip)(editBtn, "Edit highlight", { placement: "top" });
+    (0, import_obsidian12.setTooltip)(editBtn, "Edit highlight", { placement: "top" });
     editBtn.onclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -5191,9 +6276,9 @@ var ResearchView = class extends import_obsidian10.ItemView {
   }
   addSourceButton(itemEl, highlight) {
     const sourceBtn = itemEl.createEl("button", { cls: "fp-manager-source-link" });
-    (0, import_obsidian10.setIcon)(sourceBtn, "arrow-up-right");
+    (0, import_obsidian12.setIcon)(sourceBtn, "arrow-up-right");
     sourceBtn.setAttribute("aria-label", `Open source in new tab: ${highlight.file.basename}`);
-    (0, import_obsidian10.setTooltip)(sourceBtn, `Open source in new tab: ${highlight.file.basename}`, { placement: "top" });
+    (0, import_obsidian12.setTooltip)(sourceBtn, `Open source in new tab: ${highlight.file.basename}`, { placement: "top" });
     sourceBtn.onclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -5202,9 +6287,9 @@ var ResearchView = class extends import_obsidian10.ItemView {
   }
   addNoteActionsButton(headerEl, file) {
     const actionsBtn = headerEl.createEl("button", { cls: "fp-manager-note-actions" });
-    (0, import_obsidian10.setIcon)(actionsBtn, "more-vertical");
+    (0, import_obsidian12.setIcon)(actionsBtn, "more-vertical");
     actionsBtn.setAttribute("aria-label", `Note actions for ${file.basename}`);
-    (0, import_obsidian10.setTooltip)(actionsBtn, `Note actions for ${file.basename}`, { placement: "top" });
+    (0, import_obsidian12.setTooltip)(actionsBtn, `Note actions for ${file.basename}`, { placement: "top" });
     actionsBtn.onclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -5212,7 +6297,7 @@ var ResearchView = class extends import_obsidian10.ItemView {
     };
   }
   openNoteActionsMenu(event, file) {
-    const menu = new import_obsidian10.Menu();
+    const menu = new import_obsidian12.Menu();
     menu.addItem(
       (item) => item.setTitle("Note maintenance\u2026").setIcon("wrench").onClick(() => {
         new MaintenanceModal(this.plugin, file, () => void this.refreshScan()).open();
@@ -5223,7 +6308,7 @@ var ResearchView = class extends import_obsidian10.ItemView {
   async jumpToHighlight(file, line) {
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.openFile(file);
-    if (leaf.view instanceof import_obsidian10.MarkdownView) {
+    if (leaf.view instanceof import_obsidian12.MarkdownView) {
       leaf.setEphemeralState({
         line,
         focus: true
@@ -5234,7 +6319,7 @@ var ResearchView = class extends import_obsidian10.ItemView {
     if (this.isScanning) return;
     const allHighlights = this.filteredHighlights();
     if (allHighlights.length === 0) {
-      new import_obsidian10.Notice("No highlights to export to canvas.");
+      new import_obsidian12.Notice("No highlights to export to canvas.");
       return;
     }
     try {
@@ -5276,8 +6361,8 @@ function setFallbackScroll(view, { y }) {
 init_export();
 
 // src/ui/FailureRecoveryModal.ts
-var import_obsidian11 = require("obsidian");
-var FailureRecoveryModal = class extends import_obsidian11.Modal {
+var import_obsidian13 = require("obsidian");
+var FailureRecoveryModal = class extends import_obsidian13.Modal {
   constructor(app, report, onSubmit) {
     super(app);
     this.report = report;
@@ -5297,7 +6382,7 @@ var FailureRecoveryModal = class extends import_obsidian11.Modal {
         text: "This text appears to come from an embedded note. Open the source note directly and highlight it there.",
         cls: "recovery-hint-msg"
       });
-      new import_obsidian11.Setting(contentEl).addButton((btn) => btn.setButtonText("Close").onClick(() => this.close()));
+      new import_obsidian13.Setting(contentEl).addButton((btn) => btn.setButtonText("Close").onClick(() => this.close()));
       return;
     }
     contentEl.createEl("p", {
@@ -5310,17 +6395,17 @@ var FailureRecoveryModal = class extends import_obsidian11.Modal {
     });
     const previewContainer = contentEl.createDiv({ cls: "recovery-rule-preview", text: "" });
     this.correction = this.report.bestGuessContext ? `==${this.report.bestGuessContext}==` : "";
-    new import_obsidian11.Setting(contentEl).setClass("recovery-input-setting").addTextArea((text) => {
+    new import_obsidian13.Setting(contentEl).setClass("recovery-input-setting").addTextArea((text) => {
       text.setPlaceholder("Wrap text in ==highlight syntax==...").setValue(this.correction).onChange((value) => {
         this.correction = value;
         this.updatePreview(previewContainer);
       });
       window.setTimeout(() => text.inputEl.focus(), 10);
     });
-    new import_obsidian11.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
+    new import_obsidian13.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
       (btn) => btn.setButtonText("Apply once").onClick(() => {
         if (!this.correction.trim()) {
-          new import_obsidian11.Notice("Please provide the corrected text.");
+          new import_obsidian13.Notice("Please provide the corrected text.");
           return;
         }
         let finalTarget = this.correction;
@@ -5334,7 +6419,7 @@ var FailureRecoveryModal = class extends import_obsidian11.Modal {
     ).addButton(
       (btn) => btn.setButtonText("Apply & learn").setCta().onClick(() => {
         if (!this.correction.trim()) {
-          new import_obsidian11.Notice("Please provide the corrected text.");
+          new import_obsidian13.Notice("Please provide the corrected text.");
           return;
         }
         let finalTarget = this.correction;
@@ -5490,8 +6575,8 @@ function getSelectedOccurrence(block, range, snippet) {
 }
 
 // src/modals/BulkRecolorModal.ts
-var import_obsidian12 = require("obsidian");
-var BulkRecolorModal = class extends import_obsidian12.Modal {
+var import_obsidian14 = require("obsidian");
+var BulkRecolorModal = class extends import_obsidian14.Modal {
   constructor(plugin, file, onApplied = () => {
   }) {
     super(plugin.app);
@@ -5514,14 +6599,14 @@ var BulkRecolorModal = class extends import_obsidian12.Modal {
       cls: "setting-item-description",
       text: "This only affects colored highlights stored as <mark>\u2026</mark> (not == == highlights)."
     });
-    new import_obsidian12.Setting(contentEl).setName("Limit by existing color").setDesc("Optional: only recolor highlights that currently have this exact color.").addToggle((toggle) => {
+    new import_obsidian14.Setting(contentEl).setName("Limit by existing color").setDesc("Optional: only recolor highlights that currently have this exact color.").addToggle((toggle) => {
       toggle.setValue(this.state.limitFrom);
       toggle.onChange((value) => {
         this.state.limitFrom = value;
         this.updateEnabledState();
       });
     });
-    this.fromSetting = new import_obsidian12.Setting(contentEl).setName("From color").setDesc("Only used when the limit toggle is enabled.").addText((text) => {
+    this.fromSetting = new import_obsidian14.Setting(contentEl).setName("From color").setDesc("Only used when the limit toggle is enabled.").addText((text) => {
       text.setPlaceholder("Hex color like #ff0000");
       text.setValue(this.state.fromColor);
       text.onChange((value) => {
@@ -5540,7 +6625,7 @@ var BulkRecolorModal = class extends import_obsidian12.Modal {
       const textInput = (_a = this.fromSetting) == null ? void 0 : _a.controlEl.querySelector("input[type='text']");
       if (textInput) textInput.value = this.state.fromColor;
     };
-    this.toSetting = new import_obsidian12.Setting(contentEl).setName("To color").setDesc("Target color to apply.").addText((text) => {
+    this.toSetting = new import_obsidian14.Setting(contentEl).setName("To color").setDesc("Target color to apply.").addText((text) => {
       text.setPlaceholder("Hex color like #ff0000");
       text.setValue(this.state.toColor);
       text.onChange((value) => {
@@ -5585,615 +6670,28 @@ var BulkRecolorModal = class extends import_obsidian12.Modal {
   }
 };
 
-// src/core/RoughNotationRenderer.ts
-var import_obsidian13 = require("obsidian");
-
-// node_modules/rough-notation/lib/rough-notation.esm.js
-var t = "http://www.w3.org/2000/svg";
-var e = class {
-  constructor(t2) {
-    this.seed = t2;
-  }
-  next() {
-    return this.seed ? (2 ** 31 - 1 & (this.seed = Math.imul(48271, this.seed))) / 2 ** 31 : Math.random();
-  }
-};
-function s(t2, e2, s2, i2, n2) {
-  return { type: "path", ops: c(t2, e2, s2, i2, n2) };
-}
-function i(t2, e2, i2) {
-  const n2 = (t2 || []).length;
-  if (n2 > 2) {
-    const s2 = [];
-    for (let e3 = 0; e3 < n2 - 1; e3++) s2.push(...c(t2[e3][0], t2[e3][1], t2[e3 + 1][0], t2[e3 + 1][1], i2));
-    return e2 && s2.push(...c(t2[n2 - 1][0], t2[n2 - 1][1], t2[0][0], t2[0][1], i2)), { type: "path", ops: s2 };
-  }
-  return 2 === n2 ? s(t2[0][0], t2[0][1], t2[1][0], t2[1][1], i2) : { type: "path", ops: [] };
-}
-function n(t2, e2, s2, n2, o2) {
-  return (function(t3, e3) {
-    return i(t3, true, e3);
-  })([[t2, e2], [t2 + s2, e2], [t2 + s2, e2 + n2], [t2, e2 + n2]], o2);
-}
-function o(t2, e2, s2, i2, n2) {
-  return (function(t3, e3, s3, i3) {
-    const [n3, o2] = l(i3.increment, t3, e3, i3.rx, i3.ry, 1, i3.increment * h(0.1, h(0.4, 1, s3), s3), s3);
-    let r2 = f(n3, null, s3);
-    if (!s3.disableMultiStroke) {
-      const [n4] = l(i3.increment, t3, e3, i3.rx, i3.ry, 1.5, 0, s3), o3 = f(n4, null, s3);
-      r2 = r2.concat(o3);
-    }
-    return { estimatedPoints: o2, opset: { type: "path", ops: r2 } };
-  })(t2, e2, n2, (function(t3, e3, s3) {
-    const i3 = Math.sqrt(2 * Math.PI * Math.sqrt((Math.pow(t3 / 2, 2) + Math.pow(e3 / 2, 2)) / 2)), n3 = Math.max(s3.curveStepCount, s3.curveStepCount / Math.sqrt(200) * i3), o2 = 2 * Math.PI / n3;
-    let r2 = Math.abs(t3 / 2), h2 = Math.abs(e3 / 2);
-    const c2 = 1 - s3.curveFitting;
-    return r2 += a(r2 * c2, s3), h2 += a(h2 * c2, s3), { increment: o2, rx: r2, ry: h2 };
-  })(s2, i2, n2)).opset;
-}
-function r(t2) {
-  return t2.randomizer || (t2.randomizer = new e(t2.seed || 0)), t2.randomizer.next();
-}
-function h(t2, e2, s2, i2 = 1) {
-  return s2.roughness * i2 * (r(s2) * (e2 - t2) + t2);
-}
-function a(t2, e2, s2 = 1) {
-  return h(-t2, t2, e2, s2);
-}
-function c(t2, e2, s2, i2, n2, o2 = false) {
-  const r2 = o2 ? n2.disableMultiStrokeFill : n2.disableMultiStroke, h2 = u(t2, e2, s2, i2, n2, true, false);
-  if (r2) return h2;
-  const a2 = u(t2, e2, s2, i2, n2, true, true);
-  return h2.concat(a2);
-}
-function u(t2, e2, s2, i2, n2, o2, h2) {
-  const c2 = Math.pow(t2 - s2, 2) + Math.pow(e2 - i2, 2), u2 = Math.sqrt(c2);
-  let f2 = 1;
-  f2 = u2 < 200 ? 1 : u2 > 500 ? 0.4 : -16668e-7 * u2 + 1.233334;
-  let l2 = n2.maxRandomnessOffset || 0;
-  l2 * l2 * 100 > c2 && (l2 = u2 / 10);
-  const g2 = l2 / 2, d2 = 0.2 + 0.2 * r(n2);
-  let p2 = n2.bowing * n2.maxRandomnessOffset * (i2 - e2) / 200, _2 = n2.bowing * n2.maxRandomnessOffset * (t2 - s2) / 200;
-  p2 = a(p2, n2, f2), _2 = a(_2, n2, f2);
-  const m = [], w = () => a(g2, n2, f2), v = () => a(l2, n2, f2);
-  return o2 && (h2 ? m.push({ op: "move", data: [t2 + w(), e2 + w()] }) : m.push({ op: "move", data: [t2 + a(l2, n2, f2), e2 + a(l2, n2, f2)] })), h2 ? m.push({ op: "bcurveTo", data: [p2 + t2 + (s2 - t2) * d2 + w(), _2 + e2 + (i2 - e2) * d2 + w(), p2 + t2 + 2 * (s2 - t2) * d2 + w(), _2 + e2 + 2 * (i2 - e2) * d2 + w(), s2 + w(), i2 + w()] }) : m.push({ op: "bcurveTo", data: [p2 + t2 + (s2 - t2) * d2 + v(), _2 + e2 + (i2 - e2) * d2 + v(), p2 + t2 + 2 * (s2 - t2) * d2 + v(), _2 + e2 + 2 * (i2 - e2) * d2 + v(), s2 + v(), i2 + v()] }), m;
-}
-function f(t2, e2, s2) {
-  const i2 = t2.length, n2 = [];
-  if (i2 > 3) {
-    const o2 = [], r2 = 1 - s2.curveTightness;
-    n2.push({ op: "move", data: [t2[1][0], t2[1][1]] });
-    for (let e3 = 1; e3 + 2 < i2; e3++) {
-      const s3 = t2[e3];
-      o2[0] = [s3[0], s3[1]], o2[1] = [s3[0] + (r2 * t2[e3 + 1][0] - r2 * t2[e3 - 1][0]) / 6, s3[1] + (r2 * t2[e3 + 1][1] - r2 * t2[e3 - 1][1]) / 6], o2[2] = [t2[e3 + 1][0] + (r2 * t2[e3][0] - r2 * t2[e3 + 2][0]) / 6, t2[e3 + 1][1] + (r2 * t2[e3][1] - r2 * t2[e3 + 2][1]) / 6], o2[3] = [t2[e3 + 1][0], t2[e3 + 1][1]], n2.push({ op: "bcurveTo", data: [o2[1][0], o2[1][1], o2[2][0], o2[2][1], o2[3][0], o2[3][1]] });
-    }
-    if (e2 && 2 === e2.length) {
-      const t3 = s2.maxRandomnessOffset;
-      n2.push({ op: "lineTo", data: [e2[0] + a(t3, s2), e2[1] + a(t3, s2)] });
-    }
-  } else 3 === i2 ? (n2.push({ op: "move", data: [t2[1][0], t2[1][1]] }), n2.push({ op: "bcurveTo", data: [t2[1][0], t2[1][1], t2[2][0], t2[2][1], t2[2][0], t2[2][1]] })) : 2 === i2 && n2.push(...c(t2[0][0], t2[0][1], t2[1][0], t2[1][1], s2));
-  return n2;
-}
-function l(t2, e2, s2, i2, n2, o2, r2, h2) {
-  const c2 = [], u2 = [], f2 = a(0.5, h2) - Math.PI / 2;
-  u2.push([a(o2, h2) + e2 + 0.9 * i2 * Math.cos(f2 - t2), a(o2, h2) + s2 + 0.9 * n2 * Math.sin(f2 - t2)]);
-  for (let r3 = f2; r3 < 2 * Math.PI + f2 - 0.01; r3 += t2) {
-    const t3 = [a(o2, h2) + e2 + i2 * Math.cos(r3), a(o2, h2) + s2 + n2 * Math.sin(r3)];
-    c2.push(t3), u2.push(t3);
-  }
-  return u2.push([a(o2, h2) + e2 + i2 * Math.cos(f2 + 2 * Math.PI + 0.5 * r2), a(o2, h2) + s2 + n2 * Math.sin(f2 + 2 * Math.PI + 0.5 * r2)]), u2.push([a(o2, h2) + e2 + 0.98 * i2 * Math.cos(f2 + r2), a(o2, h2) + s2 + 0.98 * n2 * Math.sin(f2 + r2)]), u2.push([a(o2, h2) + e2 + 0.9 * i2 * Math.cos(f2 + 0.5 * r2), a(o2, h2) + s2 + 0.9 * n2 * Math.sin(f2 + 0.5 * r2)]), [u2, c2];
-}
-function g(t2, e2) {
-  return { maxRandomnessOffset: 2, roughness: "highlight" === t2 ? 3 : 1.5, bowing: 1, stroke: "#000", strokeWidth: 1.5, curveTightness: 0, curveFitting: 0.95, curveStepCount: 9, fillStyle: "hachure", fillWeight: -1, hachureAngle: -41, hachureGap: -1, dashOffset: -1, dashGap: -1, zigzagOffset: -1, combineNestedSvgPaths: false, disableMultiStroke: "double" !== t2, disableMultiStrokeFill: false, seed: e2 };
-}
-function d(e2, r2, h2, a2, c2, u2) {
-  const f2 = [];
-  let l2 = h2.strokeWidth || 2;
-  const d2 = (function(t2) {
-    const e3 = t2.padding;
-    if (e3 || 0 === e3) {
-      if ("number" == typeof e3) return [e3, e3, e3, e3];
-      if (Array.isArray(e3)) {
-        const t3 = e3;
-        if (t3.length) switch (t3.length) {
-          case 4:
-            return [...t3];
-          case 1:
-            return [t3[0], t3[0], t3[0], t3[0]];
-          case 2:
-            return [...t3, ...t3];
-          case 3:
-            return [...t3, t3[1]];
-          default:
-            return [t3[0], t3[1], t3[2], t3[3]];
-        }
-      }
-    }
-    return [5, 5, 5, 5];
-  })(h2), p2 = void 0 === h2.animate || !!h2.animate, _2 = h2.iterations || 2, m = h2.rtl ? 1 : 0, w = g("single", u2);
-  switch (h2.type) {
-    case "underline": {
-      const t2 = r2.y + r2.h + d2[2];
-      for (let e3 = m; e3 < _2 + m; e3++) e3 % 2 ? f2.push(s(r2.x + r2.w, t2, r2.x, t2, w)) : f2.push(s(r2.x, t2, r2.x + r2.w, t2, w));
-      break;
-    }
-    case "strike-through": {
-      const t2 = r2.y + r2.h / 2;
-      for (let e3 = m; e3 < _2 + m; e3++) e3 % 2 ? f2.push(s(r2.x + r2.w, t2, r2.x, t2, w)) : f2.push(s(r2.x, t2, r2.x + r2.w, t2, w));
-      break;
-    }
-    case "box": {
-      const t2 = r2.x - d2[3], e3 = r2.y - d2[0], s2 = r2.w + (d2[1] + d2[3]), i2 = r2.h + (d2[0] + d2[2]);
-      for (let o2 = 0; o2 < _2; o2++) f2.push(n(t2, e3, s2, i2, w));
-      break;
-    }
-    case "bracket": {
-      const t2 = Array.isArray(h2.brackets) ? h2.brackets : h2.brackets ? [h2.brackets] : ["right"], e3 = r2.x - 2 * d2[3], s2 = r2.x + r2.w + 2 * d2[1], n2 = r2.y - 2 * d2[0], o2 = r2.y + r2.h + 2 * d2[2];
-      for (const h3 of t2) {
-        let t3;
-        switch (h3) {
-          case "bottom":
-            t3 = [[e3, r2.y + r2.h], [e3, o2], [s2, o2], [s2, r2.y + r2.h]];
-            break;
-          case "top":
-            t3 = [[e3, r2.y], [e3, n2], [s2, n2], [s2, r2.y]];
-            break;
-          case "left":
-            t3 = [[r2.x, n2], [e3, n2], [e3, o2], [r2.x, o2]];
-            break;
-          case "right":
-            t3 = [[r2.x + r2.w, n2], [s2, n2], [s2, o2], [r2.x + r2.w, o2]];
-        }
-        t3 && f2.push(i(t3, false, w));
-      }
-      break;
-    }
-    case "crossed-off": {
-      const t2 = r2.x, e3 = r2.y, i2 = t2 + r2.w, n2 = e3 + r2.h;
-      for (let o2 = m; o2 < _2 + m; o2++) o2 % 2 ? f2.push(s(i2, n2, t2, e3, w)) : f2.push(s(t2, e3, i2, n2, w));
-      for (let o2 = m; o2 < _2 + m; o2++) o2 % 2 ? f2.push(s(t2, n2, i2, e3, w)) : f2.push(s(i2, e3, t2, n2, w));
-      break;
-    }
-    case "circle": {
-      const t2 = g("double", u2), e3 = r2.w + (d2[1] + d2[3]), s2 = r2.h + (d2[0] + d2[2]), i2 = r2.x - d2[3] + e3 / 2, n2 = r2.y - d2[0] + s2 / 2, h3 = Math.floor(_2 / 2), a3 = _2 - 2 * h3;
-      for (let r3 = 0; r3 < h3; r3++) f2.push(o(i2, n2, e3, s2, t2));
-      for (let t3 = 0; t3 < a3; t3++) f2.push(o(i2, n2, e3, s2, w));
-      break;
-    }
-    case "highlight": {
-      const t2 = g("highlight", u2);
-      l2 = 0.95 * r2.h;
-      const e3 = r2.y + r2.h / 2;
-      for (let i2 = m; i2 < _2 + m; i2++) i2 % 2 ? f2.push(s(r2.x + r2.w, e3, r2.x, e3, t2)) : f2.push(s(r2.x, e3, r2.x + r2.w, e3, t2));
-      break;
-    }
-  }
-  if (f2.length) {
-    const s2 = (function(t2) {
-      const e3 = [];
-      for (const s3 of t2) {
-        let t3 = "";
-        for (const i3 of s3.ops) {
-          const s4 = i3.data;
-          switch (i3.op) {
-            case "move":
-              t3.trim() && e3.push(t3.trim()), t3 = `M${s4[0]} ${s4[1]} `;
-              break;
-            case "bcurveTo":
-              t3 += `C${s4[0]} ${s4[1]}, ${s4[2]} ${s4[3]}, ${s4[4]} ${s4[5]} `;
-              break;
-            case "lineTo":
-              t3 += `L${s4[0]} ${s4[1]} `;
-          }
-        }
-        t3.trim() && e3.push(t3.trim());
-      }
-      return e3;
-    })(f2), i2 = [], n2 = [];
-    let o2 = 0;
-    const r3 = (t2, e3, s3) => t2.setAttribute(e3, s3);
-    for (const a3 of s2) {
-      const s3 = document.createElementNS(t, "path");
-      if (r3(s3, "d", a3), r3(s3, "fill", "none"), r3(s3, "stroke", h2.color || "currentColor"), r3(s3, "stroke-width", "" + l2), p2) {
-        const t2 = s3.getTotalLength();
-        i2.push(t2), o2 += t2;
-      }
-      e2.appendChild(s3), n2.push(s3);
-    }
-    if (p2) {
-      let t2 = 0;
-      for (let e3 = 0; e3 < n2.length; e3++) {
-        const s3 = n2[e3], r4 = i2[e3], h3 = o2 ? c2 * (r4 / o2) : 0, u3 = a2 + t2, f3 = s3.style;
-        f3.strokeDashoffset = "" + r4, f3.strokeDasharray = "" + r4, f3.animation = `rough-notation-dash ${h3}ms ease-out ${u3}ms forwards`, t2 += h3;
-      }
-    }
-  }
-}
-var p = class {
-  constructor(t2, e2) {
-    this._state = "unattached", this._resizing = false, this._seed = Math.floor(Math.random() * 2 ** 31), this._lastSizes = [], this._animationDelay = 0, this._resizeListener = () => {
-      this._resizing || (this._resizing = true, setTimeout(() => {
-        this._resizing = false, "showing" === this._state && this.haveRectsChanged() && this.show();
-      }, 400));
-    }, this._e = t2, this._config = JSON.parse(JSON.stringify(e2)), this.attach();
-  }
-  get animate() {
-    return this._config.animate;
-  }
-  set animate(t2) {
-    this._config.animate = t2;
-  }
-  get animationDuration() {
-    return this._config.animationDuration;
-  }
-  set animationDuration(t2) {
-    this._config.animationDuration = t2;
-  }
-  get iterations() {
-    return this._config.iterations;
-  }
-  set iterations(t2) {
-    this._config.iterations = t2;
-  }
-  get color() {
-    return this._config.color;
-  }
-  set color(t2) {
-    this._config.color !== t2 && (this._config.color = t2, this.refresh());
-  }
-  get strokeWidth() {
-    return this._config.strokeWidth;
-  }
-  set strokeWidth(t2) {
-    this._config.strokeWidth !== t2 && (this._config.strokeWidth = t2, this.refresh());
-  }
-  get padding() {
-    return this._config.padding;
-  }
-  set padding(t2) {
-    this._config.padding !== t2 && (this._config.padding = t2, this.refresh());
-  }
-  attach() {
-    if ("unattached" === this._state && this._e.parentElement) {
-      !(function() {
-        if (!window.__rno_kf_s) {
-          const t2 = window.__rno_kf_s = document.createElement("style");
-          t2.textContent = "@keyframes rough-notation-dash { to { stroke-dashoffset: 0; } }", document.head.appendChild(t2);
-        }
-      })();
-      const e2 = this._svg = document.createElementNS(t, "svg");
-      e2.setAttribute("class", "rough-annotation");
-      const s2 = e2.style;
-      s2.position = "absolute", s2.top = "0", s2.left = "0", s2.overflow = "visible", s2.pointerEvents = "none", s2.width = "100px", s2.height = "100px";
-      const i2 = "highlight" === this._config.type;
-      if (this._e.insertAdjacentElement(i2 ? "beforebegin" : "afterend", e2), this._state = "not-showing", i2) {
-        const t2 = window.getComputedStyle(this._e).position;
-        (!t2 || "static" === t2) && (this._e.style.position = "relative");
-      }
-      this.attachListeners();
-    }
-  }
-  detachListeners() {
-    window.removeEventListener("resize", this._resizeListener), this._ro && this._ro.unobserve(this._e);
-  }
-  attachListeners() {
-    this.detachListeners(), window.addEventListener("resize", this._resizeListener, { passive: true }), !this._ro && "ResizeObserver" in window && (this._ro = new window.ResizeObserver((t2) => {
-      for (const e2 of t2) e2.contentRect && this._resizeListener();
-    })), this._ro && this._ro.observe(this._e);
-  }
-  haveRectsChanged() {
-    if (this._lastSizes.length) {
-      const t2 = this.rects();
-      if (t2.length !== this._lastSizes.length) return true;
-      for (let e2 = 0; e2 < t2.length; e2++) if (!this.isSameRect(t2[e2], this._lastSizes[e2])) return true;
-    }
-    return false;
-  }
-  isSameRect(t2, e2) {
-    const s2 = (t3, e3) => Math.round(t3) === Math.round(e3);
-    return s2(t2.x, e2.x) && s2(t2.y, e2.y) && s2(t2.w, e2.w) && s2(t2.h, e2.h);
-  }
-  isShowing() {
-    return "not-showing" !== this._state;
-  }
-  refresh() {
-    this.isShowing() && !this.pendingRefresh && (this.pendingRefresh = Promise.resolve().then(() => {
-      this.isShowing() && this.show(), delete this.pendingRefresh;
-    }));
-  }
-  show() {
-    switch (this._state) {
-      case "unattached":
-        break;
-      case "showing":
-        this.hide(), this._svg && this.render(this._svg, true);
-        break;
-      case "not-showing":
-        this.attach(), this._svg && this.render(this._svg, false);
-    }
-  }
-  hide() {
-    if (this._svg) for (; this._svg.lastChild; ) this._svg.removeChild(this._svg.lastChild);
-    this._state = "not-showing";
-  }
-  remove() {
-    this._svg && this._svg.parentElement && this._svg.parentElement.removeChild(this._svg), this._svg = void 0, this._state = "unattached", this.detachListeners();
-  }
-  render(t2, e2) {
-    let s2 = this._config;
-    e2 && (s2 = JSON.parse(JSON.stringify(this._config)), s2.animate = false);
-    const i2 = this.rects();
-    let n2 = 0;
-    i2.forEach((t3) => n2 += t3.w);
-    const o2 = s2.animationDuration || 800;
-    let r2 = 0;
-    for (let e3 = 0; e3 < i2.length; e3++) {
-      const h2 = o2 * (i2[e3].w / n2);
-      d(t2, i2[e3], s2, r2 + this._animationDelay, h2, this._seed), r2 += h2;
-    }
-    this._lastSizes = i2, this._state = "showing";
-  }
-  rects() {
-    const t2 = [];
-    if (this._svg) if (this._config.multiline) {
-      const e2 = this._e.getClientRects();
-      for (let s2 = 0; s2 < e2.length; s2++) t2.push(this.svgRect(this._svg, e2[s2]));
-    } else t2.push(this.svgRect(this._svg, this._e.getBoundingClientRect()));
-    return t2;
-  }
-  svgRect(t2, e2) {
-    const s2 = t2.getBoundingClientRect(), i2 = e2;
-    return { x: (i2.x || i2.left) - (s2.x || s2.left), y: (i2.y || i2.top) - (s2.y || s2.top), w: i2.width, h: i2.height };
-  }
-};
-function _(t2, e2) {
-  return new p(t2, e2);
-}
-
-// src/core/RoughNotationRenderer.ts
-init_notations();
-var TARGET_CLASS = "fp-rough-notation-target";
-var TRANSPARENT_COLORS = /* @__PURE__ */ new Set(["transparent", "rgba(0, 0, 0, 0)", "rgba(0,0,0,0)"]);
-var MAX_ATTACHMENT_FRAMES = 5;
-var layoutWatchers = /* @__PURE__ */ new WeakMap();
-function watchNoteLayout(root, subscriber) {
-  let watcher = layoutWatchers.get(root);
-  if (!watcher) {
-    const win = elementWindow(root);
-    const observers = win;
-    const subscribers = /* @__PURE__ */ new Set();
-    let frame = null;
-    let force = false;
-    const schedule = (forceRedraw = false) => {
-      force || (force = forceRedraw);
-      if (!win || frame !== null) return;
-      frame = win.requestAnimationFrame(() => {
-        frame = null;
-        const forceNow = force;
-        force = false;
-        for (const notify of subscribers) notify(forceNow);
-      });
-    };
-    const widths = /* @__PURE__ */ new WeakMap();
-    const resize = (observers == null ? void 0 : observers.ResizeObserver) ? new observers.ResizeObserver((entries) => {
-      let widthChanged = false;
-      for (const entry of entries) {
-        const width = entry.target.getBoundingClientRect().width;
-        const previous = widths.get(entry.target);
-        if (previous === void 0 || Math.abs(width - previous) > 0.5) widthChanged = true;
-        widths.set(entry.target, width);
-      }
-      schedule(widthChanged);
-    }) : null;
-    const observeSize = (element) => {
-      if (!element || !resize) return;
-      widths.set(element, element.getBoundingClientRect().width);
-      resize.observe(element);
-    };
-    observeSize(root);
-    const sizer = root.querySelector(".markdown-preview-sizer");
-    observeSize(sizer);
-    observeSize(root.closest(".workspace-leaf"));
-    const mutation = (observers == null ? void 0 : observers.MutationObserver) ? new observers.MutationObserver(() => schedule(true)) : null;
-    mutation == null ? void 0 : mutation.observe(root, {
-      attributes: true,
-      attributeFilter: [
-        "class",
-        "style",
-        "data-has-sidenotes",
-        "data-sidenote-position",
-        "data-sidenote-page-offset",
-        "data-sidenote-has-opposite",
-        "data-sidenote-mode"
-      ]
-    });
-    const onScroll = () => schedule();
-    root.addEventListener("scroll", onScroll, { passive: true, capture: true });
-    watcher = {
-      subscribers,
-      stop: () => {
-        root.removeEventListener("scroll", onScroll, true);
-        resize == null ? void 0 : resize.disconnect();
-        mutation == null ? void 0 : mutation.disconnect();
-        if (frame !== null) win == null ? void 0 : win.cancelAnimationFrame(frame);
-      }
-    };
-    layoutWatchers.set(root, watcher);
-  }
-  watcher.subscribers.add(subscriber);
-  return () => {
-    watcher.subscribers.delete(subscriber);
-    if (watcher.subscribers.size === 0) {
-      watcher.stop();
-      layoutWatchers.delete(root);
-    }
-  };
-}
-function markRects(target) {
-  const svg = [target.previousElementSibling, target.nextElementSibling].find(
-    (el) => el == null ? void 0 : el.matches("svg.rough-annotation")
-  );
-  if (!svg) return null;
-  const anchor = svg.getBoundingClientRect();
-  return Array.from(target.getClientRects(), (rect) => ({
-    x: rect.left - anchor.left,
-    y: rect.top - anchor.top,
-    width: rect.width,
-    height: rect.height
-  }));
-}
-function rectsChanged(previous, current) {
-  if (!previous || !current || previous.length !== current.length) return false;
-  return previous.some((rect, index) => {
-    const next = current[index];
-    return Object.keys(rect).some((key) => Math.abs(rect[key] - next[key]) > 0.5);
-  });
-}
-function elementWindow(element) {
-  return element.ownerDocument.defaultView;
-}
-function resolveNotationColor(element) {
-  var _a;
-  const explicitColor = (_a = element.dataset.fpColor) == null ? void 0 : _a.trim();
-  if (explicitColor) return explicitColor;
-  const inlineColor = element.style.backgroundColor.trim();
-  if (inlineColor && !TRANSPARENT_COLORS.has(inlineColor)) return inlineColor;
-  const win = elementWindow(element);
-  const computedColor = win == null ? void 0 : win.getComputedStyle(element).backgroundColor.trim();
-  if (computedColor && !TRANSPARENT_COLORS.has(computedColor)) return computedColor;
-  return "currentColor";
-}
-function colorWithOpacity(color, opacity) {
-  if (opacity === 1) return color;
-  const hex = /^#([\da-f]{6})$/i.exec(color);
-  if (hex)
-    return `#${hex[1]}${Math.round(opacity * 255).toString(16).padStart(2, "0")}`;
-  return `color-mix(in srgb, ${color} ${Math.round(opacity * 100)}%, transparent)`;
-}
-function createRoughNotationConfig(element, opacityByType = DEFAULT_NOTATION_OPACITY) {
-  var _a;
-  const type = normalizeNotationType(element.dataset.fpNotation);
-  const opacity = (_a = normalizeOpacity(element.dataset.fpOpacity)) != null ? _a : opacityByType[type];
-  const config = {
-    type,
-    color: colorWithOpacity(resolveNotationColor(element), opacity),
-    animate: false,
-    multiline: true
-  };
-  if (type === "underline") config.padding = [0, 0, 1, 0];
-  if (type === "box" || type === "circle") config.padding = [2, 3, 2, 3];
-  return config;
-}
-function notationSeed(element, sourcePath) {
-  var _a, _b, _c, _d, _e, _f;
-  const block = (_a = element.closest("p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th")) != null ? _a : element.parentElement;
-  const text = (_c = (_b = element.textContent) == null ? void 0 : _b.trim()) != null ? _c : "";
-  const type = normalizeNotationType(element.dataset.fpNotation);
-  const peers = Array.from((_d = block == null ? void 0 : block.querySelectorAll("mark")) != null ? _d : []);
-  const occurrence = peers.slice(0, peers.indexOf(element)).filter((peer) => {
-    var _a2;
-    return ((_a2 = peer.textContent) == null ? void 0 : _a2.trim()) === text && normalizeNotationType(peer.dataset.fpNotation) === type;
-  }).length;
-  const key = `${sourcePath}\0${(_f = (_e = block == null ? void 0 : block.textContent) == null ? void 0 : _e.replace(/\s+/g, " ").trim()) != null ? _f : ""}\0${type}\0${text}\0${occurrence}`;
-  let hash = 2166136261;
-  for (let i2 = 0; i2 < key.length; i2++) {
-    hash = Math.imul(hash ^ key.charCodeAt(i2), 16777619);
-  }
-  return hash & 2147483647 || 1;
-}
-var RoughNotationRenderer = class extends import_obsidian13.MarkdownRenderChild {
-  constructor(containerEl, annotateElement = _, onShown, sourcePath = "", opacityByType = DEFAULT_NOTATION_OPACITY) {
-    super(containerEl);
-    this.onShown = onShown;
-    this.sourcePath = sourcePath;
-    this.opacityByType = opacityByType;
-    this.annotations = /* @__PURE__ */ new Map();
-    this.positions = /* @__PURE__ */ new Map();
-    this.stopLayoutWatch = null;
-    this.animationFrame = null;
-    this.attachmentFrames = 0;
-    this.disposed = false;
-    this.annotateElement = annotateElement;
-  }
-  onload() {
-    this.disposed = false;
-    this.attachmentFrames = 0;
-    this.scheduleRender();
-  }
-  scheduleRender() {
-    const win = elementWindow(this.containerEl);
-    if (!win || typeof win.requestAnimationFrame !== "function") {
-      if (this.containerEl.isConnected) this.renderTargets();
-      return;
-    }
-    this.animationFrame = win.requestAnimationFrame(() => {
-      this.animationFrame = null;
-      if (this.disposed) return;
-      if (!this.containerEl.isConnected) {
-        this.attachmentFrames += 1;
-        if (this.attachmentFrames < MAX_ATTACHMENT_FRAMES) this.scheduleRender();
-        return;
-      }
-      this.renderTargets();
-    });
-  }
-  renderTargets() {
-    var _a, _b, _c, _d;
-    const targets = Array.from(this.containerEl.querySelectorAll("mark[data-fp-notation]"));
-    if (this.containerEl.matches("mark[data-fp-notation]")) {
-      targets.unshift(this.containerEl);
-    }
-    for (const target of targets) {
-      if (target.hasClass(TARGET_CLASS) || !((_a = target.textContent) == null ? void 0 : _a.trim())) continue;
-      const config = createRoughNotationConfig(target, this.opacityByType);
-      const annotation = this.annotateElement(target, config);
-      if (Object.prototype.hasOwnProperty.call(annotation, "_seed")) {
-        annotation._seed = notationSeed(target, this.sourcePath);
-      }
-      target.addClass(TARGET_CLASS);
-      this.annotations.set(target, annotation);
-      annotation.show();
-      this.positions.set(target, markRects(target));
-      (_b = this.onShown) == null ? void 0 : _b.call(this);
-    }
-    if (this.annotations.size && !this.stopLayoutWatch) {
-      const root = (_d = (_c = this.containerEl.closest(".markdown-reading-view")) != null ? _c : this.containerEl.closest(".markdown-preview-view")) != null ? _d : this.containerEl;
-      this.stopLayoutWatch = watchNoteLayout(root, (force) => this.refreshMovedMarks(force));
-    }
-  }
-  refreshMovedMarks(force = false) {
-    var _a;
-    if (this.disposed) return;
-    for (const [target, annotation] of this.annotations) {
-      if (!target.isConnected) continue;
-      const current = markRects(target);
-      if (force || rectsChanged((_a = this.positions.get(target)) != null ? _a : null, current)) {
-        annotation.show();
-        this.positions.set(target, markRects(target));
-      }
-    }
-  }
-  onunload() {
-    var _a;
-    this.disposed = true;
-    (_a = this.stopLayoutWatch) == null ? void 0 : _a.call(this);
-    this.stopLayoutWatch = null;
-    const win = elementWindow(this.containerEl);
-    if (this.animationFrame !== null && win) {
-      win.cancelAnimationFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
-    for (const [target, annotation] of this.annotations) {
-      annotation.remove();
-      target.removeClass(TARGET_CLASS);
-    }
-    this.annotations.clear();
-    this.positions.clear();
-  }
-};
-
 // src/main.ts
 init_notations();
+init_MarkdownSourceAdapter();
+
+// src/utils/footnotePresentation.ts
+function setRepeatedFootnoteDisplay(root, normalize) {
+  var _a, _b;
+  for (const anchor of root.querySelectorAll("sup.footnote-ref > a.footnote-link[data-footref]")) {
+    const nativeLabel = (_b = (_a = anchor.dataset.fpNativeRepeatedLabel) != null ? _a : anchor.textContent) != null ? _b : "";
+    const repeated = /^\[(\d+)-[1-9]\d*\]$/.exec(nativeLabel.trim());
+    if (!repeated) continue;
+    if (normalize) {
+      anchor.dataset.fpNativeRepeatedLabel = nativeLabel;
+      anchor.textContent = `[${repeated[1]}]`;
+    } else if (anchor.dataset.fpNativeRepeatedLabel) {
+      anchor.textContent = nativeLabel;
+      delete anchor.dataset.fpNativeRepeatedLabel;
+    }
+  }
+}
+
+// src/main.ts
 var SMART_SELECTION_TAGS = /* @__PURE__ */ new Set(["P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TD", "TH"]);
 var FRONTMATTER_NEEDS_QUOTES_RE = new RegExp("[:\\s{}\\[\\],&*#?|<>=!%@\\\\-]");
 var FRONTMATTER_RESERVED_RE = /^(true|false|null|yes|no|on|off)$/i;
@@ -6228,6 +6726,7 @@ var DEFAULT_SETTINGS = {
   quoteTemplate: "> {{text}}\n>\n> \u2014 [[{{file}}]]",
   enableAnnotations: true,
   showAnnotationButton: true,
+  normalizeRepeatedFootnoteReferences: true,
   enableReadingProgress: true,
   readingPositions: {},
   enableSmartTagSuggestions: true,
@@ -6240,7 +6739,6 @@ var DEFAULT_SETTINGS = {
   enableSmartParagraphSelection: false,
   learnedNormRules: [],
   lastNotationType: DEFAULT_NOTATION_TYPE,
-  autoGroupMultiBlock: true,
   notationOpacity: { ...DEFAULT_NOTATION_OPACITY },
   canvasDefaults: { ...DEFAULT_CANVAS_SETTINGS },
   canvasAssociations: []
@@ -6251,7 +6749,7 @@ function toDisplayString(value) {
   const primitive = value;
   return String(primitive);
 }
-var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
+var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
   constructor() {
     super(...arguments);
     this.lastModification = null;
@@ -6276,12 +6774,12 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
     this.registerCommands();
     this.registerMarkdownPostProcessor((el, ctx) => {
+      setRepeatedFootnoteDisplay(el, this.settings.normalizeRepeatedFootnoteReferences);
       ctx.addChild(
-        new RoughNotationRenderer(
+        markdownSourceAdapter.renderChild(
           el,
-          void 0,
-          () => timingRenderingShown(ctx.sourcePath),
           ctx.sourcePath,
+          () => timingRenderingShown(ctx.sourcePath),
           this.settings.notationOpacity
         )
       );
@@ -6302,11 +6800,11 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
         }
       })
     );
-    if (import_obsidian14.Platform.isMobile) {
+    if (import_obsidian15.Platform.isMobile) {
       const btn = this.addRibbonIcon("highlighter", "Highlight selection", () => {
         const view = this.getActiveReadingView();
         if (view) void this.highlightSelection(view);
-        else new import_obsidian14.Notice("Open a note in reading view first.");
+        else new import_obsidian15.Notice("Open a note in reading view first.");
       });
       this.register(() => btn.remove());
     }
@@ -6342,7 +6840,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       id: "extract-all-pdf-text",
       name: "Extract all text from current PDF",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian14.View);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.View);
         if (view && view.getViewType() === "pdf") {
           if (!checking) {
             void this.extractAllPdfText(view);
@@ -6421,7 +6919,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       id: "export-highlights-json",
       name: "Export highlights to JSON",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.exportHighlightsJSON(view);
@@ -6432,7 +6930,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       id: "export-highlights-csv",
       name: "Export highlights to CSV",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.exportHighlightsCSV(view);
@@ -6454,7 +6952,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       id: "remove-all-annotations",
       name: "Remove all footnotes from note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.removeAllAnnotations(view.file);
@@ -6465,7 +6963,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       id: "merge-adjacent-highlights",
       name: "Merge adjacent highlights in note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.mergeAdjacentHighlightsInFile(view.file);
@@ -6476,7 +6974,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       id: "recolor-mark-highlights",
       name: "Recolor <mark> highlights in note\u2026",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         new BulkRecolorModal(this, view.file).open();
@@ -6487,7 +6985,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       id: "migrate-span-highlights",
       name: "Migrate <span> highlights to <mark> in note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.migrateSpanHighlightsInFile(view.file);
@@ -6533,6 +7031,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     void workspace.revealLeaf(leaf);
   }
   onunload() {
+    this.updateRenderedFootnoteReferences(false);
     this.floatingManager.unload();
   }
   async loadSettings() {
@@ -6545,6 +7044,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
       enableColorHighlighting: true,
       highlightColor: typeof loaded.highlightColor === "string" && loaded.highlightColor.trim() ? loaded.highlightColor : DEFAULT_SETTINGS.highlightColor,
       semanticColors: ((_a = loaded.semanticColors) == null ? void 0 : _a.length) ? loaded.semanticColors : DEFAULT_SETTINGS.semanticColors,
+      normalizeRepeatedFootnoteReferences: typeof loaded.normalizeRepeatedFootnoteReferences === "boolean" ? loaded.normalizeRepeatedFootnoteReferences : DEFAULT_SETTINGS.normalizeRepeatedFootnoteReferences,
       lastNotationType: normalizeNotationType(loaded.lastNotationType),
       canvasDefaults: normalizeCanvasDefaults(loaded.canvasDefaults),
       canvasAssociations: Array.isArray(loaded.canvasAssociations) ? loaded.canvasAssociations.filter((item) => item && typeof item.source === "string" && typeof item.canvas === "string").slice(0, MAX_CANVAS_ASSOCIATIONS) : [],
@@ -6567,8 +7067,13 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     await this.saveData(this.settings);
     this.floatingManager.refresh();
   }
+  updateRenderedFootnoteReferences(normalize) {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      setRepeatedFootnoteDisplay(leaf.view.containerEl, normalize);
+    }
+  }
   getActiveReadingView() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     return view && view.getMode() === "preview" ? view : null;
   }
   getSelectionContext(selectionSnapshot, scope = "configured") {
@@ -6693,15 +7198,15 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
   }
   async undoLastHighlight(successMessage = "Undone last annotation change.") {
     if (!this.lastModification) {
-      new import_obsidian14.Notice("Nothing to undo.");
+      new import_obsidian15.Notice("Nothing to undo.");
       return;
     }
     try {
       await this.app.vault.modify(this.lastModification.file, this.lastModification.original);
-      new import_obsidian14.Notice(successMessage);
+      new import_obsidian15.Notice(successMessage);
       this.lastModification = null;
     } catch (err) {
-      new import_obsidian14.Notice("Failed to undo.");
+      new import_obsidian15.Notice("Failed to undo.");
       console.error(err);
     }
   }
@@ -6758,7 +7263,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
    * outside its highlight. Locating every block instead would be O(blocks)
    * whole-file scans — minutes of frozen UI on a long article.
    */
-  async highlightSpanningBlocks(view, request, mode, payload, notationType = DEFAULT_NOTATION_TYPE, groupId = null, timing = null) {
+  async highlightSpanningBlocks(view, request, mode, payload, notationType = DEFAULT_NOTATION_TYPE, timing = null) {
     if (!request.range || !view.file) return false;
     const blocks = request.blocks;
     let head = null;
@@ -6773,29 +7278,20 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     const start = Math.min(head.start, tail.start);
     const end = Math.max(head.end, tail.end);
     if (end <= start) return false;
-    if (mode === "color") {
+    if (mode === "color" || mode === "highlight") {
       const lineStart = this.getLineStart(head.raw, start);
       const lineEnd = this.getLineEnd(head.raw, end);
-      if (parseHighlights(head.raw).highlights.some((mark) => mark.start < lineEnd && mark.end > lineStart)) {
-        new import_obsidian14.Notice(
+      if (markdownSourceAdapter.observe(head.raw).some(
+        (annotation) => annotation.anchor.parts.some((part) => part.start < lineEnd && part.end > lineStart)
+      )) {
+        new import_obsidian15.Notice(
           "This passage already has marks. Annotating it would replace them; select unmarked text for now."
         );
         return "overlap";
       }
     }
     await this.saveUndoState(head.file, head.raw);
-    await this.applyMarkdownModification(
-      head.file,
-      head.raw,
-      start,
-      end,
-      mode,
-      payload,
-      "",
-      notationType,
-      timing,
-      groupId
-    );
+    await this.applyMarkdownModification(head.file, head.raw, start, end, mode, payload, "", notationType, timing);
     return true;
   }
   async highlightSelection(view, selectionSnapshot) {
@@ -6805,7 +7301,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     timingStep(timing, "selection request built");
     if (!request) {
-      new import_obsidian14.Notice("No text selected.");
+      new import_obsidian15.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -6817,13 +7313,14 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     }
     if (request.blocks.length > 1) {
       const ok = await this.highlightSpanningBlocks(view, request, mode, payload);
+      if (ok === "overlap") return;
       if (!ok) {
         this.handleSelectionFailure(view, request, "highlightSelection");
         return;
       }
       this.restoreScroll(view, scrollPos);
       sel == null ? void 0 : sel.removeAllRanges();
-      new import_obsidian14.Notice("Highlighted!");
+      new import_obsidian15.Notice("Highlighted!");
       return;
     }
     const result = await this.logic.locateSelection(
@@ -6858,10 +7355,10 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     timingStep(timing, "write and optional frontmatter completed");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
-    if (this.settings.enableHaptics && import_obsidian14.Platform.isMobile) {
+    if (this.settings.enableHaptics && import_obsidian15.Platform.isMobile) {
       (_a = navigator.vibrate) == null ? void 0 : _a.call(navigator, 10);
     }
-    new import_obsidian14.Notice("Highlighted!");
+    new import_obsidian15.Notice("Highlighted!");
   }
   async applyColorByIndex(view, index, selectionSnapshot, notationType = DEFAULT_NOTATION_TYPE) {
     if (index < 0 || index >= this.settings.semanticColors.length) return;
@@ -6873,7 +7370,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
     if (!view.file) return;
     let snippet = (selectionSnapshot == null ? void 0 : selectionSnapshot.text) || ((_a = window.getSelection()) == null ? void 0 : _a.toString()) || "";
     if (!snippet.trim()) {
-      new import_obsidian14.Notice("No text selected.");
+      new import_obsidian15.Notice("No text selected.");
       return;
     }
     snippet = this.sanitizePdfText(snippet);
@@ -6904,7 +7401,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
 
 `;
     try {
-      if (fileExists instanceof import_obsidian14.TFile) {
+      if (fileExists instanceof import_obsidian15.TFile) {
         const fileContent = await this.app.vault.read(fileExists);
         await this.app.vault.modify(fileExists, fileContent + "\n" + appendString);
       } else {
@@ -6913,14 +7410,14 @@ var ReadingHighlighterPlugin = class extends import_obsidian14.Plugin {
 ${appendString}`;
         await this.app.vault.create(companionFile, fileContent);
       }
-      new import_obsidian14.Notice("Saved to " + pdfName + " - Highlights");
+      new import_obsidian15.Notice("Saved to " + pdfName + " - Highlights");
       (_c = window.getSelection()) == null ? void 0 : _c.removeAllRanges();
-      if (this.settings.enableHaptics && import_obsidian14.Platform.isMobile) {
+      if (this.settings.enableHaptics && import_obsidian15.Platform.isMobile) {
         (_d = navigator.vibrate) == null ? void 0 : _d.call(navigator, 10);
       }
     } catch (e2) {
       console.error("Failed to save PDF highlight", e2);
-      new import_obsidian14.Notice("Failed to save PDF highlight");
+      new import_obsidian15.Notice("Failed to save PDF highlight");
     }
   }
   sanitizePdfText(text) {
@@ -6939,12 +7436,12 @@ ${appendString}`;
   }
   async extractAllPdfText(view) {
     if (!view || view.getViewType() !== "pdf" || !view.file) {
-      new import_obsidian14.Notice("Please open a PDF file first.");
+      new import_obsidian15.Notice("Please open a PDF file first.");
       return;
     }
-    const notice = new import_obsidian14.Notice("Extracting all PDF text...", 0);
+    const notice = new import_obsidian15.Notice("Extracting all PDF text...", 0);
     try {
-      const pdfjs = await (0, import_obsidian14.loadPdfJs)();
+      const pdfjs = await (0, import_obsidian15.loadPdfJs)();
       const buffer = await this.app.vault.readBinary(view.file);
       const loadingTask = pdfjs.getDocument({ data: buffer });
       const pdf = await loadingTask.promise;
@@ -6969,17 +7466,17 @@ ${appendString}`;
       const dummySnapshot = { text: fullText, range: null };
       await this.savePdfHighlight(view, dummySnapshot, "action", "highlightSelection");
       notice.hide();
-      new import_obsidian14.Notice(`Successfully extracted ${pdf.numPages} pages.`);
+      new import_obsidian15.Notice(`Successfully extracted ${pdf.numPages} pages.`);
     } catch (e2) {
       console.error("Full PDF extraction failed", e2);
       notice.hide();
-      new import_obsidian14.Notice("Failed to extract PDF text.");
+      new import_obsidian15.Notice("Failed to extract PDF text.");
     }
   }
   async tagSelection(view, selectionSnapshot) {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian14.Notice("No text selected.");
+      new import_obsidian15.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -7010,7 +7507,7 @@ ${appendString}`;
         request.contextKind
       );
       if (!newResult) {
-        new import_obsidian14.Notice("Selection lost - file may have changed.");
+        new import_obsidian15.Notice("Selection lost - file may have changed.");
         return;
       }
       if (tag && this.settings.enableSmartTagSuggestions) {
@@ -7034,7 +7531,7 @@ ${appendString}`;
   async annotateSelection(view, selectionSnapshot) {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian14.Notice("No text selected.");
+      new import_obsidian15.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -7065,43 +7562,30 @@ ${appendString}`;
         request.contextKind
       );
       if (!newResult) {
-        new import_obsidian14.Notice("Selection lost - file may have changed.");
+        new import_obsidian15.Notice("Selection lost - file may have changed.");
         return;
       }
-      const currentRaw = await this.app.vault.read(targetFile);
-      await this.applyAnnotation(targetFile, currentRaw, newResult.start, newResult.end, comment);
+      await this.applyAnnotation(targetFile, newResult.raw, newResult.start, newResult.end, comment);
       this.restoreScroll(view, scrollPos);
       (_a = window.getSelection()) == null ? void 0 : _a.removeAllRanges();
-      new import_obsidian14.Notice("Footnote added.");
+      new import_obsidian15.Notice("Footnote added.");
     }).open();
   }
   async applyAnnotation(file, raw, start, end, comment) {
     if (!raw) {
       raw = await this.app.vault.read(file);
     }
-    const footnotePattern = /\[\^(\d+)\]/g;
-    let maxNumber = 0;
-    let match;
-    while ((match = footnotePattern.exec(raw)) !== null) {
-      const num = parseInt(match[1]);
-      if (num > maxNumber) maxNumber = num;
-    }
-    const footnoteNum = maxNumber + 1;
-    const beforeSelection = raw.substring(0, end);
-    const afterSelection = raw.substring(end);
-    const footnoteRef = `[^${footnoteNum}]`;
-    const footnoteDef = `
-
-[^${footnoteNum}]: ${comment}`;
-    let newContent = beforeSelection + footnoteRef + afterSelection;
-    newContent = newContent.trimEnd() + footnoteDef + "\n";
-    await this.app.vault.modify(file, newContent);
+    void start;
+    await this.app.vault.process(file, (current) => {
+      if (current !== raw) throw new Error("Source changed while adding a footnote; no write made.");
+      return markdownSourceAdapter.createFootnote(current, end, comment).raw;
+    });
   }
   async removeHighlightSelection(view, selectionSnapshot) {
     const sel = window.getSelection();
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian14.Notice("Select highlighted text to remove.");
+      new import_obsidian15.Notice("Select highlighted text to remove.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -7119,9 +7603,24 @@ ${appendString}`;
       return;
     }
     const targetFile = result.file;
+    const touched = markdownSourceAdapter.observe(result.raw).filter(
+      (observation) => observation.anchor.parts.some((part) => part.start < result.end && part.end > result.start)
+    ).map((observation) => observation.highlight);
+    const managed = touched.filter((mark) => mark.annotationId);
+    if (managed.length > 1) {
+      new import_obsidian15.Notice("Selection touches several annotations. Remove them individually in the navigator.");
+      return;
+    }
     await this.saveUndoState(targetFile, result.raw);
-    await this.applyMarkdownModification(targetFile, result.raw, result.start, result.end, "remove");
-    new import_obsidian14.Notice("Highlighting removed.");
+    if (managed.length === 1) {
+      await this.app.vault.process(targetFile, (current) => {
+        if (current !== result.raw) throw new Error("Source changed; no annotation removed.");
+        return removeLogicalHighlightFromRaw(current, managed[0]);
+      });
+    } else {
+      await this.applyMarkdownModification(targetFile, result.raw, result.start, result.end, "remove");
+    }
+    new import_obsidian15.Notice("Highlighting removed.");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
   }
@@ -7131,104 +7630,104 @@ ${appendString}`;
     raw = raw.replace(/==(.*?)==/gs, "$1");
     raw = raw.replace(/<mark[^>]*>(.*?)<\/mark>/gs, "$1");
     await this.app.vault.modify(view.file, raw);
-    new import_obsidian14.Notice("All highlights removed.");
+    new import_obsidian15.Notice("All highlights removed.");
   }
   async removeAnnotationById(file, footnoteId) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = removeFootnoteFromRaw(raw, footnoteId);
     if (!result.changed) {
-      new import_obsidian14.Notice("Footnote not found.");
+      new import_obsidian15.Notice("Footnote not found.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian14.Notice("Footnote removed.");
+    new import_obsidian15.Notice("Footnote removed.");
   }
   async removeAllAnnotations(file) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = removeAllFootnotesFromRaw(raw);
     if (!result.removedCount) {
-      new import_obsidian14.Notice("No footnotes to remove.");
+      new import_obsidian15.Notice("No footnotes to remove.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian14.Notice(`Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`);
+    new import_obsidian15.Notice(`Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`);
   }
   async mergeAdjacentHighlightsInFile(file) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = mergeAdjacentHighlightsInRaw(raw);
     if (!result.mergedCount) {
-      new import_obsidian14.Notice("No adjacent highlights to merge.");
+      new import_obsidian15.Notice("No adjacent highlights to merge.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian14.Notice(`Merged ${result.mergedCount} highlight${result.mergedCount === 1 ? "" : "s"}.`);
+    new import_obsidian15.Notice(`Merged ${result.mergedCount} highlight${result.mergedCount === 1 ? "" : "s"}.`);
   }
   async recolorMarkHighlightsInFile(file, fromColor, toColor) {
     const targetColor = String(toColor || "").trim();
     if (!targetColor) {
-      new import_obsidian14.Notice("Choose a target color first.");
+      new import_obsidian15.Notice("Choose a target color first.");
       return;
     }
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = recolorMarkHighlightsInRaw(raw, { fromColor, toColor: targetColor });
     if (!result.changedCount) {
-      new import_obsidian14.Notice("No matching <mark> highlights to recolor.");
+      new import_obsidian15.Notice("No matching <mark> highlights to recolor.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian14.Notice(`Recolored ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"}.`);
+    new import_obsidian15.Notice(`Recolored ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"}.`);
   }
   async migrateSpanHighlightsInFile(file) {
     await this.saveUndoState(file);
     const raw = await this.app.vault.read(file);
     const result = migrateSpanHighlightsInRaw(raw);
     if (!result.changedCount) {
-      new import_obsidian14.Notice("No <span> background highlights found to migrate.");
+      new import_obsidian15.Notice("No <span> background highlights found to migrate.");
       return;
     }
     await this.app.vault.modify(file, result.raw);
-    new import_obsidian14.Notice(`Migrated ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"} to <mark>.`);
+    new import_obsidian15.Notice(`Migrated ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"} to <mark>.`);
   }
   async exportHighlights(view) {
     try {
       const exportPath = await exportHighlightsToMD(this.app, view.file);
-      new import_obsidian14.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian15.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian14.TFile) {
+      if (exportFile instanceof import_obsidian15.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian14.Notice("Failed to export highlights.");
+      new import_obsidian15.Notice("Failed to export highlights.");
       console.error(err);
     }
   }
   async exportHighlightsJSON(view) {
     try {
       const exportPath = await exportHighlightsToJSON(this.app, view.file);
-      new import_obsidian14.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian15.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian14.TFile) {
+      if (exportFile instanceof import_obsidian15.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian14.Notice("Failed to export highlights to JSON.");
+      new import_obsidian15.Notice("Failed to export highlights to JSON.");
       console.error(err);
     }
   }
   async exportHighlightsCSV(view) {
     try {
       const exportPath = await exportHighlightsToCSV(this.app, view.file);
-      new import_obsidian14.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian15.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian14.TFile) {
+      if (exportFile instanceof import_obsidian15.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian14.Notice("Failed to export highlights to CSV.");
+      new import_obsidian15.Notice("Failed to export highlights to CSV.");
       console.error(err);
     }
   }
@@ -7237,7 +7736,7 @@ ${appendString}`;
     const sel = window.getSelection();
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian14.Notice("No text selected.");
+      new import_obsidian15.Notice("No text selected.");
       return;
     }
     const quotedText = request.snippet.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
@@ -7245,10 +7744,10 @@ ${appendString}`;
     const quote = this.expandQuoteTemplate(view.file, quotedText, frontmatter);
     const copied = await this.writeClipboardText(quote);
     if (!copied) {
-      new import_obsidian14.Notice("Failed to copy quote.");
+      new import_obsidian15.Notice("Failed to copy quote.");
       return;
     }
-    new import_obsidian14.Notice("Copied as quote!");
+    new import_obsidian15.Notice("Copied as quote!");
     sel == null ? void 0 : sel.removeAllRanges();
   }
   async applyColorHighlight(view, color, autoTag = "", selectionSnapshot, notationType = DEFAULT_NOTATION_TYPE) {
@@ -7259,17 +7758,16 @@ ${appendString}`;
     if (!request) return;
     const scrollPos = getScroll(view);
     if (request.blocks.length > 1) {
-      const groupId = this.settings.autoGroupMultiBlock ? createNotationGroupId() : null;
-      const ok = await this.highlightSpanningBlocks(view, request, "color", color, notationType, groupId, timing);
+      const ok = await this.highlightSpanningBlocks(view, request, "color", color, notationType, timing);
       if (ok === "overlap") return;
       if (!ok) {
         this.handleSelectionFailure(view, request, "applyColorHighlight", { color, notationType });
         return;
       }
-      timingStep(timing, "grouped source written");
+      timingStep(timing, "logical annotation source written");
       this.restoreScroll(view, scrollPos);
       sel == null ? void 0 : sel.removeAllRanges();
-      new import_obsidian14.Notice(groupId ? "Annotated grouped passage!" : "Annotated passage!");
+      new import_obsidian15.Notice("Annotated passage!");
       return;
     }
     const result = await this.logic.locateSelection(
@@ -7304,7 +7802,7 @@ ${appendString}`;
     timingStep(timing, "write and optional frontmatter completed");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
-    new import_obsidian14.Notice("Highlighted!");
+    new import_obsidian15.Notice("Highlighted!");
   }
   saveReadingProgress() {
     const view = this.getActiveReadingView();
@@ -7319,9 +7817,9 @@ ${appendString}`;
     const pos = this.settings.readingPositions[view.file.path];
     if (pos) {
       applyScroll(view, { x: 0, y: pos });
-      new import_obsidian14.Notice("Resumed reading position.");
+      new import_obsidian15.Notice("Resumed reading position.");
     } else {
-      new import_obsidian14.Notice("No saved position for this file.");
+      new import_obsidian15.Notice("No saved position for this file.");
     }
   }
   async activateNavigatorView() {
@@ -7403,35 +7901,6 @@ ${appendString}`;
     }
     return toDisplayString(value).trim();
   }
-  splitMarkdownLine(line) {
-    const indentMatch = line.match(/^\s*/);
-    const indent = indentMatch ? indentMatch[0] : "";
-    let remainder = line.substring(indent.length);
-    let prefix = "";
-    const prefixPatterns = [
-      /^>\s*/,
-      /^#{1,6}\s+/,
-      /^-\s\[[ xX]\]\s+/,
-      /^[-*+]\s+/,
-      /^\d{1,3}[.)]\s+/,
-      /^\[\^[^\]]+\]:\s*/,
-      /^\[![^\]]+\]\s*/
-    ];
-    let matched = true;
-    while (matched && remainder) {
-      matched = false;
-      for (const pattern of prefixPatterns) {
-        const match = remainder.match(pattern);
-        if (match) {
-          prefix += match[0];
-          remainder = remainder.substring(match[0].length);
-          matched = true;
-          break;
-        }
-      }
-    }
-    return { indent, prefix, content: remainder };
-  }
   getLineStart(raw, offset) {
     const lineBreak = raw.lastIndexOf("\n", Math.max(0, offset - 1));
     return lineBreak === -1 ? 0 : lineBreak + 1;
@@ -7454,214 +7923,27 @@ ${appendString}`;
     }
     return this.needsYamlQuotes(normalized) ? `"${normalized.replace(/"/g, '\\"')}"` : normalized;
   }
-  /** The full line of `raw` containing `offset`. */
-  lineContaining(raw, offset) {
-    return raw.substring(this.getLineStart(raw, offset), this.getLineEnd(raw, offset));
-  }
-  /**
-   * Cell ranges of a table row, split on unescaped pipes only.
-   *
-   * `\|` is an escaped pipe: it is content, not a column boundary. Splitting
-   * on it tears wiki links (`[[Note\|Alias]]`) and code spans (`` `a \| b` ``)
-   * in half and writes a marker into the middle of them.
-   */
-  splitTableCells(line) {
-    const cells = [];
-    let cursor = 0;
-    for (let i2 = 0; i2 < line.length; i2++) {
-      if (line[i2] === "\\") {
-        i2++;
-        continue;
-      }
-      if (line[i2] === "|") {
-        cells.push({ start: cursor, end: i2 });
-        cursor = i2 + 1;
-      }
-    }
-    cells.push({ start: cursor, end: line.length });
-    return cells;
-  }
-  /**
-   * Rewrite one table row, wrapping only the cells the selection covers.
-   *
-   * Highlighting a row cannot be done by wrapping the selected span: a `==`
-   * pair spanning a `|` swallows the column boundary and the table stops
-   * rendering as a table. Each covered cell gets its own pair instead.
-   */
-  applyToTableRow(line, lineStart, selectionStart, selectionEnd, mode, payload, notationType = DEFAULT_NOTATION_TYPE, groupId = null) {
-    const cells = this.splitTableCells(line);
-    const pieces = [];
-    cells.forEach((cell, index) => {
-      var _a, _b, _c, _d;
-      const text = line.substring(cell.start, cell.end);
-      const stripped = text.replace(/<mark[^>]*>/g, "").replace(/<\/mark>/g, "").split("==").join("");
-      const trimmed = stripped.trim();
-      const isEdge = index === 0 || index === cells.length - 1;
-      let contentStart = cell.start;
-      let contentEnd = cell.end;
-      while (contentStart < contentEnd && /\s/.test(line[contentStart])) contentStart++;
-      while (contentEnd > contentStart && /\s/.test(line[contentEnd - 1])) contentEnd--;
-      const covered = lineStart + contentEnd > selectionStart && lineStart + contentStart < selectionEnd;
-      if (isEdge || !trimmed || !covered || mode === "remove") {
-        pieces.push(mode === "remove" ? stripped : covered && !isEdge ? stripped : text);
-        return;
-      }
-      const leadWS = (_b = (_a = stripped.match(/^(\s*)/)) == null ? void 0 : _a[1]) != null ? _b : "";
-      const trailWS = (_d = (_c = stripped.match(/(\s*)$/)) == null ? void 0 : _c[1]) != null ? _d : "";
-      let wrapped;
-      if (mode === "color" || this.settings.enableColorHighlighting && this.settings.highlightColor) {
-        const color = mode === "color" ? payload : this.settings.highlightColor;
-        wrapped = `${createNotationOpenTag({ notationType, color, opacity: this.settings.notationOpacity[notationType] }, groupId)}${trimmed}</mark>`;
-      } else {
-        wrapped = `==${trimmed}==`;
-      }
-      pieces.push(`${leadWS}${wrapped}${trailWS}`);
-    });
-    return pieces.join("|");
-  }
-  isTableAlignmentRow(line) {
-    return /^\s*\|(\s*:?-+:?\s*\|)+\s*$/.test(line);
-  }
-  isTableDataRow(line) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("|")) return false;
-    if (this.isTableAlignmentRow(line)) return false;
-    return (trimmed.match(/\|/g) || []).length >= 2;
-  }
-  async applyMarkdownModification(file, raw, start, end, mode, payload = "", autoTag = "", notationType = DEFAULT_NOTATION_TYPE, timing = null, groupId = null) {
+  async applyMarkdownModification(file, raw, start, end, mode, payload = "", autoTag = "", notationType = DEFAULT_NOTATION_TYPE, timing = null) {
     if (!raw) {
       raw = await this.app.vault.read(file);
     }
-    let expandedStart = start;
-    let expandedEnd = end;
-    let bodyStart = 0;
-    if (raw.startsWith("---")) {
-      const secondDash = raw.indexOf("---", 3);
-      if (secondDash !== -1) {
-        bodyStart = secondDash + 3;
-      }
-    }
-    let expanded = true;
-    while (expanded) {
-      expanded = false;
-      const preceding = raw.substring(0, expandedStart);
-      const matchBack = preceding.match(/(<mark[^>]*>|\*\*|==|~~|\*|_|\[\[|\[\^[^\]]+\]:?\s?|[([{"'«“‘‹])$/);
-      if (matchBack && expandedStart > bodyStart) {
-        const newStart = expandedStart - matchBack[0].length;
-        if (newStart >= bodyStart) {
-          expandedStart = newStart;
-          expanded = true;
-        }
-      }
-      const following = raw.substring(expandedEnd);
-      const matchForward = following.match(
-        /^(<\/mark>|\*\*|==|~~|\*|_|\]\]|\]\([^)]+\)|\[\^[^\]]+\]|[.?!,;:]["']?|[)\]}"'»”’›.?!,;:](\s|$)?)/
-      );
-      if (matchForward) {
-        expandedEnd += matchForward[0].length;
-        expanded = true;
-      }
-    }
-    if (mode === "highlight" || mode === "color" || mode === "tag" || mode === "remove") {
-      for (const existing of parseHighlights(raw).highlights) {
-        const overlaps = existing.openTagStart < expandedEnd && existing.closeTagEnd > expandedStart;
-        if (!overlaps) continue;
-        expandedStart = Math.min(expandedStart, existing.openTagStart);
-        expandedEnd = Math.max(expandedEnd, existing.closeTagEnd);
-      }
-    }
-    const initiallySelectedText = raw.substring(expandedStart, expandedEnd);
-    if (/\r?\n/.test(initiallySelectedText)) {
-      expandedStart = this.getLineStart(raw, expandedStart);
-      expandedEnd = this.getLineEnd(raw, expandedEnd);
-    }
-    const selectionStart = expandedStart;
-    const selectionEnd = expandedEnd;
-    if (this.isTableDataRow(this.lineContaining(raw, expandedStart)) || this.isTableDataRow(this.lineContaining(raw, expandedEnd))) {
-      expandedStart = this.getLineStart(raw, expandedStart);
-      expandedEnd = this.getLineEnd(raw, expandedEnd);
-    }
-    const selectedText = raw.substring(expandedStart, expandedEnd);
-    const newline = raw.includes("\r\n") ? "\r\n" : "\n";
-    const lines = selectedText.split(/\r?\n/);
-    const lineOffsets = [];
-    let runningOffset = expandedStart;
-    for (const line of lines) {
-      lineOffsets.push(runningOffset);
-      runningOffset += line.length + newline.length;
-    }
-    let fullTag = "";
-    const sanitizeTag = (t2) => t2.trim().replace(/^#/, "").replace(/\s+/g, "_");
-    if (mode === "tag" && payload) {
-      const prefix = this.settings.defaultTagPrefix ? sanitizeTag(this.settings.defaultTagPrefix) : "";
-      const cleanPayload = payload.split(/\s+/).map(sanitizeTag).filter((t2) => t2).map((t2) => `#${t2}`).join(" ");
-      if (prefix) {
-        fullTag = `#${sanitizeTag(prefix)} ${cleanPayload}`;
-      } else {
-        fullTag = cleanPayload;
-      }
-    } else if ((mode === "highlight" || mode === "color") && this.settings.defaultTagPrefix) {
-      const autoTagSetting = sanitizeTag(this.settings.defaultTagPrefix);
-      if (autoTagSetting) {
-        fullTag = `#${autoTagSetting}`;
-      }
-    }
-    if (autoTag) {
-      const cleanAutoTag = sanitizeTag(autoTag);
-      fullTag = fullTag ? `${fullTag} #${cleanAutoTag}` : `#${cleanAutoTag}`;
-    }
-    const processedLines = lines.map((line, lineIndex) => {
-      var _a, _b;
-      let cleanLine = line.replace(/<mark[^>]*>/g, "").replace(/<\/mark>/g, "");
-      if (this.isTableAlignmentRow(line)) return line;
-      if (this.isTableDataRow(line)) {
-        return this.applyToTableRow(
-          line,
-          lineOffsets[lineIndex],
-          selectionStart,
-          selectionEnd,
-          mode,
-          payload,
-          notationType,
-          groupId
-        );
-      }
-      if (mode === "highlight" || mode === "color" || mode === "tag" || mode === "remove") {
-        cleanLine = cleanLine.split("==").join("");
-      } else if (mode === "bold") {
-        cleanLine = cleanLine.split("**").join("");
-      } else if (mode === "italic") {
-        cleanLine = cleanLine.split("*").join("");
-      }
-      if (mode === "remove") return cleanLine;
-      const { indent, prefix, content } = this.splitMarkdownLine(cleanLine);
-      if (!content.trim()) return line;
-      const leadWS = ((_a = content.match(/^(\s*)/)) == null ? void 0 : _a[1]) || "";
-      const trailWS = ((_b = content.match(/(\s*)$/)) == null ? void 0 : _b[1]) || "";
-      const actualContent = content.substring(leadWS.length, content.length - trailWS.length);
-      if (!actualContent) return line;
-      const tagStr = fullTag ? `${fullTag} ` : "";
-      let wrappedContent = actualContent;
-      if (mode === "highlight" || mode === "tag") {
-        if (this.settings.enableColorHighlighting && this.settings.highlightColor) {
-          wrappedContent = `<mark style="background: ${this.settings.highlightColor}; color: black;">${actualContent}</mark>`;
-        } else {
-          wrappedContent = `==${actualContent}==`;
-        }
-      } else if (mode === "color") {
-        wrappedContent = `${createNotationOpenTag({ notationType, color: payload, opacity: this.settings.notationOpacity[notationType] }, groupId)}${actualContent}</mark>`;
-      } else if (mode === "bold") {
-        wrappedContent = `**${actualContent}**`;
-      } else if (mode === "italic") {
-        wrappedContent = `*${actualContent}*`;
-      }
-      return `${indent}${prefix}${leadWS}${tagStr}${wrappedContent}${trailWS}`;
-    });
-    const replaceBlock = processedLines.join(newline);
-    const newContent = raw.substring(0, expandedStart) + replaceBlock + raw.substring(expandedEnd);
+    const newContent = markdownSourceAdapter.rewriteSelection(
+      raw,
+      start,
+      end,
+      mode,
+      payload,
+      autoTag,
+      notationType,
+      this.settings
+    );
+    if (newContent === raw) return;
     timingWriteStarted(timing);
-    await this.app.vault.modify(file, newContent);
-    timingStep(timing, "vault.modify resolved");
+    await this.app.vault.process(file, (current) => {
+      if (current !== raw) throw new Error("Source changed while annotating; no write made.");
+      return newContent;
+    });
+    timingStep(timing, "vault.process resolved");
     if (mode !== "remove" && this.settings.enableFrontmatterTag && this.settings.frontmatterTag) {
       const targetTag = this.formatFrontmatterTag(this.settings.frontmatterTag);
       if (targetTag) {
@@ -7702,7 +7984,7 @@ ${appendString}`;
   handleSelectionFailure(view, request, actionType, payload = null) {
     const report = this.logic.lastFailureReport;
     if (!report) {
-      new import_obsidian14.Notice("Selection failed, but no diagnostic report was generated.");
+      new import_obsidian15.Notice("Selection failed, but no diagnostic report was generated.");
       return;
     }
     new FailureRecoveryModal(this.app, report, async (correctedText, learnedRule) => {
@@ -7714,7 +7996,7 @@ ${appendString}`;
         if (!existing) {
           this.settings.learnedNormRules.push({ stripPattern: learnedRule.stripPattern });
           await this.saveSettings();
-          new import_obsidian14.Notice("Normalization rule learned for future selections!");
+          new import_obsidian15.Notice("Normalization rule learned for future selections!");
         }
       }
       const mockSnapshot = { text: correctedText, range: null };
@@ -7739,7 +8021,7 @@ ${appendString}`;
     }).open();
   }
 };
-var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSettingTab {
+var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -7822,11 +8104,6 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
             control: { type: "toggle", key: "enableColorPalette" }
           },
           {
-            name: "Automatically group multi-block selections",
-            desc: "One selection across list items or paragraphs appears as one Navigator entry. Turn off to keep the marks separate for later grouping.",
-            control: { type: "toggle", key: "autoGroupMultiBlock" }
-          },
-          {
             name: "Only show colours with a meaning",
             desc: "Hide palette colours that have no meaning assigned below, so the toolbar shows only the ones you actually use. Turn this off to show all of them.",
             visible: () => this.plugin.settings.enableColorPalette,
@@ -7885,6 +8162,11 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
             name: "Show footnote button",
             desc: "Show the footnote button in the toolbar.",
             control: { type: "toggle", key: "showAnnotationButton" }
+          },
+          {
+            name: "Normalize repeated footnote references",
+            desc: "Show each repeated reference with its original footnote number. Turn off for Obsidian's native 2-1, 2-2 labels.",
+            control: { type: "toggle", key: "normalizeRepeatedFootnoteReferences" }
           }
         ]
       },
@@ -7901,11 +8183,11 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
             name: "Clear reading positions",
             desc: `Currently tracking ${Object.keys(s2.readingPositions).length} file(s).`,
             action: (el) => {
-              new import_obsidian14.Setting(el).addButton(
+              new import_obsidian15.Setting(el).addButton(
                 (button) => button.setButtonText("Clear all").onClick(async () => {
                   this.plugin.settings.readingPositions = {};
                   await this.plugin.saveSettings();
-                  new import_obsidian14.Notice("Reading positions cleared.");
+                  new import_obsidian15.Notice("Reading positions cleared.");
                   this.refreshDefinitions();
                 })
               );
@@ -7963,11 +8245,11 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
             name: `Rule ${index + 1}`,
             desc: `Ignore: "${rule.stripPattern}"`,
             action: (el) => {
-              new import_obsidian14.Setting(el).addButton((btn) => {
+              new import_obsidian15.Setting(el).addButton((btn) => {
                 btn.setButtonText("Delete").onClick(async () => {
                   this.plugin.settings.learnedNormRules.splice(index, 1);
                   await this.plugin.saveSettings();
-                  new import_obsidian14.Notice("Rule deleted.");
+                  new import_obsidian15.Notice("Rule deleted.");
                   this.refreshDefinitions();
                 });
                 btn.buttonEl.addClass("mod-warning");
@@ -7977,11 +8259,11 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
           {
             name: "Clear all rules",
             action: (el) => {
-              new import_obsidian14.Setting(el).addButton((btn) => {
+              new import_obsidian15.Setting(el).addButton((btn) => {
                 btn.setButtonText("Clear all rules").onClick(async () => {
                   this.plugin.settings.learnedNormRules = [];
                   await this.plugin.saveSettings();
-                  new import_obsidian14.Notice("All rules cleared.");
+                  new import_obsidian15.Notice("All rules cleared.");
                   this.refreshDefinitions();
                 });
                 btn.buttonEl.addClass("mod-warning");
@@ -8015,6 +8297,9 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
       settings[key] = value;
     }
     void this.plugin.saveSettings();
+    if (key === "normalizeRepeatedFootnoteReferences") {
+      this.plugin.updateRenderedFootnoteReferences(this.plugin.settings.normalizeRepeatedFootnoteReferences);
+    }
     this.refreshDefinitions();
   }
   /** Re-read the definitions, on versions that have the declarative API. */
@@ -8032,32 +8317,26 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
     this.sectionHeading("FuturePlural annotations settings", "h2");
     this.sectionHeading("Canvas creation defaults", "h3");
     renderCanvasSettings(containerEl, this.plugin.settings.canvasDefaults, () => this.plugin.saveSettings());
-    new import_obsidian14.Setting(containerEl).setName("Toolbar position").setDesc("Choose where the floating toolbar should appear.").addDropdown(
+    new import_obsidian15.Setting(containerEl).setName("Toolbar position").setDesc("Choose where the floating toolbar should appear.").addDropdown(
       (dropdown) => dropdown.addOption("text", "Next to text").addOption("top", "Fixed at top center").addOption("bottom", "Fixed at bottom center").addOption("left", "Fixed left side").addOption("right", "Fixed right side (default)").setValue(this.plugin.settings.toolbarPosition).onChange(async (value) => {
         this.plugin.settings.toolbarPosition = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Highlighting", "h3");
-    new import_obsidian14.Setting(containerEl).setName("Automatically group multi-block selections").setDesc("Turn off to keep each selected item separate; group chosen marks later in the navigator.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.autoGroupMultiBlock).onChange(async (value) => {
-        this.plugin.settings.autoGroupMultiBlock = value;
-        await this.plugin.saveSettings();
-      })
-    );
     this.sectionHeading("Highlight appearance", "h4");
     for (const type of NOTATION_TYPES) {
       const wrapper = containerEl.createDiv();
       wrapper.createSpan({ text: `${type} opacity` });
-      this.addOpacitySlider(new import_obsidian14.Setting(wrapper), type);
+      this.addOpacitySlider(new import_obsidian15.Setting(wrapper), type);
     }
-    new import_obsidian14.Setting(containerEl).setName("Highlight color").setDesc("Default color for new highlights.").addColorPicker(
+    new import_obsidian15.Setting(containerEl).setName("Highlight color").setDesc("Default color for new highlights.").addColorPicker(
       (color) => color.setValue(this.plugin.settings.highlightColor || "#FFEE58").onChange(async (value) => {
         this.plugin.settings.highlightColor = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Enable color palette").setDesc("Show the semantic colour palette in the toolbar for quick selection.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Enable color palette").setDesc("Show the semantic colour palette in the toolbar for quick selection.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableColorPalette).onChange(async (value) => {
         this.plugin.settings.enableColorPalette = value;
         await this.plugin.saveSettings();
@@ -8065,7 +8344,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
       })
     );
     if (this.plugin.settings.enableColorPalette) {
-      new import_obsidian14.Setting(containerEl).setName("Only show colours with a meaning").setDesc(
+      new import_obsidian15.Setting(containerEl).setName("Only show colours with a meaning").setDesc(
         "Hide palette colours that have no meaning assigned below, so the toolbar shows only the ones you actually use. Turn this off to show all of them."
       ).addToggle(
         (toggle) => toggle.setValue(this.plugin.settings.showOnlyAssignedColors).onChange(async (value) => {
@@ -8075,7 +8354,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
       );
       this.sectionHeading("Semantic colour meanings", "h4");
       this.plugin.settings.semanticColors.forEach((item, index) => {
-        const setting = new import_obsidian14.Setting(containerEl).setName(`Color ${index + 1}`);
+        const setting = new import_obsidian15.Setting(containerEl).setName(`Color ${index + 1}`);
         const colorPreview = setting.controlEl.createDiv({ cls: "rht-color-swatch" });
         colorPreview.setCssStyles({ backgroundColor: item.color });
         setting.addText(
@@ -8087,26 +8366,26 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
       });
     }
     this.sectionHeading("Tags", "h3");
-    new import_obsidian14.Setting(containerEl).setName("Default tag prefix").setDesc("Automatically add this tag to every highlight (e.g., 'book').").addText(
+    new import_obsidian15.Setting(containerEl).setName("Default tag prefix").setDesc("Automatically add this tag to every highlight (e.g., 'book').").addText(
       (text) => text.setPlaceholder("Book").setValue(this.plugin.settings.defaultTagPrefix).onChange(async (value) => {
         this.plugin.settings.defaultTagPrefix = value.replace(/\s+/g, "_").replace(/^#/, "");
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Smart tag suggestions").setDesc("Suggest tags based on recent usage, folder, and frontmatter.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Smart tag suggestions").setDesc("Suggest tags based on recent usage, folder, and frontmatter.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableSmartTagSuggestions).onChange(async (value) => {
         this.plugin.settings.enableSmartTagSuggestions = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Enable smart paragraph selection").setDesc("Snap selections inside a paragraph, list item, heading, or blockquote to the entire block.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Enable smart paragraph selection").setDesc("Snap selections inside a paragraph, list item, heading, or blockquote to the entire block.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableSmartParagraphSelection).onChange(async (value) => {
         this.plugin.settings.enableSmartParagraphSelection = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Quote Template", "h3");
-    new import_obsidian14.Setting(containerEl).setName("Quote format").setDesc(
+    new import_obsidian15.Setting(containerEl).setName("Quote format").setDesc(
       "Template for copying text as quote. Variables: {{text}}, {{file}}, {{path}}, {{date}}, {{time}}, {{domain}}, {{author}}"
     ).addTextArea(
       (text) => text.setValue(this.plugin.settings.quoteTemplate).onChange(async (value) => {
@@ -8115,60 +8394,69 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
       })
     );
     this.sectionHeading("Footnotes", "h3");
-    new import_obsidian14.Setting(containerEl).setName("Enable footnotes").setDesc("Add standard Markdown footnotes to selections.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Enable footnotes").setDesc("Add standard Markdown footnotes to selections.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableAnnotations).onChange(async (value) => {
         this.plugin.settings.enableAnnotations = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Show footnote button").setDesc("Show the footnote button in the toolbar.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Show footnote button").setDesc("Show the footnote button in the toolbar.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showAnnotationButton).onChange(async (value) => {
         this.plugin.settings.showAnnotationButton = value;
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian15.Setting(containerEl).setName("Normalize repeated footnote references").setDesc(
+      "Show each repeated reference with its original footnote number. Turn off for Obsidian's native 2-1, 2-2 labels."
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.normalizeRepeatedFootnoteReferences).onChange(async (value) => {
+        this.plugin.settings.normalizeRepeatedFootnoteReferences = value;
+        await this.plugin.saveSettings();
+        this.plugin.updateRenderedFootnoteReferences(value);
+      })
+    );
     this.sectionHeading("Reading Progress", "h3");
-    new import_obsidian14.Setting(containerEl).setName("Track reading progress").setDesc("Remember scroll position when leaving a file.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Track reading progress").setDesc("Remember scroll position when leaving a file.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableReadingProgress).onChange(async (value) => {
         this.plugin.settings.enableReadingProgress = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Clear reading positions").setDesc(`Currently tracking ${Object.keys(this.plugin.settings.readingPositions).length} file(s).`).addButton(
+    new import_obsidian15.Setting(containerEl).setName("Clear reading positions").setDesc(`Currently tracking ${Object.keys(this.plugin.settings.readingPositions).length} file(s).`).addButton(
       (button) => button.setButtonText("Clear all").onClick(async () => {
         this.plugin.settings.readingPositions = {};
         await this.plugin.saveSettings();
-        new import_obsidian14.Notice("Reading positions cleared.");
+        new import_obsidian15.Notice("Reading positions cleared.");
         this.render();
       })
     );
     this.sectionHeading("Toolbar Buttons", "h3");
-    new import_obsidian14.Setting(containerEl).setName("Show tag button").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Show tag button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showTagButton).onChange(async (value) => {
         this.plugin.settings.showTagButton = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Show quote button").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Show quote button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showQuoteButton).onChange(async (value) => {
         this.plugin.settings.showQuoteButton = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Show remove button").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Show remove button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showRemoveButton).onChange(async (value) => {
         this.plugin.settings.showRemoveButton = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Mobile & UX", "h3");
-    new import_obsidian14.Setting(containerEl).setName("Haptic feedback").setDesc("Vibrate slightly on success (mobile only).").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Haptic feedback").setDesc("Vibrate slightly on success (mobile only).").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableHaptics).onChange(async (value) => {
         this.plugin.settings.enableHaptics = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian14.Setting(containerEl).setName("Show button tooltips").setDesc("Show tooltips when hovering over toolbar buttons.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Show button tooltips").setDesc("Show tooltips when hovering over toolbar buttons.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showTooltips).onChange(async (value) => {
         this.plugin.settings.showTooltips = value;
         await this.plugin.saveSettings();
@@ -8176,7 +8464,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
     );
     this.sectionHeading("Frontmatter Integration", "h3");
     let tagSetting;
-    new import_obsidian14.Setting(containerEl).setName("Auto-tag highlight in frontmatter").setDesc("Automatically inject a specific tag into the note's frontmatter whenever you highlight text.").addToggle(
+    new import_obsidian15.Setting(containerEl).setName("Auto-tag highlight in frontmatter").setDesc("Automatically inject a specific tag into the note's frontmatter whenever you highlight text.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableFrontmatterTag).onChange(async (value) => {
         this.plugin.settings.enableFrontmatterTag = value;
         await this.plugin.saveSettings();
@@ -8185,7 +8473,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
         }
       })
     );
-    tagSetting = new import_obsidian14.Setting(containerEl).setName("Frontmatter highlight tag").setDesc("The tag to add (e.g. 'resaltados'). Do not include the # symbol.").addText(
+    tagSetting = new import_obsidian15.Setting(containerEl).setName("Frontmatter highlight tag").setDesc("The tag to add (e.g. 'resaltados'). Do not include the # symbol.").addText(
       (text) => text.setPlaceholder("Resaltados").setValue(this.plugin.settings.frontmatterTag).onChange(async (value) => {
         this.plugin.settings.frontmatterTag = value.replace(/^#/, "");
         await this.plugin.saveSettings();
@@ -8197,22 +8485,22 @@ var ReadingHighlighterSettingTab = class extends import_obsidian14.PluginSetting
       containerEl.createEl("p", { text: "No rules learned yet.", cls: "setting-item-description" });
     } else {
       this.plugin.settings.learnedNormRules.forEach((rule, index) => {
-        new import_obsidian14.Setting(containerEl).setName(`Rule ${index + 1}`).setDesc(`Ignore: "${rule.stripPattern}"`).addButton((btn) => {
+        new import_obsidian15.Setting(containerEl).setName(`Rule ${index + 1}`).setDesc(`Ignore: "${rule.stripPattern}"`).addButton((btn) => {
           btn.setButtonText("Delete").onClick(async () => {
             this.plugin.settings.learnedNormRules.splice(index, 1);
             await this.plugin.saveSettings();
             this.render();
-            new import_obsidian14.Notice("Rule deleted.");
+            new import_obsidian15.Notice("Rule deleted.");
           });
           btn.buttonEl.addClass("mod-warning");
         });
       });
-      new import_obsidian14.Setting(containerEl).addButton((btn) => {
+      new import_obsidian15.Setting(containerEl).addButton((btn) => {
         btn.setButtonText("Clear all rules").onClick(async () => {
           this.plugin.settings.learnedNormRules = [];
           await this.plugin.saveSettings();
           this.render();
-          new import_obsidian14.Notice("All rules cleared.");
+          new import_obsidian15.Notice("All rules cleared.");
         });
         btn.buttonEl.addClass("mod-warning");
       });

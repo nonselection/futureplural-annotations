@@ -4,8 +4,8 @@ import { TagSuggestModal } from "./TagSuggestModal";
 import {
     parseHighlights,
     findHighlightById,
-    groupHighlights,
-    removeHighlightGroupFromRaw,
+    logicalHighlights,
+    removeLogicalHighlightFromRaw,
     updateHighlightAnnotationInRaw,
     updateHighlightColorInRaw,
     updateHighlightTagsInRaw,
@@ -28,6 +28,7 @@ export class HighlightEditModal extends Modal {
     annotationInput!: HTMLTextAreaElement;
     colorInput!: HTMLInputElement;
     colorTextInput!: HTMLInputElement;
+    private observedLegacy: { start: number; text: string; type: string } | null = null;
 
     constructor(
         plugin: ReadingHighlighterPlugin,
@@ -67,19 +68,26 @@ export class HighlightEditModal extends Modal {
         }
 
         const parsed = parseHighlights(raw);
-        const highlight = groupHighlights(parsed.highlights).find((item) => item.id === this.highlightId);
+        const highlight = logicalHighlights(parsed.highlights).find((item) => item.id === this.highlightId);
         if (!highlight) {
             contentEl.createDiv({ cls: "highlight-edit-error", text: "Highlight not found (it may have moved)." });
             return;
         }
+        this.observedLegacy = highlight.annotationId
+            ? null
+            : {
+                  start: highlight.start,
+                  text: highlight.text,
+                  type: highlight.type,
+              };
 
         this.state.color = highlight.color || "";
         this.state.tags = highlight.tagsText || "";
         this.state.annotation = highlight.annotation || "";
 
         const preview = contentEl.createDiv({ cls: "highlight-edit-preview" });
-        // TODO(product): replace this source excerpt with a live Rough Notation
-        // preview in both light and dark contexts. See docs/PRODUCT_DECISIONS_AND_BACKLOG.md.
+        // The current edit preview shows source text; a rendered notation preview
+        // is a separate product enhancement.
         preview.createDiv({ cls: "highlight-edit-preview-label", text: "Selected text" });
         preview.createDiv({ cls: "highlight-edit-preview-text", text: highlight.text || "" });
 
@@ -197,9 +205,20 @@ export class HighlightEditModal extends Modal {
                 if (!highlight) {
                     throw new Error("Highlight not found (it may have moved).");
                 }
+                if (highlight.integrity === "ambiguous") {
+                    throw new Error("Annotation identity is ambiguous; no source changed.");
+                }
+                if (
+                    this.observedLegacy &&
+                    (highlight.start !== this.observedLegacy.start ||
+                        highlight.text !== this.observedLegacy.text ||
+                        highlight.type !== this.observedLegacy.type)
+                ) {
+                    throw new Error("Legacy highlight changed; reopen it before editing.");
+                }
 
                 if (remove) {
-                    raw = removeHighlightGroupFromRaw(raw, highlight);
+                    raw = removeLogicalHighlightFromRaw(raw, highlight);
                     return raw;
                 }
 
@@ -214,8 +233,8 @@ export class HighlightEditModal extends Modal {
 
                 const color = String(this.state.color || "").trim();
                 if (color) {
-                    const parts = highlight.groupId
-                        ? updatedParsed.highlights.filter((part) => part.groupId === highlight.groupId)
+                    const parts = highlight.annotationId
+                        ? updatedParsed.highlights.filter((part) => part.annotationId === highlight.annotationId)
                         : [updatedHighlight];
                     for (const part of parts.sort((a, b) => b.openTagStart - a.openTagStart)) {
                         raw = updateHighlightColorInRaw(raw, part, color);

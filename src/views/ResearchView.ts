@@ -444,7 +444,8 @@ export class ResearchView extends ItemView {
         const textEl = bodyEl.createSpan({ cls: "research-item-text" });
         const detailsEl = bodyEl.createDiv({ cls: "fp-manager-item-details" });
         const detailParts = [this.notationLabel(highlight.notationType), `Line ${highlight.line + 1}`];
-        if (highlight.members?.length) detailParts.push(`${highlight.members.length} passages grouped`);
+        if (highlight.members && highlight.members.length > 1)
+            detailParts.push(`${highlight.members.length} source parts`);
         detailsEl.setText(detailParts.join(" · "));
 
         this.addEditButton(itemEl, highlight);

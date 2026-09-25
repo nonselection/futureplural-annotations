@@ -3,7 +3,8 @@
  * Finds all ==text== and <mark>text</mark> elements and creates a summary.
  */
 import { App, TFile } from "obsidian";
-import { groupHighlights, parseHighlights, type Highlight } from "./highlights";
+import { logicalHighlights, parseHighlights, type Highlight } from "./highlights";
+import { markdownSourceAdapter } from "../adapters/MarkdownSourceAdapter";
 import { formatDate } from "./time";
 
 function detectNewline(raw: string): string {
@@ -73,7 +74,7 @@ export async function exportHighlightsToMD(app: App, file: TFile): Promise<strin
     const raw = await app.vault.read(file);
     const parsed = parseHighlights(raw);
     const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
-    const highlights = groupHighlights(parsed.highlights).map((highlight) => ({
+    const highlights = logicalHighlights(parsed.highlights).map((highlight) => ({
         text: (highlight.members ?? [highlight])
             .map((part) => `![[${file.basename}#${ensured.lineToBlockId.get(part.line)}]]`)
             .join("\n   "),
@@ -125,8 +126,7 @@ ${highlights.map((h, i) => `${i + 1}. ${h.text}`).join("\n\n")}
  * Get all highlights from a file for the navigator view.
  */
 export function getHighlightsFromContent(raw: string): Highlight[] {
-    const parsed = parseHighlights(raw);
-    return groupHighlights(parsed.highlights);
+    return markdownSourceAdapter.observe(raw).map((observation) => observation.highlight);
 }
 
 export async function exportHighlightsToJSON(app: App, file: TFile): Promise<string> {
@@ -148,14 +148,16 @@ export async function exportHighlightsToJSON(app: App, file: TFile): Promise<str
         exported: date,
         source: { path: file.path, basename: file.basename },
         total: getHighlightsFromContent(raw).length,
-        highlights: groupHighlights(parsed.highlights).map((h) => {
+        highlights: logicalHighlights(parsed.highlights).map((h) => {
             const blockId = ensured.lineToBlockId.get(h.line) || null;
             return {
                 id: h.id,
                 text: h.text,
                 type: h.type,
                 notationType: h.notationType,
-                groupId: h.groupId,
+                annotationId: h.annotationId,
+                identityMode: h.identityMode,
+                integrity: h.integrity,
                 color: h.color ?? null,
                 tagsText: h.tagsText ?? "",
                 tags: (h.tagsText || "").split(/\s+/).filter(Boolean),
@@ -164,7 +166,7 @@ export async function exportHighlightsToJSON(app: App, file: TFile): Promise<str
                 line: h.line,
                 blockId,
                 blockEmbed: blockId ? `![[${file.basename}#${blockId}]]` : null,
-                ...(h.members
+                ...(h.members?.length && h.members.length > 1
                     ? {
                           parts: h.members.map((part) => ({
                               text: part.text,
@@ -172,6 +174,7 @@ export async function exportHighlightsToJSON(app: App, file: TFile): Promise<str
                               notationType: part.notationType,
                               color: part.color,
                               opacity: part.opacity,
+                              partId: part.partId,
                           })),
                       }
                     : {}),
@@ -209,7 +212,7 @@ export async function exportHighlightsToCSV(app: App, file: TFile): Promise<stri
         "highlight_id",
         "type",
         "notation_type",
-        "group_id",
+        "annotation_id",
         "color",
         "tags",
         "annotation",
@@ -220,7 +223,7 @@ export async function exportHighlightsToCSV(app: App, file: TFile): Promise<stri
         "text",
     ].join(",");
 
-    const rows = groupHighlights(parsed.highlights).map((h) => {
+    const rows = logicalHighlights(parsed.highlights).map((h) => {
         const blockId = ensured.lineToBlockId.get(h.line) || "";
         const blockEmbed = blockId ? `![[${file.basename}#${blockId}]]` : "";
         return [
@@ -229,7 +232,7 @@ export async function exportHighlightsToCSV(app: App, file: TFile): Promise<stri
             csvEscape(h.id),
             csvEscape(h.type),
             csvEscape(h.notationType),
-            csvEscape(h.groupId ?? ""),
+            csvEscape(h.annotationId ?? ""),
             csvEscape(h.color ?? ""),
             csvEscape((h.tagsText || "").trim()),
             csvEscape(h.annotation ?? ""),
