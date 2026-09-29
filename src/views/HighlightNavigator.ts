@@ -28,7 +28,7 @@ import { defaultCanvasPath, MAX_CANVAS_ASSOCIATIONS } from "../utils/canvas";
 import { HighlightEditModal } from "../modals/HighlightEditModal";
 import { navigatorPreviewText } from "../utils/navigatorPreview";
 
-export const HIGHLIGHT_NAVIGATOR_VIEW = "highlight-navigator";
+export const HIGHLIGHT_NAVIGATOR_VIEW = "fk-highlight-navigator";
 
 interface NavFootnote {
     id: string;
@@ -593,7 +593,6 @@ export class HighlightNavigatorView extends ItemView {
         const currentFile = this.currentFile;
         if (!currentFile) return;
         try {
-            await this.plugin.saveUndoState(currentFile);
             let found = false;
             await this.app.vault.process(currentFile, (data) => {
                 const highlight = findHighlightById(parseHighlights(data), item.id);
@@ -610,7 +609,7 @@ export class HighlightNavigatorView extends ItemView {
             if (!found) {
                 new Notice("Highlight not found (it may have moved).");
             } else {
-                this.showUndoNotice("Highlight removed.", "Highlight restored.");
+                new Notice("Highlight removed.");
             }
             await this.refresh(true);
         } catch (err) {
@@ -623,23 +622,6 @@ export class HighlightNavigatorView extends ItemView {
         return new Promise((resolve) => {
             new NavigatorConfirmationModal(this.app, title, message, confirmLabel, resolve).open();
         });
-    }
-
-    showUndoNotice(message: string, undoMessage: string) {
-        const fragment = createFragment();
-        fragment.createSpan({ text: `${message} ` });
-        const undo = fragment.createEl("button", { text: "Undo", cls: "mod-cta fp-navigator-undo" });
-        const progress = fragment.createDiv({ cls: "fp-navigator-undo-progress" });
-        progress.setAttribute("aria-hidden", "true");
-        progress.createSpan({ cls: "fp-navigator-undo-progress-bar" });
-        const notice = new Notice(fragment, 10000);
-        undo.onclick = () => {
-            void (async () => {
-                await this.plugin.undoLastHighlight(undoMessage);
-                notice.hide();
-                await this.refresh(true);
-            })();
-        };
     }
 
     async writeCheckedSource(file: TFile, observedRaw: string, nextRaw: string, action: string): Promise<boolean> {
@@ -675,13 +657,9 @@ export class HighlightNavigatorView extends ItemView {
         const updated = [...highlights]
             .sort((a, b) => b.openTagStart - a.openTagStart)
             .reduce((content, highlight) => removeHighlightFromRaw(content, highlight), raw);
-        await this.plugin.saveUndoState(currentFile, raw);
         if (!(await this.writeCheckedSource(currentFile, raw, updated, "highlights"))) return;
         await this.refresh(true);
-        this.showUndoNotice(
-            `Removed ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`,
-            `Restored ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`
-        );
+        new Notice(`Removed ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`);
     }
 
     openFootnoteActionsMenu(item: NavFootnote, event: MouseEvent) {
@@ -752,10 +730,9 @@ export class HighlightNavigatorView extends ItemView {
         );
         if (!confirmed) return;
 
-        await this.plugin.saveUndoState(currentFile, raw);
         if (!(await this.writeCheckedSource(currentFile, raw, result.raw, "footnote"))) return;
         await this.refresh(true);
-        this.showUndoNotice("Footnote removed.", "Footnote restored.");
+        new Notice("Footnote removed.");
     }
 
     async removeAllFootnotesInNote() {
@@ -774,13 +751,9 @@ export class HighlightNavigatorView extends ItemView {
         );
         if (!confirmed) return;
 
-        await this.plugin.saveUndoState(currentFile, raw);
         if (!(await this.writeCheckedSource(currentFile, raw, result.raw, "footnotes"))) return;
         await this.refresh(true);
-        this.showUndoNotice(
-            `Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`,
-            `Restored ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`
-        );
+        new Notice(`Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`);
     }
 
     async jumpToLine(line: number) {

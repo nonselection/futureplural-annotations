@@ -20,7 +20,6 @@ function makeManager(colors, showOnlyAssignedColors) {
             showRemoveButton: false,
             enableAnnotations: false,
             showAnnotationButton: false,
-            enableReadingProgress: false,
             toolbarPosition: "right",
             lastNotationType: "highlight",
         },

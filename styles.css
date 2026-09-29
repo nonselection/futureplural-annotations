@@ -785,37 +785,6 @@ body.fp-navigator-menu-open .menu-item-icon .svg-icon {
     margin-top: 18px;
 }
 
-.fp-navigator-undo {
-    margin-left: 6px;
-}
-
-.fp-navigator-undo-progress {
-    width: 100%;
-    height: 2px;
-    margin-top: 6px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--background-modifier-border);
-}
-
-.fp-navigator-undo-progress-bar {
-    display: block;
-    width: 100%;
-    height: 100%;
-    transform-origin: left center;
-    background: var(--interactive-accent);
-    animation: fp-navigator-undo-lifetime 10s linear forwards;
-}
-
-@keyframes fp-navigator-undo-lifetime {
-    from {
-        transform: scaleX(1);
-    }
-    to {
-        transform: scaleX(0);
-    }
-}
-
 body .highlight-navigator-container .highlight-navigator-footer {
     padding: 12px 0;
     border-top: 1px solid var(--background-modifier-border);

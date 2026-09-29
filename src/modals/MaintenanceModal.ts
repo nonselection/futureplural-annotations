@@ -31,7 +31,8 @@ export class MaintenanceModal extends Modal {
     constructor(
         private plugin: ReadingHighlighterPlugin,
         private file: TFile,
-        private changed: () => void
+        private changed: () => void,
+        private initialOperation: "merge" | "recolor" | "migrate" = "merge"
     ) {
         super(plugin.app);
     }
@@ -41,7 +42,7 @@ export class MaintenanceModal extends Modal {
         contentEl.createEl("p", {
             text: `${this.file.path} — whole-note operations. Annotations manager text, color, and property filters do not limit these changes. Nothing is written until you preview and apply.`,
         });
-        let operation = "merge",
+        let operation: "merge" | "recolor" | "migrate" = this.initialOperation,
             from = "",
             to = "#ffff00";
         let before: string | null = null,
@@ -60,8 +61,9 @@ export class MaintenanceModal extends Modal {
                     recolor: "Recolor colored marks",
                     migrate: "Convert background spans to marks",
                 })
+                .setValue(operation)
                 .onChange((v) => {
-                    operation = v;
+                    operation = v as "merge" | "recolor" | "migrate";
                     invalidate();
                 })
         );

@@ -196,8 +196,6 @@ export class HighlightEditModal extends Modal {
 
     async applyEdits({ remove }: { remove: boolean }) {
         try {
-            await this.plugin.saveUndoState(this.file);
-
             const finalRaw = await this.app.vault.process(this.file, (data) => {
                 let raw = data;
                 const parsed = parseHighlights(raw);

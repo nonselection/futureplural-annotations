@@ -6,7 +6,7 @@ import { MaintenanceModal } from "../modals/MaintenanceModal";
 import { HighlightEditModal } from "../modals/HighlightEditModal";
 import type { Highlight } from "../utils/highlights";
 
-export const RESEARCH_VIEW = "reader-research-view";
+export const RESEARCH_VIEW = "fk-research-view";
 
 type ResearchHighlight = Highlight & { file: TFile; frontmatter: Record<string, unknown> };
 

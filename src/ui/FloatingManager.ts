@@ -86,9 +86,13 @@ export class FloatingManager {
         this.containerEl = null;
         this._handlers.forEach((cleanup) => cleanup());
         this._handlers = [];
-        if (this._selectionDebounceTimer) {
+        if (this._selectionDebounceTimer !== null) {
             window.clearTimeout(this._selectionDebounceTimer);
             this._selectionDebounceTimer = null;
+        }
+        if (this.longPressTimer !== null) {
+            window.clearTimeout(this.longPressTimer);
+            this.longPressTimer = null;
         }
     }
 
@@ -363,44 +367,39 @@ export class FloatingManager {
         // Only enable on iOS — on Android this races with the native selection
         // behaviour and causes partial (single-word) highlights.
         if (!Platform.isIosApp) return;
+        const targetDocument = activeDocument;
 
-        activeDocument.addEventListener(
-            "touchstart",
-            () => {
-                this.longPressTimer = window.setTimeout(() => {
-                    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                    const sel = window.getSelection();
+        const clearLongPressTimer = () => {
+            if (this.longPressTimer !== null) {
+                window.clearTimeout(this.longPressTimer);
+                this.longPressTimer = null;
+            }
+        };
+        const onTouchStart = () => {
+            clearLongPressTimer();
+            this.longPressTimer = window.setTimeout(() => {
+                this.longPressTimer = null;
+                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+                const sel = window.getSelection();
 
-                    if (view && view.getMode() === "preview" && sel?.toString().trim()) {
-                        void this.plugin.highlightSelection(view);
-                        this.hide();
-                    }
-                }, 600);
-            },
-            { passive: true }
-        );
-
-        activeDocument.addEventListener(
-            "touchmove",
-            () => {
-                if (this.longPressTimer) {
-                    window.clearTimeout(this.longPressTimer);
-                    this.longPressTimer = null;
+                if (view && view.getMode() === "preview" && sel?.toString().trim()) {
+                    void this.plugin.highlightSelection(view);
+                    this.hide();
                 }
-            },
-            { passive: true }
-        );
+            }, 600);
+        };
+        const onTouchMove = () => clearLongPressTimer();
+        const onTouchEnd = () => clearLongPressTimer();
 
-        activeDocument.addEventListener(
-            "touchend",
-            () => {
-                if (this.longPressTimer) {
-                    window.clearTimeout(this.longPressTimer);
-                    this.longPressTimer = null;
-                }
-            },
-            { passive: true }
-        );
+        targetDocument.addEventListener("touchstart", onTouchStart, { passive: true });
+        targetDocument.addEventListener("touchmove", onTouchMove, { passive: true });
+        targetDocument.addEventListener("touchend", onTouchEnd, { passive: true });
+        this._handlers.push(() => {
+            targetDocument.removeEventListener("touchstart", onTouchStart);
+            targetDocument.removeEventListener("touchmove", onTouchMove);
+            targetDocument.removeEventListener("touchend", onTouchEnd);
+            clearLongPressTimer();
+        });
     }
 
     /**

@@ -12,7 +12,7 @@ function harness(raw) {
     const refreshed = [];
     const ctx = {
         currentFile: { path: "n.md" },
-        plugin: { saveUndoState: async () => {} },
+        plugin: {},
         app: {
             vault: {
                 process: async (_f, fn) => {
@@ -22,7 +22,6 @@ function harness(raw) {
             },
         },
         refresh: async () => refreshed.push(true),
-        showUndoNotice: () => {},
     };
     return { ctx, out: () => current, refreshed };
 }
@@ -163,14 +162,12 @@ describe("destructive navigator actions", () => {
             {},
             {
                 app,
-                saveUndoState: async () => {},
             }
         );
         navigator.app = app;
         navigator.currentFile = file;
         navigator.contentEl = window.document.getElementById("content");
         navigator.refresh = async () => {};
-        navigator.showUndoNotice = () => {};
         navigator.confirmDestructive = async () => false;
 
         await navigator.removeAllHighlightsInNote();
@@ -181,15 +178,16 @@ describe("destructive navigator actions", () => {
         expect(raw).toBe("Alpha one and two.");
     });
 
-    it("treats authored footnote removal as a confirmed, reversible action", async () => {
+    it("treats authored footnote removal as a confirmed guarded mutation without the retired global Undo", async () => {
         let raw = "Body[^note].\n\n[^note]: Authored text.\n";
         const window = createObsidianWindow();
         const file = { path: "n.md", basename: "n" };
-        let undoOriginal = null;
+        const modify = vi.fn();
         const app = {
             vault: {
                 read: async () => raw,
                 modify: async (_file, next) => {
+                    modify(_file, next);
                     raw = next;
                 },
                 process: async (_file, change) => {
@@ -202,16 +200,12 @@ describe("destructive navigator actions", () => {
             {},
             {
                 app,
-                saveUndoState: async (_file, original) => {
-                    undoOriginal = original;
-                },
             }
         );
         navigator.app = app;
         navigator.currentFile = file;
         navigator.contentEl = window.document.getElementById("content");
         navigator.refresh = async () => {};
-        navigator.showUndoNotice = () => {};
         navigator.confirmDestructive = async () => true;
 
         await navigator.removeFootnoteInNote({
@@ -224,6 +218,8 @@ describe("destructive navigator actions", () => {
         });
 
         expect(raw).toBe("Body.\n");
-        expect(undoOriginal).toBe("Body[^note].\n\n[^note]: Authored text.\n");
+        expect(modify).not.toHaveBeenCalled();
+        expect(navigator.plugin.saveUndoState).toBeUndefined();
+        expect(navigator.plugin.undoLastHighlight).toBeUndefined();
     });
 });

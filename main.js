@@ -1967,9 +1967,6 @@ __export(export_exports, {
   exportHighlightsToMD: () => exportHighlightsToMD,
   getHighlightsFromContent: () => getHighlightsFromContent
 });
-function detectNewline2(raw) {
-  return raw.includes("\r\n") ? "\r\n" : "\n";
-}
 function asText2(value) {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
@@ -1984,11 +1981,9 @@ function csvEscape(value) {
   }
   return str;
 }
-function ensureBlockIdsForHighlightLines(raw, highlights) {
-  const newline = detectNewline2(raw);
+function existingBlockIdsForHighlightLines(raw, highlights) {
   const lines = raw.split(/\r?\n/);
   const lineSet = new Set(highlights.map((h2) => h2.line).filter((n2) => Number.isInteger(n2)));
-  let changed = false;
   const lineToBlockId = /* @__PURE__ */ new Map();
   for (const lineIdx of lineSet) {
     if (lineIdx < 0 || lineIdx >= lines.length) continue;
@@ -1996,18 +1991,9 @@ function ensureBlockIdsForHighlightLines(raw, highlights) {
     const blockMatch = line.match(/\s(\^[a-zA-Z0-9-]+)$/);
     if (blockMatch) {
       lineToBlockId.set(lineIdx, blockMatch[1]);
-      continue;
     }
-    const blockId = "^" + Math.random().toString(36).substring(2, 8);
-    lines[lineIdx] = line + " " + blockId;
-    lineToBlockId.set(lineIdx, blockId);
-    changed = true;
   }
-  return {
-    raw: lines.join(newline),
-    changed,
-    lineToBlockId
-  };
+  return lineToBlockId;
 }
 function parentPath(file) {
   var _a, _b;
@@ -2016,18 +2002,19 @@ function parentPath(file) {
 async function exportHighlightsToMD(app, file) {
   const raw = await app.vault.read(file);
   const parsed = parseHighlights(raw);
-  const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
+  const existingBlockIds = existingBlockIdsForHighlightLines(raw, parsed.highlights);
   const highlights = logicalHighlights(parsed.highlights).map((highlight) => {
     var _a;
     return {
-      text: ((_a = highlight.members) != null ? _a : [highlight]).map((part) => `![[${file.basename}#${ensured.lineToBlockId.get(part.line)}]]`).join("\n   ")
+      text: ((_a = highlight.members) != null ? _a : [highlight]).map((part) => {
+        const blockId = existingBlockIds.get(part.line);
+        return blockId ? `![[${file.basename}#${blockId}]]` : `> ${part.text}
+> \u2014 [[${file.path}]] (line ${part.line + 1})`;
+      }).join("\n")
     };
   });
   if (highlights.length === 0) {
     throw new Error("No highlights found in this file.");
-  }
-  if (ensured.changed) {
-    await app.vault.modify(file, ensured.raw);
   }
   const date = formatDate("YYYY-MM-DD HH:mm");
   const exportContent = `# Highlights from [[${file.basename}]]
@@ -2057,16 +2044,12 @@ function getHighlightsFromContent(raw) {
   return markdownSourceAdapter.observe(raw).map((observation) => observation.highlight);
 }
 async function exportHighlightsToJSON(app, file) {
-  let raw = await app.vault.read(file);
+  const raw = await app.vault.read(file);
   const parsed = parseHighlights(raw);
   if (!parsed.highlights.length) {
     throw new Error("No highlights found in this file.");
   }
-  const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
-  raw = ensured.raw;
-  if (ensured.changed) {
-    await app.vault.modify(file, raw);
-  }
+  const existingBlockIds = existingBlockIdsForHighlightLines(raw, parsed.highlights);
   const date = formatDate("YYYY-MM-DD HH:mm");
   const exportData = {
     exported: date,
@@ -2074,7 +2057,7 @@ async function exportHighlightsToJSON(app, file) {
     total: getHighlightsFromContent(raw).length,
     highlights: logicalHighlights(parsed.highlights).map((h2) => {
       var _a, _b, _c, _d, _e;
-      const blockId = ensured.lineToBlockId.get(h2.line) || null;
+      const blockId = existingBlockIds.get(h2.line) || null;
       return {
         id: h2.id,
         text: h2.text,
@@ -2114,16 +2097,12 @@ async function exportHighlightsToJSON(app, file) {
   return exportPath;
 }
 async function exportHighlightsToCSV(app, file) {
-  let raw = await app.vault.read(file);
+  const raw = await app.vault.read(file);
   const parsed = parseHighlights(raw);
   if (!parsed.highlights.length) {
     throw new Error("No highlights found in this file.");
   }
-  const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
-  raw = ensured.raw;
-  if (ensured.changed) {
-    await app.vault.modify(file, raw);
-  }
+  const existingBlockIds = existingBlockIdsForHighlightLines(raw, parsed.highlights);
   const header = [
     "source_path",
     "source_basename",
@@ -2142,7 +2121,7 @@ async function exportHighlightsToCSV(app, file) {
   ].join(",");
   const rows = logicalHighlights(parsed.highlights).map((h2) => {
     var _a, _b, _c, _d, _e;
-    const blockId = ensured.lineToBlockId.get(h2.line) || "";
+    const blockId = existingBlockIds.get(h2.line) || "";
     const blockEmbed = blockId ? `![[${file.basename}#${blockId}]]` : "";
     return [
       csvEscape(file.path),
@@ -2493,9 +2472,13 @@ var FloatingManager = class {
     this.containerEl = null;
     this._handlers.forEach((cleanup) => cleanup());
     this._handlers = [];
-    if (this._selectionDebounceTimer) {
+    if (this._selectionDebounceTimer !== null) {
       window.clearTimeout(this._selectionDebounceTimer);
       this._selectionDebounceTimer = null;
+    }
+    if (this.longPressTimer !== null) {
+      window.clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
     }
   }
   refresh() {
@@ -2710,40 +2693,36 @@ var FloatingManager = class {
   }
   setupMobileGestures() {
     if (!import_obsidian.Platform.isIosApp) return;
-    activeDocument.addEventListener(
-      "touchstart",
-      () => {
-        this.longPressTimer = window.setTimeout(() => {
-          const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-          const sel = window.getSelection();
-          if (view && view.getMode() === "preview" && (sel == null ? void 0 : sel.toString().trim())) {
-            void this.plugin.highlightSelection(view);
-            this.hide();
-          }
-        }, 600);
-      },
-      { passive: true }
-    );
-    activeDocument.addEventListener(
-      "touchmove",
-      () => {
-        if (this.longPressTimer) {
-          window.clearTimeout(this.longPressTimer);
-          this.longPressTimer = null;
+    const targetDocument = activeDocument;
+    const clearLongPressTimer = () => {
+      if (this.longPressTimer !== null) {
+        window.clearTimeout(this.longPressTimer);
+        this.longPressTimer = null;
+      }
+    };
+    const onTouchStart = () => {
+      clearLongPressTimer();
+      this.longPressTimer = window.setTimeout(() => {
+        this.longPressTimer = null;
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+        const sel = window.getSelection();
+        if (view && view.getMode() === "preview" && (sel == null ? void 0 : sel.toString().trim())) {
+          void this.plugin.highlightSelection(view);
+          this.hide();
         }
-      },
-      { passive: true }
-    );
-    activeDocument.addEventListener(
-      "touchend",
-      () => {
-        if (this.longPressTimer) {
-          window.clearTimeout(this.longPressTimer);
-          this.longPressTimer = null;
-        }
-      },
-      { passive: true }
-    );
+      }, 600);
+    };
+    const onTouchMove = () => clearLongPressTimer();
+    const onTouchEnd = () => clearLongPressTimer();
+    targetDocument.addEventListener("touchstart", onTouchStart, { passive: true });
+    targetDocument.addEventListener("touchmove", onTouchMove, { passive: true });
+    targetDocument.addEventListener("touchend", onTouchEnd, { passive: true });
+    this._handlers.push(() => {
+      targetDocument.removeEventListener("touchstart", onTouchStart);
+      targetDocument.removeEventListener("touchmove", onTouchMove);
+      targetDocument.removeEventListener("touchend", onTouchEnd);
+      clearLongPressTimer();
+    });
   }
   /**
    * Called on every `selectionchange` event.
@@ -4671,7 +4650,6 @@ var HighlightEditModal = class extends import_obsidian6.Modal {
   }
   async applyEdits({ remove }) {
     try {
-      await this.plugin.saveUndoState(this.file);
       const finalRaw = await this.app.vault.process(this.file, (data) => {
         let raw = data;
         const parsed = parseHighlights(raw);
@@ -4733,7 +4711,7 @@ function navigatorPreviewText(source) {
 }
 
 // src/views/HighlightNavigator.ts
-var HIGHLIGHT_NAVIGATOR_VIEW = "highlight-navigator";
+var HIGHLIGHT_NAVIGATOR_VIEW = "fk-highlight-navigator";
 var NavigatorConfirmationModal = class extends import_obsidian8.Modal {
   constructor(app, title, message, confirmLabel, resolveChoice) {
     super(app);
@@ -5169,7 +5147,6 @@ var HighlightNavigatorView = class extends import_obsidian8.ItemView {
     const currentFile = this.currentFile;
     if (!currentFile) return;
     try {
-      await this.plugin.saveUndoState(currentFile);
       let found = false;
       await this.app.vault.process(currentFile, (data) => {
         const highlight = findHighlightById(parseHighlights(data), item.id);
@@ -5183,7 +5160,7 @@ var HighlightNavigatorView = class extends import_obsidian8.ItemView {
       if (!found) {
         new import_obsidian8.Notice("Highlight not found (it may have moved).");
       } else {
-        this.showUndoNotice("Highlight removed.", "Highlight restored.");
+        new import_obsidian8.Notice("Highlight removed.");
       }
       await this.refresh(true);
     } catch (err) {
@@ -5195,22 +5172,6 @@ var HighlightNavigatorView = class extends import_obsidian8.ItemView {
     return new Promise((resolve) => {
       new NavigatorConfirmationModal(this.app, title, message, confirmLabel, resolve).open();
     });
-  }
-  showUndoNotice(message, undoMessage) {
-    const fragment = createFragment();
-    fragment.createSpan({ text: `${message} ` });
-    const undo = fragment.createEl("button", { text: "Undo", cls: "mod-cta fp-navigator-undo" });
-    const progress = fragment.createDiv({ cls: "fp-navigator-undo-progress" });
-    progress.setAttribute("aria-hidden", "true");
-    progress.createSpan({ cls: "fp-navigator-undo-progress-bar" });
-    const notice = new import_obsidian8.Notice(fragment, 1e4);
-    undo.onclick = () => {
-      void (async () => {
-        await this.plugin.undoLastHighlight(undoMessage);
-        notice.hide();
-        await this.refresh(true);
-      })();
-    };
   }
   async writeCheckedSource(file, observedRaw, nextRaw, action) {
     try {
@@ -5241,13 +5202,9 @@ var HighlightNavigatorView = class extends import_obsidian8.ItemView {
     );
     if (!confirmed) return;
     const updated = [...highlights].sort((a2, b) => b.openTagStart - a2.openTagStart).reduce((content, highlight) => removeHighlightFromRaw(content, highlight), raw);
-    await this.plugin.saveUndoState(currentFile, raw);
     if (!await this.writeCheckedSource(currentFile, raw, updated, "highlights")) return;
     await this.refresh(true);
-    this.showUndoNotice(
-      `Removed ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`,
-      `Restored ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`
-    );
+    new import_obsidian8.Notice(`Removed ${logicalCount} highlight${logicalCount === 1 ? "" : "s"}.`);
   }
   openFootnoteActionsMenu(item, event) {
     const currentFile = this.currentFile;
@@ -5304,10 +5261,9 @@ var HighlightNavigatorView = class extends import_obsidian8.ItemView {
       "Remove footnote"
     );
     if (!confirmed) return;
-    await this.plugin.saveUndoState(currentFile, raw);
     if (!await this.writeCheckedSource(currentFile, raw, result.raw, "footnote")) return;
     await this.refresh(true);
-    this.showUndoNotice("Footnote removed.", "Footnote restored.");
+    new import_obsidian8.Notice("Footnote removed.");
   }
   async removeAllFootnotesInNote() {
     const currentFile = this.currentFile;
@@ -5324,13 +5280,9 @@ var HighlightNavigatorView = class extends import_obsidian8.ItemView {
       "Remove all"
     );
     if (!confirmed) return;
-    await this.plugin.saveUndoState(currentFile, raw);
     if (!await this.writeCheckedSource(currentFile, raw, result.raw, "footnotes")) return;
     await this.refresh(true);
-    this.showUndoNotice(
-      `Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`,
-      `Restored ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`
-    );
+    new import_obsidian8.Notice(`Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`);
   }
   async jumpToLine(line) {
     const leaf = this.app.workspace.getMostRecentLeaf();
@@ -5790,11 +5742,12 @@ function maintenancePreview(raw, operation, fromColor, toColor) {
   return { raw: r2.raw, count: r2.changedCount };
 }
 var MaintenanceModal = class extends import_obsidian11.Modal {
-  constructor(plugin, file, changed) {
+  constructor(plugin, file, changed, initialOperation = "merge") {
     super(plugin.app);
     this.plugin = plugin;
     this.file = file;
     this.changed = changed;
+    this.initialOperation = initialOperation;
   }
   onOpen() {
     this.setTitle("Manage note");
@@ -5802,7 +5755,7 @@ var MaintenanceModal = class extends import_obsidian11.Modal {
     contentEl.createEl("p", {
       text: `${this.file.path} \u2014 whole-note operations. Annotations manager text, color, and property filters do not limit these changes. Nothing is written until you preview and apply.`
     });
-    let operation = "merge", from = "", to = "#ffff00";
+    let operation = this.initialOperation, from = "", to = "#ffff00";
     let before = null, after = null;
     let busy = false;
     const invalidate = () => {
@@ -5816,7 +5769,7 @@ var MaintenanceModal = class extends import_obsidian11.Modal {
         merge: "Merge adjacent highlights",
         recolor: "Recolor colored marks",
         migrate: "Convert background spans to marks"
-      }).onChange((v) => {
+      }).setValue(operation).onChange((v) => {
         operation = v;
         invalidate();
       })
@@ -5932,7 +5885,7 @@ var MaintenanceModal = class extends import_obsidian11.Modal {
 };
 
 // src/views/ResearchView.ts
-var RESEARCH_VIEW = "reader-research-view";
+var RESEARCH_VIEW = "fk-research-view";
 function asText3(value) {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
@@ -6622,102 +6575,6 @@ function getSelectedOccurrence(block, range, snippet) {
   return computeOccurrenceOrdinal(read.text, read.caret, snippet);
 }
 
-// src/modals/BulkRecolorModal.ts
-var import_obsidian14 = require("obsidian");
-var BulkRecolorModal = class extends import_obsidian14.Modal {
-  constructor(plugin, file, onApplied = () => {
-  }) {
-    super(plugin.app);
-    this.plugin = plugin;
-    this.file = file;
-    this.onApplied = onApplied;
-    this.state = {
-      limitFrom: false,
-      fromColor: "#ffff00",
-      toColor: "#ffff00"
-    };
-  }
-  onOpen() {
-    const { contentEl, modalEl } = this;
-    contentEl.empty();
-    modalEl.addClass("reading-highlighter-bulk-recolor-modal");
-    contentEl.addClass("reading-highlighter-bulk-recolor-modal");
-    contentEl.createEl("h2", { text: "Recolor <mark> highlights" });
-    contentEl.createDiv({
-      cls: "setting-item-description",
-      text: "This only affects colored highlights stored as <mark>\u2026</mark> (not == == highlights)."
-    });
-    new import_obsidian14.Setting(contentEl).setName("Limit by existing color").setDesc("Optional: only recolor highlights that currently have this exact color.").addToggle((toggle) => {
-      toggle.setValue(this.state.limitFrom);
-      toggle.onChange((value) => {
-        this.state.limitFrom = value;
-        this.updateEnabledState();
-      });
-    });
-    this.fromSetting = new import_obsidian14.Setting(contentEl).setName("From color").setDesc("Only used when the limit toggle is enabled.").addText((text) => {
-      text.setPlaceholder("Hex color like #ff0000");
-      text.setValue(this.state.fromColor);
-      text.onChange((value) => {
-        this.state.fromColor = (value || "").trim();
-        if (this.fromColorInput && /^#[0-9a-fA-F]{6}$/.test(this.state.fromColor)) {
-          this.fromColorInput.value = this.state.fromColor;
-        }
-      });
-    });
-    const fromControl = this.fromSetting.controlEl;
-    this.fromColorInput = fromControl.createEl("input", { type: "color" });
-    this.fromColorInput.value = this.state.fromColor;
-    this.fromColorInput.oninput = (e2) => {
-      var _a;
-      this.state.fromColor = e2.target.value;
-      const textInput = (_a = this.fromSetting) == null ? void 0 : _a.controlEl.querySelector("input[type='text']");
-      if (textInput) textInput.value = this.state.fromColor;
-    };
-    this.toSetting = new import_obsidian14.Setting(contentEl).setName("To color").setDesc("Target color to apply.").addText((text) => {
-      text.setPlaceholder("Hex color like #ff0000");
-      text.setValue(this.state.toColor);
-      text.onChange((value) => {
-        this.state.toColor = (value || "").trim();
-        if (this.toColorInput && /^#[0-9a-fA-F]{6}$/.test(this.state.toColor)) {
-          this.toColorInput.value = this.state.toColor;
-        }
-      });
-    });
-    const toControl = this.toSetting.controlEl;
-    this.toColorInput = toControl.createEl("input", { type: "color" });
-    this.toColorInput.value = this.state.toColor;
-    this.toColorInput.oninput = (e2) => {
-      var _a;
-      this.state.toColor = e2.target.value;
-      const textInput = (_a = this.toSetting) == null ? void 0 : _a.controlEl.querySelector("input[type='text']");
-      if (textInput) textInput.value = this.state.toColor;
-    };
-    const footer = contentEl.createDiv({ cls: "modal-footer" });
-    const cancelBtn = footer.createEl("button", { text: "Cancel" });
-    cancelBtn.onclick = () => this.close();
-    const applyBtn = footer.createEl("button", { text: "Apply", cls: "mod-cta" });
-    applyBtn.onclick = () => void (async () => {
-      const from = this.state.limitFrom ? this.state.fromColor : "";
-      await this.plugin.recolorMarkHighlightsInFile(this.file, from, this.state.toColor);
-      this.onApplied();
-      this.close();
-    })();
-    this.updateEnabledState();
-  }
-  updateEnabledState() {
-    const enabled2 = !!this.state.limitFrom;
-    const fromColor = this.fromColorInput;
-    if (fromColor) fromColor.disabled = !enabled2;
-    if (this.fromSetting !== void 0) {
-      const textInput = this.fromSetting.controlEl.querySelector("input[type='text']");
-      if (textInput) textInput.disabled = !enabled2;
-    }
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-
 // src/main.ts
 init_notations();
 init_MarkdownSourceAdapter();
@@ -6737,6 +6594,1468 @@ function setRepeatedFootnoteDisplay(root, normalize) {
       delete anchor.dataset.fpNativeRepeatedLabel;
     }
   }
+}
+
+// src/diagnostics/storageSpike.ts
+var import_obsidian14 = require("obsidian");
+
+// src/diagnostics/storageProbeModel.ts
+var PROBE_KIND = "finders-keepers-storage-probe";
+function probeDeviceLabel(isIosApp, isMobile) {
+  return isIosApp ? "ios" : isMobile ? "mobile" : "desktop";
+}
+function hiddenParityRole(device) {
+  return device === "desktop" ? "desktop" : "mobile";
+}
+function validateHiddenProbeRootMarker(bytes) {
+  let parsed;
+  try {
+    parsed = JSON.parse(bytes);
+  } catch (e2) {
+    throw new Error("Hidden probe-root marker is malformed JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Hidden probe-root marker is not an object");
+  }
+  const marker = parsed;
+  if (marker.probeKind !== PROBE_KIND || marker.version !== 1 || marker.storeId !== "fk-probe-root-hidden") {
+    throw new Error("Hidden probe-root marker has unexpected kind, version, or storeId");
+  }
+}
+async function requireHiddenProbeRoot(reader, root, markerName) {
+  if (!await reader.exists(root)) throw new Error(`${root} is absent; refusing to initialize it`);
+  const markerPath = `${root}/${markerName}`;
+  if (!await reader.exists(markerPath)) throw new Error(`${root} has no probe-root marker`);
+  validateHiddenProbeRootMarker(await reader.read(markerPath));
+}
+async function readProbeJson(reader, path) {
+  let bytes;
+  try {
+    bytes = await reader.read(path);
+  } catch (error) {
+    return { ok: false, result: { state: "UNAVAILABLE", detail: `read ${path}: ${String(error)}` } };
+  }
+  try {
+    return { ok: true, value: JSON.parse(bytes) };
+  } catch (e2) {
+    return { ok: false, result: { state: "PRESENT_INVALID", detail: `malformed JSON at ${path}` } };
+  }
+}
+function hiddenParityRootCandidates(folders, prefix) {
+  return folders.flatMap((path) => {
+    const name = path.startsWith("/") ? path.slice(1) : path;
+    return !name.includes("/") && name.startsWith(prefix) ? [name] : [];
+  });
+}
+function prefixedProbeFiles(files, folder, basenamePrefix) {
+  return files.filter((path) => {
+    if (!path.startsWith(`${folder}/`)) return false;
+    const name = path.slice(folder.length + 1);
+    return !name.includes("/") && name.startsWith(basenamePrefix);
+  });
+}
+async function classifyHiddenParityRoot(reader, folder, desktopStoreId, mobileStoreId) {
+  let entries;
+  try {
+    entries = await reader.list(folder);
+  } catch (error) {
+    return { state: "UNAVAILABLE", detail: error instanceof Error ? error.message : String(error) };
+  }
+  const manifestPath = `${folder}/manifest.json`;
+  if (!entries.files.includes(manifestPath)) return { state: "PRESENT_INCOMPLETE", detail: "manifest missing" };
+  const manifestRead = await readProbeJson(reader, manifestPath);
+  if (manifestRead.ok === false) return manifestRead.result;
+  const manifest = manifestRead.value;
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return { state: "PRESENT_INVALID", detail: "manifest is not an object" };
+  }
+  const head = manifest;
+  if (head.probeKind !== PROBE_KIND || typeof head.storeId !== "string" || !head.storeId) {
+    return { state: "PRESENT_INVALID", detail: "unrecognized manifest identity" };
+  }
+  if (head.version !== 1) return { state: "UNSUPPORTED", detail: "manifest version is not 1" };
+  const desktopPath = `${folder}/document-desktop.json`;
+  const mobilePath = `${folder}/document-mobile.json`;
+  const present = [desktopPath, mobilePath].filter((path) => entries.files.includes(path));
+  if (present.length === 0) return { state: "PRESENT_INCOMPLETE", detail: "device document missing" };
+  if (present.length !== 1 || entries.folders.length || entries.files.length !== 2) {
+    return {
+      state: "PRESENT_INVALID",
+      detail: `unexpected or mixed directory entries: ${JSON.stringify(entries)}`
+    };
+  }
+  const role = present[0] === desktopPath ? "desktop" : "mobile";
+  const expectedStoreId = role === "desktop" ? desktopStoreId : mobileStoreId;
+  const documentRead = await readProbeJson(reader, present[0]);
+  if (documentRead.ok === false) return documentRead.result;
+  const document2 = documentRead.value;
+  if (!document2 || typeof document2 !== "object" || Array.isArray(document2)) {
+    return { state: "PRESENT_INVALID", detail: "document is not an object" };
+  }
+  const body = document2;
+  if (body.probeKind !== PROBE_KIND || body.version !== 1 || body.key !== "document" || body.storeId !== head.storeId || body.storeId !== expectedStoreId || body.value !== role) {
+    return { state: "PRESENT_INVALID", detail: `wrong probe kind, storeId, or ${role} binding` };
+  }
+  return { state: "VALID", detail: `storeId=${expectedStoreId}; role=${role}; value=${role}` };
+}
+async function classifyHiddenParityShared(reader, path, expectedStoreId) {
+  const read = await readProbeJson(reader, path);
+  if (read.ok === false) return read.result;
+  const parsed = read.value;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { state: "PRESENT_INVALID", detail: "shared document is not an object" };
+  }
+  const doc = parsed;
+  if (doc.probeKind !== PROBE_KIND || doc.version !== 1 || doc.storeId !== expectedStoreId || doc.key !== "document" || typeof doc.value !== "string" || !["base", "desktop-edit", "mobile-edit"].includes(doc.value)) {
+    return { state: "PRESENT_INVALID", detail: "shared document has unexpected probe identity or value" };
+  }
+  return { state: "VALID", detail: `storeId=${expectedStoreId}; value=${doc.value}` };
+}
+async function initializeHiddenParityRoot(writer, folder, role, desktopStoreId, mobileStoreId) {
+  if (await writer.exists(folder)) throw new Error(`${folder} already exists; refusing to initialize`);
+  const storeId = role === "desktop" ? desktopStoreId : mobileStoreId;
+  await writer.mkdir(folder);
+  await writer.write(`${folder}/manifest.json`, probeManifest(storeId));
+  await writer.write(`${folder}/document-${role}.json`, probeEnvelope(storeId, "document", role));
+  const result = await classifyHiddenParityRoot(writer, folder, desktopStoreId, mobileStoreId);
+  if (result.state !== "VALID" || result.detail !== `storeId=${storeId}; role=${role}; value=${role}`) {
+    throw new Error(`Hidden parity initialization failed local verification: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+function probeEnvelope(storeId, key, value) {
+  return JSON.stringify({ probeKind: PROBE_KIND, version: 1, storeId, key, value }, null, 2);
+}
+function probeManifest(storeId) {
+  return JSON.stringify({ probeKind: PROBE_KIND, version: 1, storeId }, null, 2);
+}
+function editHiddenParityBase(current, storeId, role) {
+  const parsed = JSON.parse(current);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Hidden shared document is not a probe envelope");
+  }
+  const doc = parsed;
+  if (doc.probeKind !== PROBE_KIND || doc.version !== 1 || doc.storeId !== storeId || doc.key !== "document" || doc.value !== "base") {
+    throw new Error("Hidden shared document differs from the expected store A/base envelope");
+  }
+  return probeEnvelope(storeId, "document", `${role}-edit`);
+}
+async function classifyProbeCandidate(reader, folder) {
+  try {
+    if (!await reader.exists(folder)) {
+      return { state: "ABSENT", detail: "adapter reports folder absent locally; provider hydration is unproven" };
+    }
+    const manifestPath = `${folder}/manifest.json`;
+    if (!await reader.exists(manifestPath)) {
+      return { state: "PRESENT_INCOMPLETE", detail: "folder exists without manifest" };
+    }
+    const manifestBytes = await reader.read(manifestPath);
+    let manifest;
+    try {
+      manifest = JSON.parse(manifestBytes);
+    } catch (e2) {
+      return { state: "PRESENT_INVALID", detail: "malformed manifest JSON" };
+    }
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+      return { state: "PRESENT_INVALID", detail: "manifest is not an object" };
+    }
+    const head = manifest;
+    if (head.probeKind !== PROBE_KIND || typeof head.storeId !== "string" || !head.storeId) {
+      return { state: "PRESENT_INVALID", detail: "unrecognized manifest identity" };
+    }
+    if (head.version !== 1) return { state: "UNSUPPORTED", detail: "manifest version is not 1" };
+    const documentPath = `${folder}/document.json`;
+    if (!await reader.exists(documentPath)) {
+      return { state: "PRESENT_INCOMPLETE", detail: "manifest exists without document" };
+    }
+    const documentBytes = await reader.read(documentPath);
+    let document2;
+    try {
+      document2 = JSON.parse(documentBytes);
+    } catch (e2) {
+      return { state: "PRESENT_INVALID", detail: "malformed document JSON" };
+    }
+    if (!document2 || typeof document2 !== "object" || Array.isArray(document2)) {
+      return { state: "PRESENT_INVALID", detail: "document is not an object" };
+    }
+    const body = document2;
+    if (body.probeKind !== PROBE_KIND || body.version !== 1 || body.key !== "document") {
+      return { state: "PRESENT_INVALID", detail: "unrecognized document envelope" };
+    }
+    if (body.storeId !== head.storeId) {
+      return { state: "PRESENT_INVALID", detail: `mixed storeId: manifest=${head.storeId}, document differs` };
+    }
+    return { state: "VALID", detail: `storeId=${head.storeId}` };
+  } catch (error) {
+    return { state: "UNAVAILABLE", detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// src/diagnostics/storageMatrix.ts
+var STORAGE_MATRIX_EXPERIMENT = {
+  experimentId: "fk-icloud-matrix-20260927",
+  directionId: "primary-mobile-offline-desktop-online"
+};
+var STORAGE_MATRIX_REVERSE_EXPERIMENT = {
+  experimentId: STORAGE_MATRIX_EXPERIMENT.experimentId,
+  directionId: "reverse-desktop-offline-mobile-online"
+};
+var MATRIX_CONDITION_ORDER = [
+  "A1",
+  "A2",
+  "A3",
+  "A4",
+  "A5",
+  "A6",
+  "A7",
+  "B1",
+  "B2",
+  "B3",
+  "B4",
+  "B5",
+  "B6",
+  "C1",
+  "C2"
+];
+var MATRIX_REPETITION_ORDERS = {
+  R1: MATRIX_CONDITION_ORDER,
+  R2: ["A6", "A7", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "A1", "A2", "A3", "A4", "A5"],
+  R3: [...MATRIX_CONDITION_ORDER].reverse(),
+  R4: ["B3", "B2", "B1", "A7", "A6", "A5", "A4", "A3", "A2", "A1", "C2", "C1", "B6", "B5", "B4"],
+  RV1: ["A6", "A7", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "A1", "A2", "A3", "A4", "A5"],
+  RV2: ["C2", "C1", "B6", "B5", "B4", "B3", "B2", "B1", "A7", "A6", "A5", "A4", "A3", "A2", "A1"]
+};
+var ROUTES = {
+  A1: [route("vault", "vault", "vault"), route("vault", "vault", "vault")],
+  A2: [route("adapter", "adapter", "adapter"), route("adapter", "adapter", "adapter")],
+  A3: [route("vault", "vault", "vault"), route("adapter", "adapter", "adapter")],
+  A4: [route("adapter", "adapter", "adapter"), route("vault", "vault", "vault")],
+  A5: [route("vault", "vault", "adapter"), route("vault", "vault", "adapter")],
+  A6: [route("adapter", "adapter", "vault"), route("adapter", "adapter", "vault")],
+  A7: [route("adapter", "adapter", "adapter"), route("adapter", "adapter", "adapter")]
+};
+var MATRIX_CONDITIONS = [
+  ...["A1", "A2", "A3", "A4", "A5", "A6", "A7"].map((id) => ({
+    id,
+    family: "A",
+    visibility: id === "A7" ? "hidden" : "visible",
+    topology: "standard",
+    desktop: ROUTES[id][0],
+    mobile: ROUTES[id][1]
+  })),
+  ...["B1", "B2", "B3", "B4", "B5", "B6"].map((id) => ({
+    id,
+    family: "B",
+    visibility: id === "B2" || id === "B4" || id === "B6" ? "hidden" : "visible",
+    topology: bTopology(id),
+    desktop: route("adapter", "adapter", "adapter"),
+    mobile: route("adapter", "adapter", "adapter")
+  })),
+  ...["C1", "C2"].map((id) => ({
+    id,
+    family: "C",
+    visibility: id === "C2" ? "hidden" : "visible",
+    topology: "namespaced-stores",
+    desktop: route("adapter", "adapter", "adapter"),
+    mobile: route("adapter", "adapter", "adapter")
+  }))
+];
+function route(directory, manifest, documents) {
+  return { directory, manifest, documents };
+}
+function bTopology(id) {
+  if (id === "B1" || id === "B2") return "one-collision";
+  if (id === "B3" || id === "B4") return "disjoint-ten";
+  return "collision-ten";
+}
+function slug(value) {
+  return value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+function matrixCondition(id) {
+  const condition = MATRIX_CONDITIONS.find((candidate) => candidate.id === id);
+  if (!condition) throw new Error(`Unknown storage matrix condition ${id}`);
+  return condition;
+}
+function matrixOrder(repetition) {
+  return MATRIX_REPETITION_ORDERS[repetition];
+}
+function matrixRoot(condition, repetition, experiment) {
+  const name = `fk-storage-matrix-${slug(experiment.experimentId)}-${slug(experiment.directionId)}-${repetition}-${condition.id}`;
+  return condition.visibility === "hidden" ? `.${name}` : `FK-${name}`;
+}
+function matrixRootCandidates(folders, nominalRoot) {
+  const candidates = folders.flatMap((path) => {
+    const name = path.startsWith("/") ? path.slice(1) : path;
+    return !name.includes("/") && name.startsWith(nominalRoot) ? [name] : [];
+  });
+  return [...new Set(candidates)].sort();
+}
+function matrixStoreId(repetition, role, experiment) {
+  return `fk-${slug(experiment.experimentId)}-${slug(experiment.directionId)}-${repetition}-${role}-${role === "desktop" ? "A" : "B"}`;
+}
+function encodeFile(experiment, repetition, condition, role, storeId, relativePath, intendedWriterApi, fileRole, fileIndex, value) {
+  const bytes = JSON.stringify(
+    {
+      probeKind: "finders-keepers-storage-matrix",
+      version: 1,
+      experimentId: experiment.experimentId,
+      directionId: experiment.directionId,
+      repetition,
+      conditionId: condition.id,
+      storeId,
+      deviceRole: role,
+      intendedWriterApi,
+      fileRole,
+      fileIndex,
+      value
+    },
+    null,
+    2
+  );
+  return { relativePath, intendedWriterApi, fileRole, fileIndex, value, bytes };
+}
+function matrixDeviceFixture(condition, repetition, role, experiment = STORAGE_MATRIX_EXPERIMENT) {
+  const root = matrixRoot(condition, repetition, experiment);
+  const routeForDevice = condition[role];
+  const storeId = matrixStoreId(repetition, role, experiment);
+  const folders = [root];
+  const files = [];
+  const add = (relativePath, api, fileRole, fileIndex, value) => {
+    files.push(
+      encodeFile(experiment, repetition, condition, role, storeId, relativePath, api, fileRole, fileIndex, value)
+    );
+  };
+  if (condition.topology === "namespaced-stores") {
+    folders.push(`${root}/stores`, `${root}/stores/${storeId}`);
+    const storeBase = `stores/${storeId}`;
+    add(`${storeBase}/manifest.json`, routeForDevice.manifest, "manifest", null, `${role}-manifest`);
+    for (let index = 0; index < 3; index++) {
+      add(
+        `${storeBase}/document-${String(index).padStart(2, "0")}.json`,
+        routeForDevice.documents,
+        "document",
+        index,
+        `${role}-document-${String(index).padStart(2, "0")}`
+      );
+    }
+  } else if (condition.topology === "one-collision") {
+    add("collision.json", routeForDevice.documents, "collision", 0, `${role}-collision`);
+  } else if (condition.topology === "disjoint-ten") {
+    for (let index = 0; index < 10; index++) {
+      const fileRole = `file-${role}-${String(index).padStart(2, "0")}`;
+      add(
+        `${fileRole}.json`,
+        routeForDevice.documents,
+        "disjoint",
+        index,
+        `${role}-${String(index).padStart(2, "0")}`
+      );
+    }
+  } else if (condition.topology === "collision-ten") {
+    for (let index = 0; index < 10; index++) {
+      const fileName = `file-${String(index).padStart(2, "0")}.json`;
+      add(fileName, routeForDevice.documents, "collision", index, `${role}-${String(index).padStart(2, "0")}`);
+    }
+  } else {
+    add("manifest.json", routeForDevice.manifest, "manifest", null, `${role}-manifest`);
+    add(`document-${role}.json`, routeForDevice.documents, "document", null, `${role}-document`);
+  }
+  return { root, storeId, folders, files };
+}
+function matrixExpectedUnion(condition, repetition, experiment = STORAGE_MATRIX_EXPERIMENT) {
+  return ["desktop", "mobile"].map((role) => matrixDeviceFixture(condition, repetition, role, experiment));
+}
+async function preflightMatrixRepetition(reader, repetition, experiment = STORAGE_MATRIX_EXPERIMENT) {
+  let rootEntries;
+  try {
+    rootEntries = await reader.list("/");
+  } catch (error) {
+    throw new Error(`Cannot safely enumerate vault root before matrix initialization: ${String(error)}`);
+  }
+  const conflicts = [];
+  for (const condition of MATRIX_CONDITIONS) {
+    const root = matrixRoot(condition, repetition, experiment);
+    if (await reader.exists(root)) conflicts.push(`${root} exists`);
+    const candidates = matrixRootCandidates(rootEntries.folders, root);
+    if (candidates.length) conflicts.push(`${root} has matching root candidates ${JSON.stringify(candidates)}`);
+  }
+  if (conflicts.length)
+    throw new Error(`Refusing matrix repetition ${repetition}; targets must all be fresh: ${conflicts.join("; ")}`);
+}
+async function listTree(reader, root) {
+  const files = [];
+  const folders = [];
+  const pending = [{ path: root, depth: 0 }];
+  while (pending.length) {
+    const next = pending.shift();
+    if (!next) break;
+    if (next.depth > 3 || files.length > 100 || folders.length > 40)
+      throw new Error("matrix tree exceeded read bound");
+    const entries = await reader.list(next.path);
+    files.push(...entries.files);
+    folders.push(...entries.folders);
+    pending.push(...entries.folders.map((path) => ({ path, depth: next.depth + 1 })));
+  }
+  return { files: files.sort(), folders: folders.sort() };
+}
+async function verifyMatrixFixture(reader, fixture) {
+  try {
+    const tree = await listTree(reader, fixture.root);
+    const expectedFiles = fixture.files.map((file) => `${fixture.root}/${file.relativePath}`).sort();
+    const expectedFolders = fixture.folders.filter((folder) => folder !== fixture.root).sort();
+    if (JSON.stringify(tree.files) !== JSON.stringify(expectedFiles)) {
+      return {
+        valid: false,
+        detail: `file tree differs; expected=${JSON.stringify(expectedFiles)} observed=${JSON.stringify(tree.files)}`
+      };
+    }
+    if (JSON.stringify(tree.folders) !== JSON.stringify(expectedFolders)) {
+      return {
+        valid: false,
+        detail: `folder tree differs; expected=${JSON.stringify(expectedFolders)} observed=${JSON.stringify(tree.folders)}`
+      };
+    }
+    for (const file of fixture.files) {
+      const path = `${fixture.root}/${file.relativePath}`;
+      const actual = await reader.read(path);
+      if (actual !== file.bytes) return { valid: false, detail: `${path} bytes differ from expected fixture` };
+      const parsed = JSON.parse(actual);
+      if (parsed.probeKind !== "finders-keepers-storage-matrix" || parsed.version !== 1 || parsed.storeId !== fixture.storeId || parsed.value !== file.value)
+        return { valid: false, detail: `${path} provenance does not match the local fixture` };
+    }
+    return { valid: true, detail: `${fixture.files.length} expected files and exact directory tree verified` };
+  } catch (error) {
+    return { valid: false, detail: `local verification unavailable: ${String(error)}` };
+  }
+}
+async function initializeMatrixRepetition(io, repetition, role, experiment = STORAGE_MATRIX_EXPERIMENT) {
+  const order = matrixOrder(repetition);
+  const outcomes = [];
+  try {
+    await preflightMatrixRepetition(io.adapter, repetition, experiment);
+  } catch (error) {
+    return {
+      repetition,
+      role,
+      experiment,
+      complete: false,
+      outcomes: MATRIX_CONDITIONS.map((condition) => ({
+        conditionId: condition.id,
+        root: matrixRoot(condition, repetition, experiment),
+        state: "NOT_RUN",
+        detail: `preflight refused before any writes: ${String(error)}`
+      }))
+    };
+  }
+  for (const conditionId of order) {
+    const condition = matrixCondition(conditionId);
+    const fixture = matrixDeviceFixture(condition, repetition, role, experiment);
+    try {
+      for (const folder of fixture.folders) await io[condition[role].directory].mkdir(folder);
+      for (const file of fixture.files) {
+        await io[file.intendedWriterApi].write(`${fixture.root}/${file.relativePath}`, file.bytes);
+      }
+      const verified = await verifyMatrixFixture(io.adapter, fixture);
+      outcomes.push({
+        conditionId,
+        root: fixture.root,
+        state: verified.valid ? "VALID" : "INVALID",
+        detail: verified.detail
+      });
+    } catch (error) {
+      const verified = await verifyMatrixFixture(io.adapter, fixture);
+      outcomes.push({
+        conditionId,
+        root: fixture.root,
+        state: "INVALID",
+        detail: `initialization failed: ${String(error)}; post-failure reread: ${verified.detail}`
+      });
+    }
+  }
+  return {
+    repetition,
+    role,
+    experiment,
+    outcomes,
+    complete: outcomes.length === MATRIX_CONDITIONS.length && outcomes.every((outcome) => outcome.state === "VALID")
+  };
+}
+function fingerprint(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+function parseObserved(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      parsed,
+      provenance: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0
+    };
+  } catch (error) {
+    return { parsed: null, parseError: String(error) };
+  }
+}
+async function snapshotRoot(reader, root) {
+  try {
+    const tree = await listTree(reader, root);
+    const files = [];
+    for (const path of tree.files) {
+      const relativePath = path.slice(root.length + 1);
+      try {
+        const raw = await reader.read(path);
+        files.push({ relativePath, raw, ...parseObserved(raw) });
+      } catch (error) {
+        files.push({ relativePath, raw: "", parsed: null, readError: String(error) });
+      }
+    }
+    const serialized = JSON.stringify({ root, files, folders: tree.folders });
+    return {
+      root,
+      files,
+      folders: tree.folders,
+      missingFiles: [],
+      unexpectedFiles: [],
+      missingFolders: [],
+      unexpectedFolders: [],
+      fingerprint: fingerprint(serialized)
+    };
+  } catch (error) {
+    const detail = String(error);
+    return {
+      root,
+      files: [],
+      folders: [],
+      missingFiles: [],
+      unexpectedFiles: [],
+      missingFolders: [],
+      unexpectedFolders: [],
+      fingerprint: fingerprint(`${root}:${detail}`),
+      error: detail
+    };
+  }
+}
+function coherentRoleTree(snapshot, condition, repetition, experiment) {
+  var _a, _b;
+  if (snapshot.error || snapshot.files.some((file) => file.readError || file.parseError || !file.provenance))
+    return false;
+  const role = (_b = (_a = snapshot.files[0]) == null ? void 0 : _a.provenance) == null ? void 0 : _b.deviceRole;
+  if (role !== "desktop" && role !== "mobile") return false;
+  if (snapshot.files.some((file) => {
+    var _a2;
+    return ((_a2 = file.provenance) == null ? void 0 : _a2.deviceRole) !== role;
+  })) return false;
+  const expected = matrixDeviceFixture(condition, repetition, role, experiment);
+  if (expected.files.length !== snapshot.files.length) return false;
+  const observed = new Map(snapshot.files.map((file) => [file.relativePath, file.raw]));
+  return expected.files.every((file) => observed.get(file.relativePath) === file.bytes) && JSON.stringify(snapshot.folders.map((path) => path.slice(snapshot.root.length)).sort()) === JSON.stringify(
+    expected.folders.filter((path) => path !== expected.root).map((path) => path.slice(expected.root.length)).sort()
+  );
+}
+function validProvenance(file, condition, repetition, experiment) {
+  const p2 = file.provenance;
+  if (!p2 || file.parseError || file.readError) return false;
+  const role = p2.deviceRole;
+  if (role !== "desktop" && role !== "mobile") return false;
+  const fixture = matrixDeviceFixture(condition, repetition, role, experiment);
+  const expected = fixture.files.find((item) => item.relativePath === file.relativePath);
+  return !!expected && file.raw === expected.bytes && p2.probeKind === "finders-keepers-storage-matrix" && p2.version === 1 && p2.experimentId === experiment.experimentId && p2.directionId === experiment.directionId && p2.repetition === repetition && p2.conditionId === condition.id && p2.storeId === fixture.storeId && p2.intendedWriterApi === expected.intendedWriterApi && p2.fileRole === expected.fileRole && p2.fileIndex === expected.fileIndex && p2.value === expected.value;
+}
+function classifyCandidates(candidates, condition, repetition, experiment) {
+  var _a, _b, _c, _d;
+  const winners = {};
+  if (!candidates.length)
+    return { summary: "ABSENT", detail: "no nominal or plausible sibling roots found", winners };
+  if (candidates.some((candidate2) => candidate2.error || candidate2.files.some((file) => file.readError))) {
+    return {
+      summary: "UNAVAILABLE",
+      detail: "at least one candidate could not be read; raw errors retained",
+      winners
+    };
+  }
+  if (candidates.length === 2 && candidates.every((candidate2) => coherentRoleTree(candidate2, condition, repetition, experiment))) {
+    const roles = new Set(candidates.map((candidate2) => {
+      var _a2, _b2;
+      return (_b2 = (_a2 = candidate2.files[0]) == null ? void 0 : _a2.provenance) == null ? void 0 : _b2.deviceRole;
+    }));
+    if (roles.size !== 2 || !roles.has("desktop") || !roles.has("mobile")) {
+      return {
+        summary: "OTHER_OBSERVED",
+        detail: "multiple coherent roots do not represent one desktop and one mobile fixture",
+        winners
+      };
+    }
+    return {
+      summary: "SPLIT_COHERENT",
+      detail: "multiple provider-named roots each contain one coherent device fixture",
+      winners
+    };
+  }
+  if (candidates.length !== 1)
+    return {
+      summary: "OTHER_OBSERVED",
+      detail: "multiple candidate roots do not match coherent single-device fixtures",
+      winners
+    };
+  const candidate = candidates[0];
+  if (candidate.files.some((file) => file.parseError || !file.provenance)) {
+    return {
+      summary: "OTHER_OBSERVED",
+      detail: "malformed or non-object files retained in raw observations",
+      winners
+    };
+  }
+  const allFixtures = matrixExpectedUnion(condition, repetition, experiment);
+  const expectedFilePaths = new Set(allFixtures.flatMap((fixture) => fixture.files.map((file) => file.relativePath)));
+  const expectedFolderPaths = new Set(
+    allFixtures.flatMap(
+      (fixture) => fixture.folders.filter((path) => path !== fixture.root).map((path) => path.slice(fixture.root.length + 1))
+    )
+  );
+  const unexpectedFiles = candidate.files.map((file) => file.relativePath).filter((path) => !expectedFilePaths.has(path));
+  const unexpectedFolders = candidate.folders.map((path) => path.slice(candidate.root.length + 1)).filter((path) => !expectedFolderPaths.has(path));
+  if (unexpectedFiles.length || unexpectedFolders.length) {
+    return {
+      summary: "OTHER_OBSERVED",
+      detail: `unexpected tree entries retained: files=${JSON.stringify(unexpectedFiles)} folders=${JSON.stringify(unexpectedFolders)}`,
+      winners
+    };
+  }
+  const provenanceValid = candidate.files.every((file) => validProvenance(file, condition, repetition, experiment));
+  const roleSet = new Set(
+    candidate.files.map((file) => {
+      var _a2;
+      return (_a2 = file.provenance) == null ? void 0 : _a2.deviceRole;
+    }).filter((role) => role === "desktop" || role === "mobile")
+  );
+  const manifest = candidate.files.find((file) => file.relativePath === "manifest.json");
+  if (manifest && candidate.files.some(
+    (file) => {
+      var _a2, _b2;
+      return file.relativePath !== "manifest.json" && ((_a2 = file.provenance) == null ? void 0 : _a2.storeId) !== ((_b2 = manifest.provenance) == null ? void 0 : _b2.storeId);
+    }
+  )) {
+    return {
+      summary: "MERGED_MIXED_INVALID",
+      detail: "single root contains files whose storeId differs from the shared manifest",
+      winners
+    };
+  }
+  if (condition.topology === "namespaced-stores") {
+    const storeGroups = /* @__PURE__ */ new Map();
+    for (const file of candidate.files) {
+      const match = /^stores\/([^/]+)\//.exec(file.relativePath);
+      const storeFolder = (_a = match == null ? void 0 : match[1]) != null ? _a : "<unbound>";
+      const group = (_b = storeGroups.get(storeFolder)) != null ? _b : [];
+      group.push(file);
+      storeGroups.set(storeFolder, group);
+    }
+    for (const [storeFolder, files] of storeGroups) {
+      if (storeFolder === "<unbound>" || files.some((file) => {
+        var _a2;
+        return ((_a2 = file.provenance) == null ? void 0 : _a2.storeId) !== storeFolder;
+      }) || new Set(files.map((file) => {
+        var _a2;
+        return (_a2 = file.provenance) == null ? void 0 : _a2.storeId;
+      })).size !== 1 || new Set(files.map((file) => {
+        var _a2;
+        return (_a2 = file.provenance) == null ? void 0 : _a2.deviceRole;
+      })).size !== 1) {
+        return {
+          summary: "MERGED_MIXED_INVALID",
+          detail: `store subtree ${storeFolder} contains crossed or mixed store identity`,
+          winners
+        };
+      }
+    }
+  }
+  const uniqueStoreSubtrees = condition.topology === "namespaced-stores" ? candidate.files.every((file) => validProvenance(file, condition, repetition, experiment)) && candidate.files.length > 0 && candidate.files.every((file) => {
+    var _a2;
+    const storeId = (_a2 = file.provenance) == null ? void 0 : _a2.storeId;
+    return typeof storeId === "string" && file.relativePath.startsWith(`stores/${storeId}/`);
+  }) : false;
+  if (condition.topology === "collision-ten") {
+    for (const file of candidate.files) {
+      const reportedRole = (_c = file.provenance) == null ? void 0 : _c.deviceRole;
+      const role = reportedRole === "desktop" || reportedRole === "mobile" ? reportedRole : "unknown";
+      winners[role] = ((_d = winners[role]) != null ? _d : 0) + 1;
+    }
+    const expectedFiles = 10;
+    if (candidate.files.length === expectedFiles && provenanceValid && roleSet.size > 1) {
+      return { summary: "TORN_MULTI_FILE", detail: `per-file winners=${JSON.stringify(winners)}`, winners };
+    }
+    if (candidate.files.length === expectedFiles && provenanceValid && roleSet.size === 1) {
+      return {
+        summary: "WINNER_ONLY",
+        detail: `all ${expectedFiles} colliding files came from ${roleSet.values().next().value}`,
+        winners
+      };
+    }
+  }
+  if (condition.topology === "one-collision" && candidate.files.length === 1 && provenanceValid) {
+    return { summary: "WINNER_ONLY", detail: `colliding file came from ${roleSet.values().next().value}`, winners };
+  }
+  const observedPaths = candidate.files.map((file) => file.relativePath).sort();
+  const fullUnionPaths = allFixtures.flatMap((fixture) => fixture.files.map((file) => file.relativePath)).sort();
+  if (uniqueStoreSubtrees && roleSet.size > 1 && JSON.stringify(observedPaths) === JSON.stringify(fullUnionPaths)) {
+    return {
+      summary: "MERGED_COHERENT_UNION",
+      detail: "each unique storeId subtree remains internally bound and complete",
+      winners
+    };
+  }
+  if (provenanceValid && roleSet.size > 1) {
+    if (condition.topology === "disjoint-ten" && candidate.files.length === 20 && JSON.stringify(observedPaths) === JSON.stringify(fullUnionPaths)) {
+      return {
+        summary: "MERGED_COHERENT_UNION",
+        detail: "all twenty disjoint device files are present with valid provenance",
+        winners
+      };
+    }
+  }
+  if (condition.topology === "standard" && provenanceValid && roleSet.size === 1 && coherentRoleTree(candidate, condition, repetition, experiment)) {
+    return {
+      summary: "WINNER_ONLY",
+      detail: `one complete coherent fixture from ${roleSet.values().next().value}`,
+      winners
+    };
+  }
+  const expectedCount = allFixtures.flatMap((fixture) => fixture.files).length;
+  if (candidate.files.length < expectedCount || !provenanceValid) {
+    return {
+      summary: "PARTIAL",
+      detail: "tree is incomplete or contains unexpected/mismatched provenance; raw tree retained",
+      winners
+    };
+  }
+  return {
+    summary: "OTHER_OBSERVED",
+    detail: "observed tree did not match a recognized summary; raw tree retained",
+    winners
+  };
+}
+async function inspectMatrixCondition(reader, condition, repetition, experiment = STORAGE_MATRIX_EXPERIMENT) {
+  const nominal = matrixRoot(condition, repetition, experiment);
+  let rootEntries;
+  try {
+    rootEntries = await reader.list("/");
+  } catch (error) {
+    const detail = `vault-root enumeration unavailable: ${String(error)}`;
+    return {
+      repetition,
+      conditionId: condition.id,
+      candidates: [],
+      summary: "UNAVAILABLE",
+      detail,
+      fingerprint: fingerprint(detail),
+      winnerDistribution: {}
+    };
+  }
+  const roots = matrixRootCandidates(rootEntries.folders, nominal);
+  const conditionFixtures = matrixExpectedUnion(condition, repetition, experiment);
+  const expectedFiles = conditionFixtures.flatMap((fixture) => fixture.files.map((file) => file.relativePath));
+  const expectedFolders = conditionFixtures.flatMap(
+    (fixture) => fixture.folders.filter((path) => path !== fixture.root).map((path) => path.slice(fixture.root.length + 1))
+  );
+  const candidates = await Promise.all(
+    roots.map(async (root) => {
+      const snapshot = await snapshotRoot(reader, root);
+      const observedFiles = snapshot.files.map((file) => file.relativePath);
+      const observedFolders = snapshot.folders.map((path) => path.slice(root.length + 1));
+      return {
+        ...snapshot,
+        missingFiles: expectedFiles.filter((path) => !observedFiles.includes(path)),
+        unexpectedFiles: observedFiles.filter((path) => !expectedFiles.includes(path)),
+        missingFolders: expectedFolders.filter((path) => !observedFolders.includes(path)),
+        unexpectedFolders: observedFolders.filter((path) => !expectedFolders.includes(path))
+      };
+    })
+  );
+  const classified = classifyCandidates(candidates, condition, repetition, experiment);
+  const fingerprintValue = fingerprint(
+    JSON.stringify(candidates.map(({ root, files, folders, error }) => ({ root, files, folders, error })))
+  );
+  return {
+    repetition,
+    conditionId: condition.id,
+    candidates,
+    ...classified,
+    fingerprint: fingerprintValue,
+    winnerDistribution: classified.winners
+  };
+}
+async function inspectMatrixRepetition(reader, repetition, experiment = STORAGE_MATRIX_EXPERIMENT) {
+  return Promise.all(
+    MATRIX_CONDITIONS.map((condition) => inspectMatrixCondition(reader, condition, repetition, experiment))
+  );
+}
+
+// src/diagnostics/storageSpike.ts
+var HIDDEN = ".fk-storage-probe-b0";
+var VISIBLE = "FK-Storage-Probe-B0";
+var MARKER = "__disposable-fk-storage-probe.json";
+var STORE_A = "fk-probe-store-A";
+var STORE_B = "fk-probe-store-B";
+var HIDDEN_PARITY_SHARED = `${HIDDEN}/divergence-hidden-same-document.json`;
+var HIDDEN_PARITY_INDEPENDENT = ".fk-storage-probe-b0-hidden-independent";
+var LOCAL_KEY = "fk-storage-probe-b0-local-v1";
+var PHASES = ["prepared", "copied", "verified", "committed", "cleanup-pending"];
+var StorageSpike = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.events = [];
+    const vault = plugin.app.vault;
+    plugin.registerEvent(
+      vault.on("create", (file) => {
+        if (this.isProbePath(file.path)) this.recordEvent(`vault:create ${file.path}`);
+      })
+    );
+    plugin.registerEvent(
+      vault.on("modify", (file) => {
+        if (this.isProbePath(file.path)) this.recordEvent(`vault:modify ${file.path}`);
+      })
+    );
+    plugin.registerEvent(
+      vault.on("delete", (file) => {
+        if (this.isProbePath(file.path)) this.recordEvent(`vault:delete ${file.path}`);
+      })
+    );
+    plugin.registerEvent(
+      vault.on("rename", (file, oldPath) => {
+        if (this.isProbePath(file.path) || this.isProbePath(oldPath))
+          this.recordEvent(`vault:rename ${oldPath} to ${file.path}`);
+      })
+    );
+    plugin.registerEvent(
+      plugin.app.workspace.on("layout-change", () => this.recordEvent("workspace:layout-change"))
+    );
+    plugin.registerEvent(
+      plugin.app.workspace.on("active-leaf-change", () => this.recordEvent("workspace:active-leaf-change"))
+    );
+    plugin.registerEvent(plugin.app.workspace.on("file-open", () => this.recordEvent("workspace:file-open")));
+    plugin.registerDomEvent(
+      activeDocument,
+      "visibilitychange",
+      () => this.recordEvent(`document:visibility ${activeDocument.visibilityState}`)
+    );
+  }
+  recordEvent(value) {
+    this.events.push(`${(/* @__PURE__ */ new Date()).toISOString()} ${value}`);
+    if (this.events.length > 150) this.events.shift();
+  }
+  isProbePath(path) {
+    return path === VISIBLE || path.startsWith(`${VISIBLE}/`) || path === HIDDEN || path.startsWith(`${HIDDEN}/`);
+  }
+  get app() {
+    return this.plugin.app;
+  }
+  get adapter() {
+    return this.app.vault.adapter;
+  }
+  root(mode) {
+    return mode === "visible" ? VISIBLE : HIDDEN;
+  }
+  device() {
+    return probeDeviceLabel(import_obsidian14.Platform.isIosApp, import_obsidian14.Platform.isMobile);
+  }
+  assertDevVault() {
+    if (this.app.vault.getName() !== "dev-vault") throw new Error("Storage spike is restricted to dev-vault.");
+  }
+  async ensureDirectory(mode, path) {
+    if (await this.adapter.exists(path)) return;
+    if (mode === "visible") await this.app.vault.createFolder(path);
+    else await this.adapter.mkdir(path);
+  }
+  async ensureRoot(mode) {
+    this.assertDevVault();
+    const root = this.root(mode);
+    if (await this.adapter.exists(root)) {
+      const markerPath = `${root}/${MARKER}`;
+      if (!await this.adapter.exists(markerPath)) {
+        throw new Error(`${root} exists without the probe marker; refusing to use it.`);
+      }
+      const marker = JSON.parse(await this.adapter.read(markerPath));
+      if (marker.probeKind !== "finders-keepers-storage-probe") {
+        throw new Error(`${root} has an unexpected marker; refusing to use it.`);
+      }
+      return;
+    }
+    await this.ensureDirectory(mode, root);
+    await this.adapter.write(`${root}/${MARKER}`, probeManifest(`fk-probe-root-${mode}`));
+  }
+  async folder(mode, suffix) {
+    await this.ensureRoot(mode);
+    const parts = suffix.split("/");
+    let path = this.root(mode);
+    for (const part of parts) {
+      path += `/${part}`;
+      await this.ensureDirectory(mode, path);
+    }
+    return path;
+  }
+  file(path) {
+    const file = this.app.vault.getFileByPath(path);
+    if (!file) throw new Error(`Vault did not index ${path}`);
+    return file;
+  }
+  async create(mode, path, value) {
+    if (await this.adapter.exists(path)) throw new Error(`Probe path already exists: ${path}`);
+    if (mode === "visible") await this.app.vault.create(path, value);
+    else await this.adapter.write(path, value);
+  }
+  async read(mode, path) {
+    return mode === "visible" ? this.app.vault.read(this.file(path)) : this.adapter.read(path);
+  }
+  async modify(mode, path, value) {
+    if (mode === "visible") await this.app.vault.modify(this.file(path), value);
+    else await this.adapter.write(path, value);
+  }
+  async process(mode, path, fn) {
+    return mode === "visible" ? this.app.vault.process(this.file(path), fn) : this.adapter.process(path, fn);
+  }
+  async rename(mode, from, to) {
+    if (await this.adapter.exists(to)) throw new Error(`Probe rename destination already exists: ${to}`);
+    if (mode === "visible") await this.app.vault.rename(this.file(from), to);
+    else await this.adapter.rename(from, to);
+  }
+  async remove(mode, path) {
+    if (mode === "visible") await this.app.vault.delete(this.file(path));
+    else await this.adapter.remove(path);
+  }
+  async smoke(mode, log2) {
+    await this.ensureRoot(mode);
+    const root = this.root(mode);
+    const token = `${this.device()}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const scratch = `${root}/scratch-${token}.json`;
+    const renamed = `${root}/renamed-${token}.json`;
+    const guard = `${root}/guard-${token}.json`;
+    await this.create(mode, scratch, "create");
+    log2.push(`${mode} create/read: ${await this.read(mode, scratch)}`);
+    await this.modify(mode, scratch, "update");
+    log2.push(`${mode} update/read: ${await this.read(mode, scratch)}`);
+    const processed = await this.process(mode, scratch, (current) => `${current}+process`);
+    log2.push(`${mode} process returned=${processed}; read=${await this.read(mode, scratch)}`);
+    await this.rename(mode, scratch, renamed);
+    log2.push(
+      `${mode} rename: old=${await this.adapter.exists(scratch)}, new=${await this.adapter.exists(renamed)}`
+    );
+    await this.remove(mode, renamed);
+    log2.push(`${mode} delete: exists=${await this.adapter.exists(renamed)}`);
+    await this.create(mode, guard, "base");
+    const base = await this.read(mode, guard);
+    await this.modify(mode, guard, "external-between-read-and-process");
+    try {
+      await this.process(mode, guard, (current) => {
+        if (current !== base) throw new Error("fk-probe-precondition-failed");
+        return "unsafe-overwrite";
+      });
+      log2.push(`${mode} stale-base guard: UNEXPECTED SUCCESS`);
+    } catch (error) {
+      log2.push(`${mode} stale-base guard: ${String(error)}; final=${await this.read(mode, guard)}`);
+    }
+    const observed = await this.read(mode, guard);
+    const concurrent = await Promise.allSettled([
+      this.process(mode, guard, (current) => {
+        if (current !== observed) throw new Error("fk-probe-precondition-failed");
+        return "candidate-one";
+      }),
+      this.process(mode, guard, (current) => {
+        if (current !== observed) throw new Error("fk-probe-precondition-failed");
+        return "candidate-two";
+      })
+    ]);
+    log2.push(
+      `${mode} concurrent guarded process: ${concurrent.map((item) => item.status === "fulfilled" ? `fulfilled:${item.value}` : `rejected:${String(item.reason)}`).join(" | ")}; final=${await this.read(mode, guard)}`
+    );
+    const eventTarget = `${root}/event-target-${this.device()}.json`;
+    if (!await this.adapter.exists(eventTarget)) await this.create(mode, eventTarget, "event-seed");
+    log2.push(`${mode} retained paths: ${guard}, ${eventTarget}`);
+  }
+  async fixtures(log2) {
+    const reader = {
+      exists: (path) => this.adapter.exists(path),
+      read: (path) => this.adapter.read(path)
+    };
+    for (const mode of ["visible", "hidden"]) {
+      const base = await this.folder(mode, "discovery");
+      const specs = [
+        { name: "incomplete", manifest: null, document: null },
+        { name: "invalid", manifest: "{malformed", document: null },
+        {
+          name: "unsupported",
+          manifest: JSON.stringify({
+            probeKind: "finders-keepers-storage-probe",
+            version: 99,
+            storeId: STORE_A
+          }),
+          document: null
+        },
+        {
+          name: "valid",
+          manifest: probeManifest(STORE_A),
+          document: probeEnvelope(STORE_A, "document", "sample")
+        },
+        {
+          name: "collision",
+          manifest: probeManifest(STORE_A),
+          document: probeEnvelope(STORE_B, "document", "foreign")
+        }
+      ];
+      log2.push(`${mode} absent: ${JSON.stringify(await classifyProbeCandidate(reader, `${base}/absent`))}`);
+      for (const spec of specs) {
+        const folder = await this.folder(mode, `discovery/${spec.name}`);
+        if (spec.manifest !== null && !await this.adapter.exists(`${folder}/manifest.json`)) {
+          await this.create(mode, `${folder}/manifest.json`, spec.manifest);
+        }
+        if (spec.document !== null && !await this.adapter.exists(`${folder}/document.json`)) {
+          await this.create(mode, `${folder}/document.json`, spec.document);
+        }
+        log2.push(`${mode} ${spec.name}: ${JSON.stringify(await classifyProbeCandidate(reader, folder))}`);
+      }
+    }
+    const unavailable = await classifyProbeCandidate(
+      {
+        exists: async () => {
+          throw new Error("simulated I/O failure");
+        },
+        read: async () => ""
+      },
+      `${VISIBLE}/discovery/simulated-unavailable`
+    );
+    log2.push(`simulated unavailable (not a real provider error): ${JSON.stringify(unavailable)}`);
+  }
+  async localCanaries(log2) {
+    const localApi = this.app;
+    const load = localApi["loadLocalStorage"];
+    const save = localApi["saveLocalStorage"];
+    if (typeof load === "function" && typeof save === "function") {
+      const read = load;
+      const write = save;
+      const previous = read.call(this.app, LOCAL_KEY);
+      if (previous === null)
+        write.call(this.app, LOCAL_KEY, {
+          probe: true,
+          device: this.device(),
+          createdAt: (/* @__PURE__ */ new Date()).toISOString()
+        });
+      log2.push(
+        `App localStorage before=${JSON.stringify(previous)}; after=${JSON.stringify(read.call(this.app, LOCAL_KEY))}`
+      );
+    } else {
+      log2.push("App vault-scoped localStorage helpers unavailable on this runtime");
+    }
+    if (typeof indexedDB === "undefined") {
+      log2.push("IndexedDB unavailable");
+      return;
+    }
+    const databaseName = `fk-storage-probe-b0-${this.app.vault.getName()}`;
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(databaseName, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("canary");
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    try {
+      const value = await new Promise((resolve, reject) => {
+        const request = database.transaction("canary", "readonly").objectStore("canary").get("device");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      if (value === void 0) {
+        await new Promise((resolve, reject) => {
+          const tx = database.transaction("canary", "readwrite");
+          tx.objectStore("canary").put(
+            { probe: true, device: this.device(), createdAt: (/* @__PURE__ */ new Date()).toISOString() },
+            "device"
+          );
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+      log2.push(`IndexedDB ${databaseName} before=${JSON.stringify(value)}; newlyWritten=${value === void 0}`);
+    } finally {
+      database.close();
+    }
+  }
+  async snapshot(log2) {
+    for (const root of [HIDDEN, VISIBLE]) {
+      if (!await this.adapter.exists(root)) {
+        log2.push(`${root}: ABSENT`);
+        continue;
+      }
+      const pending = [{ path: root, depth: 0 }];
+      let inspected = 0;
+      while (pending.length && inspected < 120) {
+        const next = pending.shift();
+        if (!next) break;
+        try {
+          const entries = await this.adapter.list(next.path);
+          log2.push(
+            `${next.path}: folders=${JSON.stringify(entries.folders)} files=${JSON.stringify(entries.files)}`
+          );
+          for (const file of entries.files) {
+            inspected++;
+            if (inspected > 120) break;
+            const content = await this.adapter.read(file);
+            log2.push(`${file}: ${content.length} chars ${JSON.stringify(content.slice(0, 350))}`);
+          }
+          if (next.depth < 3)
+            pending.push(...entries.folders.map((path) => ({ path, depth: next.depth + 1 })));
+        } catch (error) {
+          log2.push(`${next.path}: UNAVAILABLE ${String(error)}`);
+        }
+      }
+      if (pending.length || inspected >= 120) log2.push(`${root}: bounded snapshot truncated`);
+    }
+    log2.push(`observed events (${this.events.length}): ${JSON.stringify(this.events)}`);
+  }
+  async requireExistingHiddenRoot() {
+    await requireHiddenProbeRoot(this.adapter, HIDDEN, MARKER);
+  }
+  async requireMatrixProbeRoots() {
+    for (const [root, storeId] of [
+      [HIDDEN, "fk-probe-root-hidden"],
+      [VISIBLE, "fk-probe-root-visible"]
+    ]) {
+      if (!await this.adapter.exists(root))
+        throw new Error(`${root} is absent; refusing matrix initialization`);
+      const markerPath = `${root}/${MARKER}`;
+      if (!await this.adapter.exists(markerPath))
+        throw new Error(`${root} has no marker; refusing matrix initialization`);
+      const bytes = await this.adapter.read(markerPath);
+      const parsed = JSON.parse(bytes);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`${root} marker is not an object; refusing matrix initialization`);
+      }
+      const marker = parsed;
+      if (marker.probeKind !== "finders-keepers-storage-probe" || marker.version !== 1 || marker.storeId !== storeId) {
+        throw new Error(`${root} marker is unexpected; refusing matrix initialization`);
+      }
+    }
+  }
+  matrixRole() {
+    return this.device() === "desktop" ? "desktop" : "mobile";
+  }
+  matrixIo() {
+    const adapter = this.adapter;
+    const vaultWriter = {
+      exists: async (path) => adapter.exists(path),
+      read: async (path) => adapter.read(path),
+      list: async (path) => adapter.list(path),
+      mkdir: async (path) => {
+        await this.app.vault.createFolder(path);
+      },
+      write: async (path, bytes) => {
+        await this.app.vault.create(path, bytes);
+      }
+    };
+    return { vault: vaultWriter, adapter };
+  }
+  async initializeStorageMatrix(repetition, experiment, log2) {
+    const role = this.matrixRole();
+    log2.push(`Matrix experiment=${JSON.stringify(experiment)} repetition=${repetition} role=${role}`);
+    log2.push(`Required deterministic order=${JSON.stringify(matrixOrder(repetition))}`);
+    try {
+      await this.requireMatrixProbeRoots();
+    } catch (error) {
+      log2.push(`PREFLIGHT REFUSED before matrix writes: ${String(error)}`);
+      for (const condition of MATRIX_CONDITIONS) {
+        log2.push(
+          `${condition.id} NOT_RUN ${matrixRoot(condition, repetition, experiment)}: root-marker preflight refused`
+        );
+      }
+      log2.push("COMPLETE=false");
+      return;
+    }
+    const io = this.matrixIo();
+    const result = await initializeMatrixRepetition(io, repetition, role, experiment);
+    for (const outcome of result.outcomes) {
+      const route2 = matrixCondition(outcome.conditionId)[role];
+      log2.push(
+        `${outcome.conditionId} ${outcome.state} ${outcome.root} route=${JSON.stringify(route2)}: ${outcome.detail}`
+      );
+    }
+    log2.push(`COMPLETE=${result.complete}`);
+  }
+  async inspectStorageMatrix(repetition, experiment, log2) {
+    const inspections = await inspectMatrixRepetition(this.adapter, repetition, experiment);
+    log2.push(`Matrix experiment=${JSON.stringify(experiment)} repetition=${repetition}`);
+    for (const inspection of inspections) {
+      log2.push(
+        `${inspection.conditionId} ${inspection.summary} fingerprint=${inspection.fingerprint} winners=${JSON.stringify(inspection.winnerDistribution)} detail=${inspection.detail}`
+      );
+      for (const candidate of inspection.candidates) {
+        log2.push(`RAW ${inspection.conditionId} ${candidate.root}: ${JSON.stringify(candidate)}`);
+      }
+    }
+  }
+  parityRole() {
+    return hiddenParityRole(probeDeviceLabel(import_obsidian14.Platform.isIosApp, import_obsidian14.Platform.isMobile));
+  }
+  async inspectHiddenParity(log2) {
+    const rootEntries = await this.adapter.list("/");
+    const candidates = hiddenParityRootCandidates(rootEntries.folders, HIDDEN_PARITY_INDEPENDENT);
+    log2.push(`Hidden parity root candidates: ${JSON.stringify(candidates)}`);
+    for (const folder of candidates) {
+      const result = await classifyHiddenParityRoot(this.adapter, folder, STORE_A, STORE_B);
+      log2.push(`${folder}: ${JSON.stringify(result)}`);
+    }
+    if (!await this.adapter.exists(HIDDEN)) {
+      log2.push(`${HIDDEN}: ABSENT locally; no shared-document candidates`);
+      return;
+    }
+    const sharedEntries = await this.adapter.list(HIDDEN);
+    const sharedFiles = prefixedProbeFiles(sharedEntries.files, HIDDEN, "divergence-hidden-same-document");
+    log2.push(`Hidden parity shared-document candidates: ${JSON.stringify(sharedFiles)}`);
+    if (!sharedFiles.includes(HIDDEN_PARITY_SHARED)) log2.push(`${HIDDEN_PARITY_SHARED}: ABSENT locally`);
+    for (const path of sharedFiles) {
+      log2.push(`${path}: ${JSON.stringify(await classifyHiddenParityShared(this.adapter, path, STORE_A))}`);
+    }
+  }
+  async report(title, log2) {
+    await this.ensureRoot("visible");
+    const path = `${VISIBLE}/report-${this.device()}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.md`;
+    const adapterType = this.adapter instanceof import_obsidian14.FileSystemAdapter ? "FileSystemAdapter" : this.adapter instanceof import_obsidian14.CapacitorAdapter ? "CapacitorAdapter" : "other/unknown";
+    const lines = [
+      `# Finders Keepers disposable storage probe: ${title}`,
+      "",
+      `- Time: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+      `- Device label: ${this.device()}${import_obsidian14.Platform.isIosApp ? " (physical iPhone/iPad model not inferred)" : ""}`,
+      `- Hidden parity fixture role: ${this.parityRole()}`,
+      `- Vault: ${this.app.vault.getName()}`,
+      `- Adapter runtime type: ${adapterType}`,
+      `- Vault.process: ${typeof this.app.vault.process}`,
+      `- DataAdapter.process: ${typeof this.adapter.process}`,
+      "- Scope: disposable probe only; no canonical store was created.",
+      "",
+      "## Results",
+      "",
+      ...log2.map((line) => `- ${line}`),
+      ""
+    ];
+    const file = await this.app.vault.create(path, lines.join("\n"));
+    new import_obsidian14.Notice(`Finders Keepers probe report: ${path}`, 1e4);
+    await this.app.workspace.getLeaf(true).openFile(file);
+  }
+  async run(title, action) {
+    const log2 = [];
+    try {
+      this.assertDevVault();
+      await action(log2);
+    } catch (error) {
+      log2.push(`STOPPED: ${String(error)}`);
+    }
+    try {
+      await this.report(title, log2);
+    } catch (error) {
+      new import_obsidian14.Notice(`Storage probe failed to save report: ${String(error)}`, 15e3);
+    }
+  }
+  register() {
+    const command = (id, name, action) => {
+      this.plugin.addCommand({
+        id: `fk-storage-probe-${id}`,
+        name: `Finders Keepers storage probe: ${name}`,
+        callback: () => void this.run(name, action)
+      });
+    };
+    command("local", "run local API checks", async (log2) => {
+      for (const mode of ["visible", "hidden"]) {
+        try {
+          await this.smoke(mode, log2);
+        } catch (error) {
+          log2.push(`${mode} smoke ERROR: ${String(error)}`);
+        }
+      }
+      await this.fixtures(log2);
+      try {
+        await this.localCanaries(log2);
+      } catch (error) {
+        log2.push(`local canary ERROR: ${String(error)}`);
+      }
+      await this.snapshot(log2);
+    });
+    command("snapshot", "capture raw probe state and events", async (log2) => {
+      await this.snapshot(log2);
+    });
+    command("hidden-parity-inspect", "inspect Hidden parity targets (read only)", async (log2) => {
+      await this.inspectHiddenParity(log2);
+    });
+    command("hidden-parity-seed", "seed Hidden same-store divergence", async (log2) => {
+      if (this.device() !== "desktop") throw new Error("Hidden base is seeded on desktop only.");
+      await this.requireExistingHiddenRoot();
+      await this.create("hidden", HIDDEN_PARITY_SHARED, probeEnvelope(STORE_A, "document", "base"));
+      log2.push(`seeded ${HIDDEN_PARITY_SHARED}: ${await this.adapter.read(HIDDEN_PARITY_SHARED)}`);
+    });
+    command("hidden-parity-edit", "edit Hidden same-store document from this device", async (log2) => {
+      const role = this.parityRole();
+      await this.requireExistingHiddenRoot();
+      if (!await this.adapter.exists(HIDDEN_PARITY_SHARED)) {
+        throw new Error(`${HIDDEN_PARITY_SHARED} is absent; refusing to create it`);
+      }
+      const result = await this.adapter.process(
+        HIDDEN_PARITY_SHARED,
+        (current) => editHiddenParityBase(current, STORE_A, role)
+      );
+      log2.push(`edited ${HIDDEN_PARITY_SHARED}: ${result}`);
+    });
+    command("hidden-parity-init", "initialize Hidden different storeId at same path", async (log2) => {
+      const role = this.parityRole();
+      await this.requireExistingHiddenRoot();
+      const siblings = hiddenParityRootCandidates(
+        (await this.adapter.list("/")).folders,
+        HIDDEN_PARITY_INDEPENDENT
+      );
+      if (siblings.length) {
+        throw new Error(`Hidden parity root or sibling already exists: ${JSON.stringify(siblings)}`);
+      }
+      if (await this.adapter.exists(HIDDEN_PARITY_INDEPENDENT)) {
+        throw new Error(`${HIDDEN_PARITY_INDEPENDENT} already exists; refusing to initialize`);
+      }
+      const verified = await initializeHiddenParityRoot(
+        this.adapter,
+        HIDDEN_PARITY_INDEPENDENT,
+        role,
+        STORE_A,
+        STORE_B
+      );
+      log2.push(`initialized and locally verified ${HIDDEN_PARITY_INDEPENDENT}: ${JSON.stringify(verified)}`);
+    });
+    for (const repetition of ["R1", "R2", "R3", "R4"]) {
+      command(
+        `matrix-init-${repetition.toLowerCase()}`,
+        `initialize storage matrix ${repetition} from this device`,
+        async (log2) => {
+          await this.initializeStorageMatrix(repetition, STORAGE_MATRIX_EXPERIMENT, log2);
+        }
+      );
+      command(
+        `matrix-inspect-${repetition.toLowerCase()}`,
+        `inspect storage matrix ${repetition} (read only)`,
+        async (log2) => {
+          await this.inspectStorageMatrix(repetition, STORAGE_MATRIX_EXPERIMENT, log2);
+        }
+      );
+    }
+    for (const repetition of ["RV1", "RV2"]) {
+      command(
+        `matrix-init-${repetition.toLowerCase()}`,
+        `initialize reverse-direction storage matrix ${repetition} from this device`,
+        async (log2) => {
+          await this.initializeStorageMatrix(repetition, STORAGE_MATRIX_REVERSE_EXPERIMENT, log2);
+        }
+      );
+      command(
+        `matrix-inspect-${repetition.toLowerCase()}`,
+        `inspect reverse-direction storage matrix ${repetition} (read only)`,
+        async (log2) => {
+          await this.inspectStorageMatrix(repetition, STORAGE_MATRIX_REVERSE_EXPERIMENT, log2);
+        }
+      );
+    }
+    command("seed-shared", "seed same-store divergence", async (log2) => {
+      await this.ensureRoot("visible");
+      const path = `${VISIBLE}/divergence-same-document.json`;
+      if (await this.adapter.exists(path)) throw new Error(`${path} already exists; refusing to reseed`);
+      await this.create("visible", path, probeEnvelope(STORE_A, "document", "base"));
+      log2.push(`seeded ${path}: ${await this.read("visible", path)}`);
+    });
+    command("remote-change", "create desktop changes while iPad is offline", async (log2) => {
+      if (this.device() !== "desktop") throw new Error("This step runs on desktop only.");
+      for (const mode of ["visible", "hidden"]) {
+        await this.ensureRoot(mode);
+        const path = `${this.root(mode)}/remote-desktop-while-ipad-offline.json`;
+        await this.create(mode, path, probeEnvelope(STORE_A, "document", "desktop-remote-change"));
+        log2.push(`created ${path}`);
+      }
+    });
+    command("edit-shared", "edit same-store document from this device", async (log2) => {
+      const path = `${VISIBLE}/divergence-same-document.json`;
+      const result = await this.process("visible", path, (current) => {
+        const doc = JSON.parse(current);
+        if (doc.value !== "base") throw new Error(`expected base; found ${String(doc.value)}`);
+        return probeEnvelope(STORE_A, "document", `${this.device()}-edit`);
+      });
+      log2.push(`edited ${path}: ${result}`);
+    });
+    command("init-independent", "initialize different storeId at same path", async (log2) => {
+      const folder = `${VISIBLE}/divergence-independent`;
+      await this.ensureRoot("visible");
+      if (await this.adapter.exists(folder)) throw new Error(`${folder} already exists; refusing to overwrite`);
+      await this.folder("visible", "divergence-independent");
+      const id = this.device() === "desktop" ? STORE_A : STORE_B;
+      await this.create("visible", `${folder}/manifest.json`, probeManifest(id));
+      await this.create(
+        "visible",
+        `${folder}/document-${this.device()}.json`,
+        probeEnvelope(id, "document", this.device())
+      );
+      log2.push(`initialized ${folder} with ${id}`);
+    });
+    command("init-cross-mode", "initialize Hidden/mobile or Visible/desktop", async (log2) => {
+      const mode = this.device() === "desktop" ? "visible" : "hidden";
+      const folder = `${this.root(mode)}/divergence-cross-mode`;
+      await this.ensureRoot(mode);
+      if (await this.adapter.exists(folder)) throw new Error(`${folder} already exists; refusing to overwrite`);
+      await this.folder(mode, "divergence-cross-mode");
+      const id = mode === "visible" ? STORE_A : STORE_B;
+      await this.create(mode, `${folder}/manifest.json`, probeManifest(id));
+      await this.create(mode, `${folder}/document.json`, probeEnvelope(id, "document", this.device()));
+      log2.push(`initialized ${folder} with ${id}`);
+    });
+    command("migration", "advance disposable migration phase", async (log2) => {
+      const hidden = await this.folder("hidden", "migration");
+      const visible = await this.folder("visible", "migration");
+      const record = `${visible}/record.json`;
+      const source = `${hidden}/document.json`;
+      const destination = `${visible}/document.json`;
+      if (!await this.adapter.exists(record)) {
+        if (!await this.adapter.exists(source))
+          await this.create("hidden", source, probeEnvelope(STORE_A, "document", "migration-source"));
+        await this.create(
+          "visible",
+          record,
+          JSON.stringify(
+            {
+              probeKind: "finders-keepers-storage-probe",
+              migrationId: "fk-probe-migration-1",
+              storeId: STORE_A,
+              phase: "prepared"
+            },
+            null,
+            2
+          )
+        );
+        log2.push("migration phase=prepared; source present; destination absent");
+        return;
+      }
+      const state = JSON.parse(await this.read("visible", record));
+      const index = PHASES.indexOf(state.phase);
+      if (index < 0 || index === PHASES.length - 1) throw new Error(`cannot advance phase ${state.phase}`);
+      const next = PHASES[index + 1];
+      if (next === "copied" && !await this.adapter.exists(destination)) {
+        await this.create("visible", destination, await this.read("hidden", source));
+      }
+      if (next === "verified" && await this.read("hidden", source) !== await this.read("visible", destination)) {
+        throw new Error("migration probe copies differ; refusing verified phase");
+      }
+      await this.process("visible", record, (current) => {
+        const before = JSON.parse(current);
+        if (before.phase !== state.phase) throw new Error("migration probe phase changed");
+        return JSON.stringify({ ...before, phase: next }, null, 2);
+      });
+      log2.push(
+        `migration phase=${next}; source=${await this.adapter.exists(source)} destination=${await this.adapter.exists(destination)}`
+      );
+    });
+  }
+};
+function registerStorageSpikeCommands(plugin) {
+  if (plugin.app.vault.getName() !== "dev-vault") return;
+  new StorageSpike(plugin).register();
 }
 
 // src/main.ts
@@ -6775,8 +8094,6 @@ var DEFAULT_SETTINGS = {
   enableAnnotations: true,
   showAnnotationButton: true,
   normalizeRepeatedFootnoteReferences: true,
-  enableReadingProgress: true,
-  readingPositions: {},
   enableSmartTagSuggestions: true,
   recentTags: [],
   maxRecentTags: 10,
@@ -6798,11 +8115,6 @@ function toDisplayString(value) {
   return String(primitive);
 }
 var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
-  constructor() {
-    super(...arguments);
-    this.lastModification = null;
-    this.lastScrollPosition = null;
-  }
   async onload() {
     await this.loadSettings();
     this.registerEvent(
@@ -6821,6 +8133,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     this.registerView(RESEARCH_VIEW, (leaf) => new ResearchView(leaf, this));
     this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
     this.registerCommands();
+    registerStorageSpikeCommands(this);
     this.registerMarkdownPostProcessor((el, ctx) => {
       setRepeatedFootnoteDisplay(el, this.settings.normalizeRepeatedFootnoteReferences);
       ctx.addChild(
@@ -6839,13 +8152,6 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.floatingManager.handleSelection();
-      })
-    );
-    this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => {
-        if (this.settings.enableReadingProgress) {
-          this.saveReadingProgress();
-        }
       })
     );
     if (import_obsidian15.Platform.isMobile) {
@@ -6932,13 +8238,6 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       }
     });
     this.addCommand({
-      id: "undo-last-highlight",
-      name: "Undo last annotation change",
-      callback: () => {
-        void this.undoLastHighlight();
-      }
-    });
-    this.addCommand({
       id: "open-highlight-navigator",
       name: "Open annotation navigator",
       callback: () => {
@@ -6986,35 +8285,14 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       }
     });
     this.addCommand({
-      id: "remove-all-highlights",
-      name: "Remove all highlights from note",
-      checkCallback: (checking) => {
-        const view = this.getActiveReadingView();
-        if (!view) return false;
-        if (checking) return true;
-        void this.removeAllHighlights(view);
-        return true;
-      }
-    });
-    this.addCommand({
-      id: "remove-all-annotations",
-      name: "Remove all footnotes from note",
-      checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
-        if (!view || !view.file) return false;
-        if (checking) return true;
-        void this.removeAllAnnotations(view.file);
-        return true;
-      }
-    });
-    this.addCommand({
       id: "merge-adjacent-highlights",
       name: "Merge adjacent highlights in note",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
-        void this.mergeAdjacentHighlightsInFile(view.file);
+        new MaintenanceModal(this, view.file, () => {
+        }, "merge").open();
         return true;
       }
     });
@@ -7025,7 +8303,8 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
         const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
-        new BulkRecolorModal(this, view.file).open();
+        new MaintenanceModal(this, view.file, () => {
+        }, "recolor").open();
         return true;
       }
     });
@@ -7036,18 +8315,8 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
         const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
-        void this.migrateSpanHighlightsInFile(view.file);
-        return true;
-      }
-    });
-    this.addCommand({
-      id: "resume-reading",
-      name: "Resume reading (jump to last position)",
-      checkCallback: (checking) => {
-        const view = this.getActiveReadingView();
-        if (!view) return false;
-        if (checking) return true;
-        void this.resumeReading(view);
+        new MaintenanceModal(this, view.file, () => {
+        }, "migrate").open();
         return true;
       }
     });
@@ -7083,25 +8352,29 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     this.floatingManager.unload();
   }
   async loadSettings() {
-    var _a;
-    const loaded = await this.loadData() || {};
+    var _a, _b;
+    const loaded = {
+      ...(_a = await this.loadData()) != null ? _a : {}
+    };
+    delete loaded.enableReadingProgress;
+    delete loaded.readingPositions;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
       // Retained in persisted settings for compatibility with the
       // upstream schema. FuturePlural always writes <mark> notations;
       // native == highlights remain importable but are not a creation mode.
       enableColorHighlighting: true,
       highlightColor: typeof loaded.highlightColor === "string" && loaded.highlightColor.trim() ? loaded.highlightColor : DEFAULT_SETTINGS.highlightColor,
-      semanticColors: ((_a = loaded.semanticColors) == null ? void 0 : _a.length) ? loaded.semanticColors : DEFAULT_SETTINGS.semanticColors,
+      semanticColors: ((_b = loaded.semanticColors) == null ? void 0 : _b.length) ? loaded.semanticColors : DEFAULT_SETTINGS.semanticColors,
       normalizeRepeatedFootnoteReferences: typeof loaded.normalizeRepeatedFootnoteReferences === "boolean" ? loaded.normalizeRepeatedFootnoteReferences : DEFAULT_SETTINGS.normalizeRepeatedFootnoteReferences,
       lastNotationType: normalizeNotationType(loaded.lastNotationType),
       canvasDefaults: normalizeCanvasDefaults(loaded.canvasDefaults),
       canvasAssociations: Array.isArray(loaded.canvasAssociations) ? loaded.canvasAssociations.filter((item) => item && typeof item.source === "string" && typeof item.canvas === "string").slice(0, MAX_CANVAS_ASSOCIATIONS) : [],
       notationOpacity: Object.fromEntries(
         NOTATION_TYPES.map((type) => {
-          var _a2, _b;
+          var _a2, _b2;
           return [
             type,
-            (_b = normalizeOpacity((_a2 = loaded.notationOpacity) == null ? void 0 : _a2[type])) != null ? _b : DEFAULT_NOTATION_OPACITY[type]
+            (_b2 = normalizeOpacity((_a2 = loaded.notationOpacity) == null ? void 0 : _a2[type])) != null ? _b2 : DEFAULT_NOTATION_OPACITY[type]
           ];
         })
       )
@@ -7238,26 +8511,6 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     }
     return foundIndex;
   }
-  async saveUndoState(file, original) {
-    this.lastModification = {
-      file,
-      original: original != null ? original : await this.app.vault.read(file)
-    };
-  }
-  async undoLastHighlight(successMessage = "Undone last annotation change.") {
-    if (!this.lastModification) {
-      new import_obsidian15.Notice("Nothing to undo.");
-      return;
-    }
-    try {
-      await this.app.vault.modify(this.lastModification.file, this.lastModification.original);
-      new import_obsidian15.Notice(successMessage);
-      this.lastModification = null;
-    } catch (err) {
-      new import_obsidian15.Notice("Failed to undo.");
-      console.error(err);
-    }
-  }
   /**
    * The portion of `range` that falls inside `block`, as its own range.
    * Blocks in the middle of a selection are covered entirely; the first and
@@ -7338,7 +8591,6 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
         return "overlap";
       }
     }
-    await this.saveUndoState(head.file, head.raw);
     await this.applyMarkdownModification(head.file, head.raw, start, end, mode, payload, "", notationType, timing);
     return true;
   }
@@ -7387,8 +8639,6 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       return;
     }
     const targetFile = result.file;
-    await this.saveUndoState(targetFile, result.raw);
-    timingStep(timing, "undo state saved");
     await this.applyMarkdownModification(
       targetFile,
       result.raw,
@@ -7541,8 +8791,6 @@ ${appendString}`;
       this.handleSelectionFailure(view, request, "tagSelection");
       return;
     }
-    const targetFile = result.file;
-    await this.saveUndoState(targetFile, result.raw);
     new TagSuggestModal(this, async (tag) => {
       var _a;
       const newResult = await this.logic.locateSelection(
@@ -7561,7 +8809,14 @@ ${appendString}`;
       if (tag && this.settings.enableSmartTagSuggestions) {
         this.addRecentTag(tag);
       }
-      await this.applyMarkdownModification(targetFile, "", newResult.start, newResult.end, "tag", tag);
+      await this.applyMarkdownModification(
+        newResult.file,
+        newResult.raw,
+        newResult.start,
+        newResult.end,
+        "tag",
+        tag
+      );
       this.restoreScroll(view, scrollPos);
       (_a = window.getSelection()) == null ? void 0 : _a.removeAllRanges();
     }).open();
@@ -7597,7 +8852,6 @@ ${appendString}`;
       return;
     }
     const targetFile = result.file;
-    await this.saveUndoState(targetFile, result.raw);
     new AnnotationModal(this.app, async (comment) => {
       var _a;
       const newResult = await this.logic.locateSelection(
@@ -7659,7 +8913,6 @@ ${appendString}`;
       new import_obsidian15.Notice("Selection touches several annotations. Remove them individually in the navigator.");
       return;
     }
-    await this.saveUndoState(targetFile, result.raw);
     if (managed.length === 1) {
       await this.app.vault.process(targetFile, (current) => {
         if (current !== result.raw) throw new Error("Source changed; no annotation removed.");
@@ -7671,74 +8924,6 @@ ${appendString}`;
     new import_obsidian15.Notice("Highlighting removed.");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
-  }
-  async removeAllHighlights(view) {
-    await this.saveUndoState(view.file);
-    let raw = await this.app.vault.read(view.file);
-    raw = raw.replace(/==(.*?)==/gs, "$1");
-    raw = raw.replace(/<mark[^>]*>(.*?)<\/mark>/gs, "$1");
-    await this.app.vault.modify(view.file, raw);
-    new import_obsidian15.Notice("All highlights removed.");
-  }
-  async removeAnnotationById(file, footnoteId) {
-    await this.saveUndoState(file);
-    const raw = await this.app.vault.read(file);
-    const result = removeFootnoteFromRaw(raw, footnoteId);
-    if (!result.changed) {
-      new import_obsidian15.Notice("Footnote not found.");
-      return;
-    }
-    await this.app.vault.modify(file, result.raw);
-    new import_obsidian15.Notice("Footnote removed.");
-  }
-  async removeAllAnnotations(file) {
-    await this.saveUndoState(file);
-    const raw = await this.app.vault.read(file);
-    const result = removeAllFootnotesFromRaw(raw);
-    if (!result.removedCount) {
-      new import_obsidian15.Notice("No footnotes to remove.");
-      return;
-    }
-    await this.app.vault.modify(file, result.raw);
-    new import_obsidian15.Notice(`Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`);
-  }
-  async mergeAdjacentHighlightsInFile(file) {
-    await this.saveUndoState(file);
-    const raw = await this.app.vault.read(file);
-    const result = mergeAdjacentHighlightsInRaw(raw);
-    if (!result.mergedCount) {
-      new import_obsidian15.Notice("No adjacent highlights to merge.");
-      return;
-    }
-    await this.app.vault.modify(file, result.raw);
-    new import_obsidian15.Notice(`Merged ${result.mergedCount} highlight${result.mergedCount === 1 ? "" : "s"}.`);
-  }
-  async recolorMarkHighlightsInFile(file, fromColor, toColor) {
-    const targetColor = String(toColor || "").trim();
-    if (!targetColor) {
-      new import_obsidian15.Notice("Choose a target color first.");
-      return;
-    }
-    await this.saveUndoState(file);
-    const raw = await this.app.vault.read(file);
-    const result = recolorMarkHighlightsInRaw(raw, { fromColor, toColor: targetColor });
-    if (!result.changedCount) {
-      new import_obsidian15.Notice("No matching <mark> highlights to recolor.");
-      return;
-    }
-    await this.app.vault.modify(file, result.raw);
-    new import_obsidian15.Notice(`Recolored ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"}.`);
-  }
-  async migrateSpanHighlightsInFile(file) {
-    await this.saveUndoState(file);
-    const raw = await this.app.vault.read(file);
-    const result = migrateSpanHighlightsInRaw(raw);
-    if (!result.changedCount) {
-      new import_obsidian15.Notice("No <span> background highlights found to migrate.");
-      return;
-    }
-    await this.app.vault.modify(file, result.raw);
-    new import_obsidian15.Notice(`Migrated ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"} to <mark>.`);
   }
   async exportHighlights(view) {
     try {
@@ -7834,8 +9019,6 @@ ${appendString}`;
       return;
     }
     const targetFile = result.file;
-    await this.saveUndoState(targetFile, result.raw);
-    timingStep(timing, "undo state saved");
     await this.applyMarkdownModification(
       targetFile,
       result.raw,
@@ -7851,24 +9034,6 @@ ${appendString}`;
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
     new import_obsidian15.Notice("Highlighted!");
-  }
-  saveReadingProgress() {
-    const view = this.getActiveReadingView();
-    if (!view || !view.file) return;
-    const pos = getScroll(view);
-    if (pos && pos.y > 0) {
-      this.settings.readingPositions[view.file.path] = pos.y;
-      void this.saveData(this.settings);
-    }
-  }
-  async resumeReading(view) {
-    const pos = this.settings.readingPositions[view.file.path];
-    if (pos) {
-      applyScroll(view, { x: 0, y: pos });
-      new import_obsidian15.Notice("Resumed reading position.");
-    } else {
-      new import_obsidian15.Notice("No saved position for this file.");
-    }
   }
   async activateNavigatorView() {
     var _a;
@@ -8220,31 +9385,6 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
       },
       {
         type: "group",
-        heading: "Reading progress",
-        items: [
-          {
-            name: "Track reading progress",
-            desc: "Remember scroll position when leaving a file.",
-            control: { type: "toggle", key: "enableReadingProgress" }
-          },
-          {
-            name: "Clear reading positions",
-            desc: `Currently tracking ${Object.keys(s2.readingPositions).length} file(s).`,
-            action: (el) => {
-              new import_obsidian15.Setting(el).addButton(
-                (button) => button.setButtonText("Clear all").onClick(async () => {
-                  this.plugin.settings.readingPositions = {};
-                  await this.plugin.saveSettings();
-                  new import_obsidian15.Notice("Reading positions cleared.");
-                  this.refreshDefinitions();
-                })
-              );
-            }
-          }
-        ]
-      },
-      {
-        type: "group",
         heading: "Toolbar buttons",
         items: [
           { name: "Show tag button", control: { type: "toggle", key: "showTagButton" } },
@@ -8461,21 +9601,6 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
         this.plugin.settings.normalizeRepeatedFootnoteReferences = value;
         await this.plugin.saveSettings();
         this.plugin.updateRenderedFootnoteReferences(value);
-      })
-    );
-    this.sectionHeading("Reading Progress", "h3");
-    new import_obsidian15.Setting(containerEl).setName("Track reading progress").setDesc("Remember scroll position when leaving a file.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.enableReadingProgress).onChange(async (value) => {
-        this.plugin.settings.enableReadingProgress = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian15.Setting(containerEl).setName("Clear reading positions").setDesc(`Currently tracking ${Object.keys(this.plugin.settings.readingPositions).length} file(s).`).addButton(
-      (button) => button.setButtonText("Clear all").onClick(async () => {
-        this.plugin.settings.readingPositions = {};
-        await this.plugin.saveSettings();
-        new import_obsidian15.Notice("Reading positions cleared.");
-        this.render();
       })
     );
     this.sectionHeading("Toolbar Buttons", "h3");

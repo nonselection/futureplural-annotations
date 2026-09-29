@@ -7,10 +7,6 @@ import { logicalHighlights, parseHighlights, type Highlight } from "./highlights
 import { markdownSourceAdapter } from "../adapters/MarkdownSourceAdapter";
 import { formatDate } from "./time";
 
-function detectNewline(raw: string): string {
-    return raw.includes("\r\n") ? "\r\n" : "\n";
-}
-
 /**
  * Stringify a value that may be anything. Objects have no useful string form —
  * `String({})` is `"[object Object]"` — so they become empty rather than noise.
@@ -31,18 +27,9 @@ function csvEscape(value: unknown): string {
     return str;
 }
 
-interface EnsuredBlockIds {
-    raw: string;
-    changed: boolean;
-    lineToBlockId: Map<number, string>;
-}
-
-function ensureBlockIdsForHighlightLines(raw: string, highlights: Highlight[]): EnsuredBlockIds {
-    const newline = detectNewline(raw);
+function existingBlockIdsForHighlightLines(raw: string, highlights: Highlight[]): Map<number, string> {
     const lines = raw.split(/\r?\n/);
     const lineSet = new Set(highlights.map((h) => h.line).filter((n) => Number.isInteger(n)));
-
-    let changed = false;
     const lineToBlockId = new Map<number, string>();
 
     for (const lineIdx of lineSet) {
@@ -51,19 +38,9 @@ function ensureBlockIdsForHighlightLines(raw: string, highlights: Highlight[]): 
         const blockMatch = line.match(/\s(\^[a-zA-Z0-9-]+)$/);
         if (blockMatch) {
             lineToBlockId.set(lineIdx, blockMatch[1]);
-            continue;
         }
-        const blockId = "^" + Math.random().toString(36).substring(2, 8);
-        lines[lineIdx] = line + " " + blockId;
-        lineToBlockId.set(lineIdx, blockId);
-        changed = true;
     }
-
-    return {
-        raw: lines.join(newline),
-        changed,
-        lineToBlockId,
-    };
+    return lineToBlockId;
 }
 
 function parentPath(file: TFile): string {
@@ -73,19 +50,20 @@ function parentPath(file: TFile): string {
 export async function exportHighlightsToMD(app: App, file: TFile): Promise<string> {
     const raw = await app.vault.read(file);
     const parsed = parseHighlights(raw);
-    const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
+    const existingBlockIds = existingBlockIdsForHighlightLines(raw, parsed.highlights);
     const highlights = logicalHighlights(parsed.highlights).map((highlight) => ({
         text: (highlight.members ?? [highlight])
-            .map((part) => `![[${file.basename}#${ensured.lineToBlockId.get(part.line)}]]`)
-            .join("\n   "),
+            .map((part) => {
+                const blockId = existingBlockIds.get(part.line);
+                return blockId
+                    ? `![[${file.basename}#${blockId}]]`
+                    : `> ${part.text}\n> — [[${file.path}]] (line ${part.line + 1})`;
+            })
+            .join("\n"),
     }));
 
     if (highlights.length === 0) {
         throw new Error("No highlights found in this file.");
-    }
-
-    if (ensured.changed) {
-        await app.vault.modify(file, ensured.raw);
     }
 
     // Get current date
@@ -130,17 +108,13 @@ export function getHighlightsFromContent(raw: string): Highlight[] {
 }
 
 export async function exportHighlightsToJSON(app: App, file: TFile): Promise<string> {
-    let raw = await app.vault.read(file);
+    const raw = await app.vault.read(file);
     const parsed = parseHighlights(raw);
     if (!parsed.highlights.length) {
         throw new Error("No highlights found in this file.");
     }
 
-    const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
-    raw = ensured.raw;
-    if (ensured.changed) {
-        await app.vault.modify(file, raw);
-    }
+    const existingBlockIds = existingBlockIdsForHighlightLines(raw, parsed.highlights);
 
     const date = formatDate("YYYY-MM-DD HH:mm");
 
@@ -149,7 +123,7 @@ export async function exportHighlightsToJSON(app: App, file: TFile): Promise<str
         source: { path: file.path, basename: file.basename },
         total: getHighlightsFromContent(raw).length,
         highlights: logicalHighlights(parsed.highlights).map((h) => {
-            const blockId = ensured.lineToBlockId.get(h.line) || null;
+            const blockId = existingBlockIds.get(h.line) || null;
             return {
                 id: h.id,
                 text: h.text,
@@ -194,17 +168,13 @@ export async function exportHighlightsToJSON(app: App, file: TFile): Promise<str
 }
 
 export async function exportHighlightsToCSV(app: App, file: TFile): Promise<string> {
-    let raw = await app.vault.read(file);
+    const raw = await app.vault.read(file);
     const parsed = parseHighlights(raw);
     if (!parsed.highlights.length) {
         throw new Error("No highlights found in this file.");
     }
 
-    const ensured = ensureBlockIdsForHighlightLines(raw, parsed.highlights);
-    raw = ensured.raw;
-    if (ensured.changed) {
-        await app.vault.modify(file, raw);
-    }
+    const existingBlockIds = existingBlockIdsForHighlightLines(raw, parsed.highlights);
 
     const header = [
         "source_path",
@@ -224,7 +194,7 @@ export async function exportHighlightsToCSV(app: App, file: TFile): Promise<stri
     ].join(",");
 
     const rows = logicalHighlights(parsed.highlights).map((h) => {
-        const blockId = ensured.lineToBlockId.get(h.line) || "";
+        const blockId = existingBlockIds.get(h.line) || "";
         const blockEmbed = blockId ? `![[${file.basename}#${blockId}]]` : "";
         return [
             csvEscape(file.path),

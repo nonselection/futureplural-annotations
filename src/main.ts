@@ -31,17 +31,10 @@ import { canvasSettingsItems, renderCanvasSettings } from "./ui/canvasSettings";
 import { getScroll, applyScroll, type ScrollPosition } from "./utils/dom";
 import { exportHighlightsToCSV, exportHighlightsToJSON, exportHighlightsToMD } from "./utils/export";
 import { FailureRecoveryModal, type DerivedRule } from "./ui/FailureRecoveryModal";
-import {
-    mergeAdjacentHighlightsInRaw,
-    migrateSpanHighlightsInRaw,
-    recolorMarkHighlightsInRaw,
-    removeFootnoteFromRaw,
-    removeAllFootnotesFromRaw,
-    removeLogicalHighlightFromRaw,
-} from "./utils/highlights";
+import { removeLogicalHighlightFromRaw } from "./utils/highlights";
 import { getSelectedOccurrence, type SelectionHint } from "./utils/blockOccurrence";
 import { kindForTag, type BlockKind } from "./utils/sourceBlocks";
-import { BulkRecolorModal } from "./modals/BulkRecolorModal";
+import { MaintenanceModal } from "./modals/MaintenanceModal";
 import {
     beginHighlightTiming,
     selectionEvent,
@@ -61,6 +54,7 @@ import {
 } from "./models/notations";
 import { markdownSourceAdapter } from "./adapters/MarkdownSourceAdapter";
 import { setRepeatedFootnoteDisplay } from "./utils/footnotePresentation";
+import { registerStorageSpikeCommands } from "./diagnostics/storageSpike";
 
 export interface SemanticColor {
     color: string;
@@ -89,8 +83,6 @@ interface ReadingHighlighterSettings {
     enableAnnotations: boolean;
     showAnnotationButton: boolean;
     normalizeRepeatedFootnoteReferences: boolean;
-    enableReadingProgress: boolean;
-    readingPositions: Record<string, number>;
     enableSmartTagSuggestions: boolean;
     recentTags: string[];
     maxRecentTags: number;
@@ -143,8 +135,6 @@ const DEFAULT_SETTINGS: ReadingHighlighterSettings = {
     enableAnnotations: true,
     showAnnotationButton: true,
     normalizeRepeatedFootnoteReferences: true,
-    enableReadingProgress: true,
-    readingPositions: {},
     enableSmartTagSuggestions: true,
     recentTags: [],
     maxRecentTags: 10,
@@ -210,8 +200,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
     settings: ReadingHighlighterSettings;
     floatingManager: FloatingManager;
     logic: SelectionLogic;
-    lastModification: { file: TFile; original: string } | null = null;
-    lastScrollPosition: ScrollPosition | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -235,6 +223,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
 
         this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
         this.registerCommands();
+        registerStorageSpikeCommands(this);
 
         this.registerMarkdownPostProcessor((el, ctx) => {
             setRepeatedFootnoteDisplay(el, this.settings.normalizeRepeatedFootnoteReferences);
@@ -256,14 +245,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
         this.registerEvent(
             this.app.workspace.on("active-leaf-change", () => {
                 this.floatingManager.handleSelection();
-            })
-        );
-
-        this.registerEvent(
-            this.app.workspace.on("active-leaf-change", () => {
-                if (this.settings.enableReadingProgress) {
-                    this.saveReadingProgress();
-                }
             })
         );
 
@@ -360,14 +341,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
         });
 
         this.addCommand({
-            id: "undo-last-highlight",
-            name: "Undo last annotation change",
-            callback: () => {
-                void this.undoLastHighlight();
-            },
-        });
-
-        this.addCommand({
             id: "open-highlight-navigator",
             name: "Open annotation navigator",
             callback: () => {
@@ -420,37 +393,13 @@ export default class ReadingHighlighterPlugin extends Plugin {
         });
 
         this.addCommand({
-            id: "remove-all-highlights",
-            name: "Remove all highlights from note",
-            checkCallback: (checking) => {
-                const view = this.getActiveReadingView();
-                if (!view) return false;
-                if (checking) return true;
-                void this.removeAllHighlights(view);
-                return true;
-            },
-        });
-
-        this.addCommand({
-            id: "remove-all-annotations",
-            name: "Remove all footnotes from note",
-            checkCallback: (checking) => {
-                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (!view || !view.file) return false;
-                if (checking) return true;
-                void this.removeAllAnnotations(view.file);
-                return true;
-            },
-        });
-
-        this.addCommand({
             id: "merge-adjacent-highlights",
             name: "Merge adjacent highlights in note",
             checkCallback: (checking) => {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
                 if (!view || !view.file) return false;
                 if (checking) return true;
-                void this.mergeAdjacentHighlightsInFile(view.file);
+                new MaintenanceModal(this, view.file, () => {}, "merge").open();
                 return true;
             },
         });
@@ -462,7 +411,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
                 if (!view || !view.file) return false;
                 if (checking) return true;
-                new BulkRecolorModal(this, view.file).open();
+                new MaintenanceModal(this, view.file, () => {}, "recolor").open();
                 return true;
             },
         });
@@ -474,19 +423,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
                 if (!view || !view.file) return false;
                 if (checking) return true;
-                void this.migrateSpanHighlightsInFile(view.file);
-                return true;
-            },
-        });
-
-        this.addCommand({
-            id: "resume-reading",
-            name: "Resume reading (jump to last position)",
-            checkCallback: (checking) => {
-                const view = this.getActiveReadingView();
-                if (!view) return false;
-                if (checking) return true;
-                void this.resumeReading(view);
+                new MaintenanceModal(this, view.file, () => {}, "migrate").open();
                 return true;
             },
         });
@@ -526,7 +463,13 @@ export default class ReadingHighlighterPlugin extends Plugin {
     }
 
     async loadSettings() {
-        const loaded = ((await this.loadData()) as Partial<ReadingHighlighterSettings>) || {};
+        const loaded = {
+            ...(((await this.loadData()) as (Partial<ReadingHighlighterSettings> & Record<string, unknown>) | null) ??
+                {}),
+        };
+        // Ignore obsolete reading-position keys if an older settings snapshot contains them.
+        delete loaded.enableReadingProgress;
+        delete loaded.readingPositions;
         this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
             // Retained in persisted settings for compatibility with the
             // upstream schema. FuturePlural always writes <mark> notations;
@@ -713,28 +656,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
         return foundIndex;
     }
 
-    async saveUndoState(file: TFile, original?: string) {
-        this.lastModification = {
-            file: file,
-            original: original ?? (await this.app.vault.read(file)),
-        };
-    }
-
-    async undoLastHighlight(successMessage = "Undone last annotation change.") {
-        if (!this.lastModification) {
-            new Notice("Nothing to undo.");
-            return;
-        }
-        try {
-            await this.app.vault.modify(this.lastModification.file, this.lastModification.original);
-            new Notice(successMessage);
-            this.lastModification = null;
-        } catch (err) {
-            new Notice("Failed to undo.");
-            console.error(err);
-        }
-    }
-
     /**
      * The portion of `range` that falls inside `block`, as its own range.
      * Blocks in the middle of a selection are covered entirely; the first and
@@ -833,7 +754,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
             }
         }
 
-        await this.saveUndoState(head.file, head.raw);
         await this.applyMarkdownModification(head.file, head.raw, start, end, mode, payload, "", notationType, timing);
         return true;
     }
@@ -893,8 +813,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
         }
 
         const targetFile = result.file;
-        await this.saveUndoState(targetFile, result.raw);
-        timingStep(timing, "undo state saved");
 
         await this.applyMarkdownModification(
             targetFile,
@@ -1074,9 +992,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
             return;
         }
 
-        const targetFile = result.file;
-        await this.saveUndoState(targetFile, result.raw);
-
         new TagSuggestModal(this, async (tag) => {
             const newResult = await this.logic.locateSelection(
                 view.file,
@@ -1096,7 +1011,14 @@ export default class ReadingHighlighterPlugin extends Plugin {
                 this.addRecentTag(tag);
             }
 
-            await this.applyMarkdownModification(targetFile, "", newResult.start, newResult.end, "tag", tag);
+            await this.applyMarkdownModification(
+                newResult.file,
+                newResult.raw,
+                newResult.start,
+                newResult.end,
+                "tag",
+                tag
+            );
             this.restoreScroll(view, scrollPos);
             window.getSelection()?.removeAllRanges();
         }).open();
@@ -1136,9 +1058,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
             return;
         }
 
-        const targetFile = result.file;
-        await this.saveUndoState(targetFile, result.raw);
-
         new AnnotationModal(this.app, async (comment) => {
             const newResult = await this.logic.locateSelection(
                 view.file,
@@ -1154,7 +1073,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
                 return;
             }
 
-            await this.applyAnnotation(targetFile, newResult.raw, newResult.start, newResult.end, comment);
+            await this.applyAnnotation(newResult.file, newResult.raw, newResult.start, newResult.end, comment);
             this.restoreScroll(view, scrollPos);
             window.getSelection()?.removeAllRanges();
             new Notice("Footnote added.");
@@ -1208,7 +1127,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
             new Notice("Selection touches several annotations. Remove them individually in the navigator.");
             return;
         }
-        await this.saveUndoState(targetFile, result.raw);
         if (managed.length === 1) {
             await this.app.vault.process(targetFile, (current) => {
                 if (current !== result.raw) throw new Error("Source changed; no annotation removed.");
@@ -1220,87 +1138,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
         new Notice("Highlighting removed.");
         this.restoreScroll(view, scrollPos);
         sel?.removeAllRanges();
-    }
-
-    async removeAllHighlights(view: MarkdownView) {
-        await this.saveUndoState(view.file);
-        let raw = await this.app.vault.read(view.file);
-        raw = raw.replace(/==(.*?)==/gs, "$1");
-        raw = raw.replace(/<mark[^>]*>(.*?)<\/mark>/gs, "$1");
-        await this.app.vault.modify(view.file, raw);
-        new Notice("All highlights removed.");
-    }
-
-    async removeAnnotationById(file: TFile, footnoteId: string) {
-        await this.saveUndoState(file);
-        const raw = await this.app.vault.read(file);
-        const result = removeFootnoteFromRaw(raw, footnoteId);
-        if (!result.changed) {
-            new Notice("Footnote not found.");
-            return;
-        }
-        await this.app.vault.modify(file, result.raw);
-        new Notice("Footnote removed.");
-    }
-
-    async removeAllAnnotations(file: TFile) {
-        await this.saveUndoState(file);
-        const raw = await this.app.vault.read(file);
-        const result = removeAllFootnotesFromRaw(raw);
-        if (!result.removedCount) {
-            new Notice("No footnotes to remove.");
-            return;
-        }
-        await this.app.vault.modify(file, result.raw);
-        new Notice(`Removed ${result.removedCount} footnote${result.removedCount === 1 ? "" : "s"}.`);
-    }
-
-    async mergeAdjacentHighlightsInFile(file: TFile) {
-        await this.saveUndoState(file);
-        const raw = await this.app.vault.read(file);
-        const result = mergeAdjacentHighlightsInRaw(raw);
-
-        if (!result.mergedCount) {
-            new Notice("No adjacent highlights to merge.");
-            return;
-        }
-
-        await this.app.vault.modify(file, result.raw);
-        new Notice(`Merged ${result.mergedCount} highlight${result.mergedCount === 1 ? "" : "s"}.`);
-    }
-
-    async recolorMarkHighlightsInFile(file: TFile, fromColor: string, toColor: string) {
-        const targetColor = String(toColor || "").trim();
-        if (!targetColor) {
-            new Notice("Choose a target color first.");
-            return;
-        }
-
-        await this.saveUndoState(file);
-        const raw = await this.app.vault.read(file);
-        const result = recolorMarkHighlightsInRaw(raw, { fromColor, toColor: targetColor });
-
-        if (!result.changedCount) {
-            new Notice("No matching <mark> highlights to recolor.");
-            return;
-        }
-
-        await this.app.vault.modify(file, result.raw);
-        new Notice(`Recolored ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"}.`);
-    }
-
-    async migrateSpanHighlightsInFile(file: TFile) {
-        await this.saveUndoState(file);
-        const raw = await this.app.vault.read(file);
-        const result = migrateSpanHighlightsInRaw(raw);
-
-        if (!result.changedCount) {
-            new Notice("No <span> background highlights found to migrate.");
-            return;
-        }
-
-        await this.app.vault.modify(file, result.raw);
-        new Notice(`Migrated ${result.changedCount} highlight${result.changedCount === 1 ? "" : "s"} to <mark>.`);
     }
 
     async exportHighlights(view: MarkdownView) {
@@ -1415,8 +1252,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
         }
 
         const targetFile = result.file;
-        await this.saveUndoState(targetFile, result.raw);
-        timingStep(timing, "undo state saved");
         await this.applyMarkdownModification(
             targetFile,
             result.raw,
@@ -1432,26 +1267,6 @@ export default class ReadingHighlighterPlugin extends Plugin {
         this.restoreScroll(view, scrollPos);
         sel?.removeAllRanges();
         new Notice("Highlighted!");
-    }
-
-    saveReadingProgress() {
-        const view = this.getActiveReadingView();
-        if (!view || !view.file) return;
-        const pos = getScroll(view);
-        if (pos && pos.y > 0) {
-            this.settings.readingPositions[view.file.path] = pos.y;
-            void this.saveData(this.settings);
-        }
-    }
-
-    async resumeReading(view: MarkdownView) {
-        const pos = this.settings.readingPositions[view.file.path];
-        if (pos) {
-            applyScroll(view, { x: 0, y: pos });
-            new Notice("Resumed reading position.");
-        } else {
-            new Notice("No saved position for this file.");
-        }
     }
 
     async activateNavigatorView() {
@@ -1852,31 +1667,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
             },
             {
                 type: "group",
-                heading: "Reading progress",
-                items: [
-                    {
-                        name: "Track reading progress",
-                        desc: "Remember scroll position when leaving a file.",
-                        control: { type: "toggle", key: "enableReadingProgress" },
-                    },
-                    {
-                        name: "Clear reading positions",
-                        desc: `Currently tracking ${Object.keys(s.readingPositions).length} file(s).`,
-                        action: (el: HTMLElement) => {
-                            new Setting(el).addButton((button) =>
-                                button.setButtonText("Clear all").onClick(async () => {
-                                    this.plugin.settings.readingPositions = {};
-                                    await this.plugin.saveSettings();
-                                    new Notice("Reading positions cleared.");
-                                    this.refreshDefinitions();
-                                })
-                            );
-                        },
-                    },
-                ],
-            },
-            {
-                type: "group",
                 heading: "Toolbar buttons",
                 items: [
                     { name: "Show tag button", control: { type: "toggle", key: "showTagButton" } },
@@ -2150,27 +1940,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
                     this.plugin.settings.normalizeRepeatedFootnoteReferences = value;
                     await this.plugin.saveSettings();
                     this.plugin.updateRenderedFootnoteReferences(value);
-                })
-            );
-        this.sectionHeading("Reading Progress", "h3");
-        new Setting(containerEl)
-            .setName("Track reading progress")
-            .setDesc("Remember scroll position when leaving a file.")
-            .addToggle((toggle) =>
-                toggle.setValue(this.plugin.settings.enableReadingProgress).onChange(async (value) => {
-                    this.plugin.settings.enableReadingProgress = value;
-                    await this.plugin.saveSettings();
-                })
-            );
-        new Setting(containerEl)
-            .setName("Clear reading positions")
-            .setDesc(`Currently tracking ${Object.keys(this.plugin.settings.readingPositions).length} file(s).`)
-            .addButton((button) =>
-                button.setButtonText("Clear all").onClick(async () => {
-                    this.plugin.settings.readingPositions = {};
-                    await this.plugin.saveSettings();
-                    new Notice("Reading positions cleared.");
-                    this.render();
                 })
             );
         this.sectionHeading("Toolbar Buttons", "h3");
