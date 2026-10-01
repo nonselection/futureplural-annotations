@@ -55,6 +55,7 @@ import {
 import { markdownSourceAdapter } from "./adapters/MarkdownSourceAdapter";
 import { setRepeatedFootnoteDisplay } from "./utils/footnotePresentation";
 import { registerStorageSpikeCommands } from "./diagnostics/storageSpike";
+import { registerStorageDiscoveryReadOnlyCommand } from "./diagnostics/storageDiscoveryCheck";
 
 export interface SemanticColor {
     color: string;
@@ -224,6 +225,7 @@ export default class ReadingHighlighterPlugin extends Plugin {
         this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
         this.registerCommands();
         registerStorageSpikeCommands(this);
+        registerStorageDiscoveryReadOnlyCommand(this);
 
         this.registerMarkdownPostProcessor((el, ctx) => {
             setRepeatedFootnoteDisplay(el, this.settings.normalizeRepeatedFootnoteReferences);

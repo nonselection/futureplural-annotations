@@ -2354,7 +2354,7 @@ __export(main_exports, {
   default: () => ReadingHighlighterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian15 = require("obsidian");
+var import_obsidian16 = require("obsidian");
 
 // src/ui/FloatingManager.ts
 var import_obsidian = require("obsidian");
@@ -7616,7 +7616,7 @@ var StorageSpike = class {
         log2.push(`${mode} ${spec.name}: ${JSON.stringify(await classifyProbeCandidate(reader, folder))}`);
       }
     }
-    const unavailable = await classifyProbeCandidate(
+    const unavailable2 = await classifyProbeCandidate(
       {
         exists: async () => {
           throw new Error("simulated I/O failure");
@@ -7625,7 +7625,7 @@ var StorageSpike = class {
       },
       `${VISIBLE}/discovery/simulated-unavailable`
     );
-    log2.push(`simulated unavailable (not a real provider error): ${JSON.stringify(unavailable)}`);
+    log2.push(`simulated unavailable (not a real provider error): ${JSON.stringify(unavailable2)}`);
   }
   async localCanaries(log2) {
     const localApi = this.app;
@@ -8058,6 +8058,1768 @@ function registerStorageSpikeCommands(plugin) {
   new StorageSpike(plugin).register();
 }
 
+// src/diagnostics/storageDiscoveryCheck.ts
+var import_obsidian15 = require("obsidian");
+
+// src/storage/canonicalEncoding.ts
+var CanonicalEncodingError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CanonicalEncodingError";
+  }
+};
+function fail(path, message) {
+  throw new CanonicalEncodingError(`${path}: ${message}`);
+}
+function canonicalize(value, path, ancestors, depth) {
+  if (depth > 512) fail(path, "maximum canonical JSON depth exceeded");
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Object.is(value, -0) || Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      fail(path, "non-finite numbers, unsafe integers, and negative zero are not canonical JSON values");
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value !== "object") {
+    fail(path, `unsupported JSON value type ${typeof value}`);
+  }
+  const objectValue = value;
+  if (ancestors.has(objectValue)) fail(path, "cyclic values are not canonical JSON");
+  ancestors.add(objectValue);
+  try {
+    if (Array.isArray(value)) return canonicalizeArray(value, path, ancestors, depth);
+    return canonicalizeObject(value, path, ancestors, depth);
+  } catch (error) {
+    if (error instanceof CanonicalEncodingError) throw error;
+    fail(path, "could not safely inspect value");
+  } finally {
+    ancestors.delete(objectValue);
+  }
+}
+function canonicalizeArray(value, path, ancestors, depth) {
+  if (Object.getPrototypeOf(value) !== Array.prototype) fail(path, "array must use the standard array prototype");
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || keys.some((key) => typeof key !== "string")) {
+    fail(path, "arrays with extra or symbol properties are not canonical JSON");
+  }
+  const elements = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+      fail(`${path}[${index}]`, "sparse arrays and accessor elements are not canonical JSON");
+    }
+    elements.push(canonicalize(descriptor.value, `${path}[${index}]`, ancestors, depth + 1));
+  }
+  return `[${elements.join(",")}]`;
+}
+function canonicalizeObject(value, path, ancestors, depth) {
+  const prototype = Reflect.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    fail(path, "only plain objects are canonical JSON values");
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string")) fail(path, "symbol properties are not canonical JSON");
+  const stringKeys = keys.sort();
+  const fields = [];
+  for (const key of stringKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+      fail(`${path}.${key}`, "non-enumerable and accessor properties are not canonical JSON");
+    }
+    fields.push(`${JSON.stringify(key)}:${canonicalize(descriptor.value, `${path}.${key}`, ancestors, depth + 1)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+function canonicalSerialize(value) {
+  return canonicalize(value, "$", /* @__PURE__ */ new Set(), 0);
+}
+async function sha256Bytes(value) {
+  const cryptoApi = window.crypto;
+  if (!(cryptoApi == null ? void 0 : cryptoApi.subtle)) {
+    throw new CanonicalEncodingError("Web Crypto SHA-256 is unavailable on this runtime.");
+  }
+  const input = Uint8Array.from(value);
+  const digest = await cryptoApi.subtle.digest("SHA-256", input.buffer);
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `sha256:${hex}`;
+}
+async function canonicalDigest(value) {
+  const encoder = window.TextEncoder;
+  if (typeof encoder !== "function") {
+    throw new CanonicalEncodingError("TextEncoder is unavailable on this runtime.");
+  }
+  return sha256Bytes(new encoder().encode(canonicalSerialize(value)));
+}
+
+// src/storage/identity.ts
+var UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+var ID_PATTERNS = {
+  store: new RegExp(`^fk-store-${UUID_V4}$`, "i"),
+  revision: new RegExp(`^fk-revision-${UUID_V4}$`, "i"),
+  mutation: new RegExp(`^fk-mutation-${UUID_V4}$`, "i"),
+  migration: new RegExp(`^fk-migration-${UUID_V4}$`, "i"),
+  representationState: new RegExp(`^fk-representation-state-${UUID_V4}$`, "i")
+};
+function isId(value, pattern) {
+  return typeof value === "string" && pattern.test(value);
+}
+function isStoreId(value) {
+  return isId(value, ID_PATTERNS.store);
+}
+function isRevisionId(value) {
+  return isId(value, ID_PATTERNS.revision);
+}
+function isMigrationId(value) {
+  return isId(value, ID_PATTERNS.migration);
+}
+function isRepresentationStateId(value) {
+  return isId(value, ID_PATTERNS.representationState);
+}
+
+// src/storage/authorityArtifacts.ts
+var AUTHORITY_ARTIFACT_VERSION = 1;
+var AuthorityArtifactError = class extends Error {
+  constructor(category, message) {
+    super(message);
+    this.name = "AuthorityArtifactError";
+    this.category = category;
+  }
+};
+var NAMESPACE = Object.freeze({ schema: "finders-keepers.namespace", version: 1 });
+function fail2(message, category = "invalid") {
+  throw new AuthorityArtifactError(category, message);
+}
+function parseJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch (e2) {
+    return fail2("Authority artifact is malformed JSON.");
+  }
+}
+function readObject(raw, schema, fields) {
+  const value = parseJson(raw);
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail2("Authority artifact must be an object.");
+  const row = value;
+  const allowed = new Set(fields);
+  for (const key of Object.keys(row)) if (!allowed.has(key)) fail2(`Unknown authority artifact field ${key}.`);
+  for (const field of fields) if (!Object.prototype.hasOwnProperty.call(row, field)) fail2(`Missing ${field}.`);
+  if (row.schema !== schema) return fail2("Unsupported authority artifact schema.", "unsupported");
+  if (row.version !== AUTHORITY_ARTIFACT_VERSION) {
+    return fail2(`Unsupported ${schema} version.`, "unsupported");
+  }
+  return row;
+}
+function requireStoreBinding(value, expectedStoreId) {
+  if (!isStoreId(value)) fail2("Invalid storeId binding.");
+  if (expectedStoreId !== void 0 && value !== expectedStoreId) {
+    fail2(`Artifact storeId ${value} does not match expected storeId ${expectedStoreId}.`);
+  }
+  return value;
+}
+function optionalRepresentationStateId(value) {
+  if (value === null) return null;
+  if (!isRepresentationStateId(value)) fail2("Invalid parentRepresentationStateId.");
+  return value;
+}
+function optionalMigrationId(value) {
+  if (value === null) return null;
+  if (!isMigrationId(value)) fail2("Invalid establishedByMigrationId.");
+  return value;
+}
+function createNamespaceArtifact() {
+  return { ...NAMESPACE };
+}
+function decodeNamespaceArtifact(raw) {
+  readObject(raw, NAMESPACE.schema, ["schema", "version"]);
+  return createNamespaceArtifact();
+}
+function decodeStoreArtifact(raw, expectedStoreId) {
+  const schema = "finders-keepers.store";
+  const row = readObject(raw, schema, ["schema", "version", "storeId"]);
+  return {
+    schema,
+    version: AUTHORITY_ARTIFACT_VERSION,
+    storeId: requireStoreBinding(row.storeId, expectedStoreId)
+  };
+}
+function decodeProtocolFenceArtifact(raw, expectedStoreId) {
+  const schema = "finders-keepers.protocol-fence";
+  const row = readObject(raw, schema, ["schema", "version", "storeId", "requiredProtocolVersion"]);
+  if (!Number.isSafeInteger(row.requiredProtocolVersion) || row.requiredProtocolVersion < 1) {
+    fail2("requiredProtocolVersion must be a positive safe integer.");
+  }
+  return {
+    schema,
+    version: AUTHORITY_ARTIFACT_VERSION,
+    storeId: requireStoreBinding(row.storeId, expectedStoreId),
+    requiredProtocolVersion: row.requiredProtocolVersion
+  };
+}
+function decodeRepresentationStateArtifact(raw, expectedStoreId) {
+  const schema = "finders-keepers.representation-state";
+  const row = readObject(raw, schema, [
+    "schema",
+    "version",
+    "storeId",
+    "representationStateId",
+    "parentRepresentationStateId",
+    "representation",
+    "establishedByMigrationId"
+  ]);
+  const representationStateId = row.representationStateId;
+  if (!isRepresentationStateId(representationStateId)) fail2("Invalid representationStateId.");
+  const parentRepresentationStateId = optionalRepresentationStateId(row.parentRepresentationStateId);
+  if (row.representation !== "hidden" && row.representation !== "visible") {
+    fail2("representation must be hidden or visible.");
+  }
+  const establishedByMigrationId = optionalMigrationId(row.establishedByMigrationId);
+  return {
+    schema,
+    version: AUTHORITY_ARTIFACT_VERSION,
+    storeId: requireStoreBinding(row.storeId, expectedStoreId),
+    representationStateId,
+    parentRepresentationStateId,
+    representation: row.representation,
+    establishedByMigrationId
+  };
+}
+
+// src/storage/envelopes.ts
+var STORAGE_ENVELOPE_VERSION = 1;
+var CanonicalEnvelopeError = class extends Error {
+  constructor(category, message) {
+    super(message);
+    this.name = "CanonicalEnvelopeError";
+    this.category = category;
+  }
+};
+function fail3(message, category = "invalid") {
+  throw new CanonicalEnvelopeError(category, message);
+}
+function readJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch (e2) {
+    return fail3("Canonical envelope is malformed JSON.");
+  }
+}
+function object(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return fail3("Canonical envelope must be an object.");
+  }
+  return value;
+}
+function recordCodecFor(codecs, kind) {
+  const matches = codecs.filter((codec) => codec.recordKind === kind);
+  if (matches.length !== 1) {
+    return fail3(
+      matches.length ? `Duplicate record codec for ${kind}.` : `Unsupported record kind ${kind}.`,
+      matches.length ? "invalid" : "unsupported"
+    );
+  }
+  return matches[0];
+}
+function optionalRevisionId(value) {
+  if (value === null) return null;
+  if (!isRevisionId(value)) fail3("parentRevisionId must be a valid RevisionId or null.");
+  return value;
+}
+function validateCodecRegistry(codecs) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const codec of codecs) {
+    if (!codec || typeof codec.recordKind !== "string" || !codec.recordKind.trim() || codec.recordKind.includes("\0") || codec.recordKind.length > 128) {
+      fail3("Record codec has an invalid recordKind.");
+    }
+    if (seen.has(codec.recordKind)) fail3(`Duplicate record codec for ${codec.recordKind}.`);
+    seen.add(codec.recordKind);
+    if (!Number.isSafeInteger(codec.schemaVersion) || codec.schemaVersion < 1) {
+      fail3(`Record codec ${codec.recordKind} has an invalid schemaVersion.`);
+    }
+    if (typeof codec.isRecordId !== "function" || typeof codec.validatePayload !== "function") {
+      fail3(`Record codec ${codec.recordKind} is incomplete.`);
+    }
+  }
+}
+function validateEnvelope(value, codecs) {
+  validateCodecRegistry(codecs);
+  canonicalSerialize(value);
+  const row = object(value);
+  const allowed = /* @__PURE__ */ new Set([
+    "storageEnvelopeVersion",
+    "schemaVersion",
+    "storeId",
+    "recordKind",
+    "recordId",
+    "revisionId",
+    "parentRevisionId",
+    "resolvedRevisionIds",
+    "state",
+    "payload"
+  ]);
+  for (const key of Object.keys(row)) if (!allowed.has(key)) fail3(`Unknown canonical envelope field ${key}.`);
+  for (const key of [
+    "storageEnvelopeVersion",
+    "schemaVersion",
+    "storeId",
+    "recordKind",
+    "recordId",
+    "revisionId",
+    "parentRevisionId",
+    "state",
+    "payload"
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(row, key)) fail3(`Missing canonical envelope field ${key}.`);
+  }
+  if (row.storageEnvelopeVersion !== STORAGE_ENVELOPE_VERSION) {
+    return fail3("Unsupported storage envelope version.", "unsupported");
+  }
+  const schemaVersion = row.schemaVersion;
+  if (typeof schemaVersion !== "number" || !Number.isSafeInteger(schemaVersion) || schemaVersion < 1) {
+    fail3("Invalid schemaVersion.");
+  }
+  if (!isStoreId(row.storeId)) fail3("Invalid storeId.");
+  if (typeof row.recordKind !== "string" || !row.recordKind.trim() || row.recordKind.length > 128) {
+    fail3("Invalid recordKind.");
+  }
+  const codec = recordCodecFor(codecs, row.recordKind);
+  if (row.schemaVersion !== codec.schemaVersion) {
+    return fail3(`Unsupported ${row.recordKind} schema version.`, "unsupported");
+  }
+  const recordId = row.recordId;
+  if (!codec.isRecordId(recordId)) fail3(`Invalid recordId for ${row.recordKind}.`);
+  const revisionId = row.revisionId;
+  if (!isRevisionId(revisionId)) fail3("Invalid revisionId.");
+  const parentRevisionId = optionalRevisionId(row.parentRevisionId);
+  if (parentRevisionId === revisionId) fail3("A revision cannot be its own parent.");
+  const resolutions = row.resolvedRevisionIds === void 0 ? [] : row.resolvedRevisionIds;
+  if (!Array.isArray(resolutions)) fail3("resolvedRevisionIds must be an array when present.");
+  if (resolutions.length === 1) fail3("Non-empty resolvedRevisionIds must contain at least two heads.");
+  const typedResolutions = [];
+  for (const resolutionId of resolutions) {
+    if (!isRevisionId(resolutionId)) fail3("resolvedRevisionIds contains an invalid RevisionId.");
+    typedResolutions.push(resolutionId);
+  }
+  const sorted = [...typedResolutions].sort();
+  if (new Set(typedResolutions).size !== typedResolutions.length) {
+    fail3("resolvedRevisionIds must be unique.");
+  }
+  if (typedResolutions.some((resolutionId, index) => resolutionId !== sorted[index])) {
+    fail3("resolvedRevisionIds must be sorted.");
+  }
+  if (row.state !== "active" && row.state !== "deleted") fail3("Unknown canonical record state.");
+  let payload;
+  try {
+    payload = codec.validatePayload(row.payload);
+  } catch (error) {
+    if (error instanceof CanonicalEnvelopeError) throw error;
+    fail3(`Invalid payload for ${row.recordKind}: ${error instanceof Error ? error.message : "validation failed"}`);
+  }
+  const envelope = {
+    storageEnvelopeVersion: STORAGE_ENVELOPE_VERSION,
+    schemaVersion,
+    storeId: row.storeId,
+    recordKind: row.recordKind,
+    recordId,
+    revisionId,
+    parentRevisionId,
+    resolvedRevisionIds: typedResolutions,
+    state: row.state,
+    payload
+  };
+  canonicalSerialize(envelope);
+  return envelope;
+}
+function decodeCanonicalRevisionEnvelope(raw, codecs) {
+  return validateEnvelope(readJson(raw), codecs);
+}
+function canonicalRevisionDigest(envelope) {
+  return canonicalDigest(envelope);
+}
+
+// src/storage/discoveryArtifacts.ts
+function decodeUtf8(bytes) {
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+function objectClaim(raw) {
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return value;
+  } catch (e2) {
+    return null;
+  }
+}
+function claimsSchema(raw, schema) {
+  var _a;
+  return ((_a = objectClaim(raw)) == null ? void 0 : _a.schema) === schema;
+}
+function claimedInvalid(file, bytes, raw, error, expectedSchema) {
+  const claimed = expectedSchema !== void 0 && claimsSchema(raw, expectedSchema);
+  const basename = file.locator.split("/").at(-1);
+  const ratifiedLocator = file.context === "namespace-probe" && basename === "namespace.json" || file.context === "store-subtree" && basename === "store.json";
+  if (file.context === "representation-state-namespace") {
+    return {
+      status: "UNKNOWN",
+      context: file.context,
+      locator: file.locator,
+      rawBytes: bytes,
+      reason: error instanceof Error ? error.message : "Unknown representation-state evidence."
+    };
+  }
+  if (file.context !== "record-envelope" && !claimed && !ratifiedLocator) {
+    return {
+      status: "UNRECOGNIZED",
+      context: file.context,
+      locator: file.locator,
+      rawBytes: bytes,
+      reason: error instanceof Error ? error.message : "Content did not validate as an FK artifact."
+    };
+  }
+  const category = error instanceof AuthorityArtifactError || error instanceof CanonicalEnvelopeError ? error.category.toUpperCase() : "INVALID";
+  return {
+    status: category === "UNSUPPORTED" ? "UNSUPPORTED" : "INVALID",
+    context: file.context,
+    locator: file.locator,
+    rawBytes: bytes,
+    reason: error instanceof Error ? error.message : "Artifact validation failed."
+  };
+}
+function unavailable(file) {
+  if (file.readStatus === "NOT_FOUND") {
+    return { status: "MISSING", context: file.context, locator: file.locator, failure: file.failure };
+  }
+  return { status: "UNAVAILABLE", context: file.context, locator: file.locator, failure: file.failure };
+}
+async function recognizeDiscoveryArtifact(file, options = {}) {
+  var _a;
+  if (file.readStatus !== "READ" || !file.bytes) return unavailable(file);
+  const rawBytes = Uint8Array.from(file.bytes);
+  if (file.context === "unknown-structural") {
+    return {
+      status: "UNRECOGNIZED",
+      context: file.context,
+      locator: file.locator,
+      rawBytes,
+      reason: "Raw bytes were observed during a bounded structural candidate probe; no codec validated their role."
+    };
+  }
+  if (file.context === "opaque-recovery" || file.context === "opaque-migration") {
+    const fingerprint2 = await sha256Bytes(rawBytes);
+    return { status: "OPAQUE", kind: file.context, rawBytes, exactByteFingerprint: fingerprint2 };
+  }
+  let raw;
+  try {
+    raw = decodeUtf8(rawBytes);
+  } catch (error) {
+    return {
+      status: file.context === "protocol-namespace" ? "UNKNOWN" : "INVALID",
+      context: file.context,
+      locator: file.locator,
+      rawBytes,
+      reason: error instanceof Error ? error.message : "File is not valid UTF-8."
+    };
+  }
+  try {
+    switch (file.context) {
+      case "namespace-probe": {
+        const value = decodeNamespaceArtifact(raw);
+        return { status: "VALID", kind: "namespace", value, rawBytes };
+      }
+      case "store-subtree": {
+        const value = decodeStoreArtifact(raw, options.expectedStoreId);
+        return { status: "VALID", kind: "store", value, rawBytes };
+      }
+      case "record-envelope": {
+        const codecs = (_a = options.recordCodecs) != null ? _a : [];
+        const value = decodeCanonicalRevisionEnvelope(raw, codecs);
+        const digest = await canonicalRevisionDigest(value);
+        return { status: "VALID", kind: "revision", value, digest, rawBytes };
+      }
+      case "protocol-namespace": {
+        const value = decodeProtocolFenceArtifact(raw, options.expectedStoreId);
+        return { status: "VALID", kind: "protocol-fence", value, rawBytes };
+      }
+      case "representation-state-namespace": {
+        const value = decodeRepresentationStateArtifact(raw, options.expectedStoreId);
+        return { status: "VALID", kind: "representation-state", value, rawBytes };
+      }
+    }
+  } catch (error) {
+    const schemaByContext = {
+      "namespace-probe": "finders-keepers.namespace",
+      "store-subtree": "finders-keepers.store",
+      "protocol-namespace": "finders-keepers.protocol-fence",
+      "representation-state-namespace": "finders-keepers.representation-state"
+    };
+    if (file.context === "protocol-namespace" && !claimsSchema(raw, "finders-keepers.protocol-fence")) {
+      return {
+        status: "UNKNOWN",
+        context: file.context,
+        locator: file.locator,
+        rawBytes,
+        reason: error instanceof Error ? error.message : "Unknown protocol-namespace evidence."
+      };
+    }
+    return claimedInvalid(file, rawBytes, raw, error, schemaByContext[file.context]);
+  }
+}
+
+// src/storage/discoveryGrammar.ts
+var MAX_DISCOVERY_DIRECTORY_DEPTH = 6;
+var INITIAL_DISCOVERY_LIST_LIMIT = 64;
+var DISCOVERY_GRAMMAR = Object.freeze({
+  "vault-root": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: [".finders-keepers", "Finders Keepers"],
+    candidateProbe: "For each immediate directory, inspect only immediate JSON files for namespace content; always retain the namespace.json locator result.",
+    validatedChildren: ["representation-root"]
+  },
+  "representation-root": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: ["stores"],
+    candidateProbe: "For non-marker child directories, inspect only the next store-subtree edge for a valid store-bound artifact.",
+    validatedChildren: ["stores-collection"]
+  },
+  "stores-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: [],
+    candidateProbe: "Inspect immediate candidate store subtrees for valid store-bound S1 artifacts.",
+    validatedChildren: ["store-subtree"]
+  },
+  "store-subtree": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: ["records", "recovery", "meta"],
+    candidateProbe: "Read only immediate store-bound artifacts and enumerate allow-listed child collections.",
+    validatedChildren: ["records-collection", "recovery-collection", "meta-collection"]
+  },
+  "records-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: ["sources", "annotations", "palette-slots", "codes", "sets", "memos"],
+    candidateProbe: "Enumerate immediate record-kind candidates; recognize files by validated envelope content.",
+    validatedChildren: ["record-kind-collection"]
+  },
+  "record-kind-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: [],
+    candidateProbe: "Read immediate files only; recognized record codecs determine logical identity.",
+    validatedChildren: []
+  },
+  "recovery-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: ["mutations", "outcomes"],
+    candidateProbe: "Observe immediate entries as opaque until later recovery codecs validate them.",
+    validatedChildren: ["recovery-kind-collection"]
+  },
+  "recovery-kind-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: [],
+    candidateProbe: "Read immediate files as raw opaque observations; do not infer logical identity.",
+    validatedChildren: []
+  },
+  "meta-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: ["protocol", "representation-states", "migrations"],
+    candidateProbe: "Enumerate only protocol, representation-state, and migration candidates.",
+    validatedChildren: ["protocol-collection", "representation-states-collection", "migrations-collection"]
+  },
+  "protocol-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: [],
+    candidateProbe: "Read immediate authority-marker files; validate known content and preserve unknown evidence.",
+    validatedChildren: []
+  },
+  "representation-states-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: [],
+    candidateProbe: "Read immediate representation-state artifacts and validate their own store binding.",
+    validatedChildren: []
+  },
+  "migrations-collection": {
+    mayEnumerateSiblingAlternatives: true,
+    nominalChildNames: [],
+    candidateProbe: "Observe immediate migration child directories without treating their names as MigrationIds.",
+    validatedChildren: ["migration-subtree"]
+  },
+  "migration-subtree": {
+    mayEnumerateSiblingAlternatives: false,
+    nominalChildNames: [],
+    candidateProbe: "Read immediate phase-like files as opaque raw observations until S5 codecs exist.",
+    validatedChildren: []
+  }
+});
+var DISCOVERY_NOMINAL_DIRECTORY_NAMES = Object.freeze({
+  stores: "stores",
+  storeManifest: "store.json",
+  records: "records",
+  recovery: "recovery",
+  mutations: "mutations",
+  outcomes: "outcomes",
+  meta: "meta",
+  protocol: "protocol",
+  representationStates: "representation-states",
+  migrations: "migrations"
+});
+function allowsValidatedChild(parent, child) {
+  return DISCOVERY_GRAMMAR[parent].validatedChildren.includes(child);
+}
+
+// src/storage/namespace.ts
+var HIDDEN_REPRESENTATION_ROOT_BASENAME = ".finders-keepers";
+var VISIBLE_REPRESENTATION_ROOT_BASENAME = "Finders Keepers";
+var PRODUCTION_REPRESENTATION_ROOT_BASENAMES = Object.freeze([
+  HIDDEN_REPRESENTATION_ROOT_BASENAME,
+  VISIBLE_REPRESENTATION_ROOT_BASENAME
+]);
+var PRODUCTION_NAMESPACE_MARKER_LOCATOR = "namespace.json";
+var PRODUCTION_NAMESPACE_MARKER_IDENTITY = Object.freeze({
+  schema: "finders-keepers.namespace",
+  version: 1
+});
+var DISPOSABLE_STORAGE_DIAGNOSTIC_ROOTS = Object.freeze([
+  ".fk-storage-probe-b0",
+  "FK-Storage-Probe-B0",
+  ".fk-storage-probe-b0-hidden-independent"
+]);
+
+// src/storage/discovery.ts
+function compareStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+function compareEntries(left, right) {
+  return compareStrings(left.name, right.name) || compareStrings(left.kind, right.kind);
+}
+function deduplicateEntries(entries) {
+  const unique = /* @__PURE__ */ new Map();
+  for (const entry of entries) unique.set(`${entry.kind}\0${entry.name}`, entry);
+  return [...unique.values()].sort(compareEntries);
+}
+function isSubset(left, right) {
+  const rightKeys = new Set(right.map((entry) => `${entry.kind}\0${entry.name}`));
+  return left.every((entry) => rightKeys.has(`${entry.kind}\0${entry.name}`));
+}
+function nextListingLimit(limit) {
+  if (limit >= Number.MAX_SAFE_INTEGER) return null;
+  return Math.min(Number.MAX_SAFE_INTEGER, limit * 2);
+}
+async function listAllDiscoveryChildren(port, locator, initialLimit = INITIAL_DISCOVERY_LIST_LIMIT) {
+  let limit = initialLimit;
+  let previous = [];
+  const pages = [];
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    return {
+      ok: false,
+      listing: {
+        locator,
+        status: "INCONSISTENT",
+        entries: [],
+        pages,
+        failure: { code: "INVALID_LIMIT", message: "Initial listing limit must be a positive safe integer." }
+      }
+    };
+  }
+  while (true) {
+    let result;
+    try {
+      result = await port.listChildren(locator, limit);
+    } catch (error) {
+      return {
+        ok: false,
+        listing: {
+          locator,
+          status: "UNAVAILABLE",
+          entries: previous,
+          pages,
+          failure: {
+            code: "UNAVAILABLE",
+            message: error instanceof Error ? error.message : "Listing failed."
+          }
+        }
+      };
+    }
+    if (result.ok === false) {
+      return {
+        ok: false,
+        listing: { locator, status: "UNAVAILABLE", entries: previous, pages, failure: result.failure }
+      };
+    }
+    const entries = deduplicateEntries(result.value.entries);
+    pages.push({ requestedLimit: limit, entries, truncated: result.value.truncated });
+    if (!isSubset(previous, entries)) {
+      const observedUnion = deduplicateEntries([...previous, ...entries]);
+      return {
+        ok: false,
+        listing: {
+          locator,
+          status: "INCONSISTENT",
+          entries: observedUnion,
+          pages,
+          failure: {
+            code: "UNAVAILABLE",
+            message: "Directory entries changed incompatibly while completing the listing."
+          }
+        }
+      };
+    }
+    const noObservableProgress = result.value.truncated && (pages.length === 1 ? entries.length === 0 : entries.length === previous.length);
+    if (noObservableProgress) {
+      return {
+        ok: false,
+        listing: {
+          locator,
+          status: "UNAVAILABLE",
+          entries,
+          pages,
+          failure: {
+            code: "UNAVAILABLE",
+            message: "Adapter kept the listing truncated without exposing additional child entries."
+          }
+        }
+      };
+    }
+    previous = entries;
+    if (!result.value.truncated) {
+      return { ok: true, listing: { locator, status: "COMPLETE", entries, pages } };
+    }
+    const next = nextListingLimit(limit);
+    if (next === null) {
+      return {
+        ok: false,
+        listing: {
+          locator,
+          status: "UNAVAILABLE",
+          entries: previous,
+          pages,
+          failure: {
+            code: "UNAVAILABLE",
+            message: "Adapter reports a truncated listing at the maximum safe request size."
+          }
+        }
+      };
+    }
+    limit = next;
+  }
+}
+function isJsonCandidate(name) {
+  return name.toLowerCase().endsWith(".json");
+}
+function isNominalRoot(locator) {
+  return PRODUCTION_REPRESENTATION_ROOT_BASENAMES.includes(
+    locator
+  );
+}
+async function readMarkerCandidate(port, locator) {
+  let result;
+  try {
+    result = await port.readBytes(locator);
+  } catch (error) {
+    return {
+      locator,
+      context: locator.endsWith(`/${PRODUCTION_NAMESPACE_MARKER_LOCATOR}`) ? "namespace-marker" : "root-marker-probe",
+      readStatus: "UNAVAILABLE",
+      failure: { code: "UNAVAILABLE", message: error instanceof Error ? error.message : "Read failed." },
+      namespaceValidation: "NOT_APPLICABLE"
+    };
+  }
+  if (result.ok === false) {
+    return {
+      locator,
+      context: locator.endsWith(`/${PRODUCTION_NAMESPACE_MARKER_LOCATOR}`) ? "namespace-marker" : "root-marker-probe",
+      readStatus: result.failure.code === "NOT_FOUND" ? "NOT_FOUND" : "UNAVAILABLE",
+      failure: result.failure,
+      namespaceValidation: "NOT_APPLICABLE"
+    };
+  }
+  const bytes = Uint8Array.from(result.value);
+  const recognition = await recognizeDiscoveryArtifact({
+    locator,
+    context: "namespace-probe",
+    readStatus: "READ",
+    bytes
+  });
+  const namespaceValidation = recognition.status === "VALID" && recognition.kind === "namespace" ? "VALID" : recognition.status === "INVALID" ? "INVALID" : recognition.status === "UNSUPPORTED" ? "UNSUPPORTED" : recognition.status === "UNRECOGNIZED" ? "UNRECOGNIZED" : "NOT_APPLICABLE";
+  return {
+    locator,
+    context: locator.endsWith(`/${PRODUCTION_NAMESPACE_MARKER_LOCATOR}`) ? "namespace-marker" : "root-marker-probe",
+    readStatus: "READ",
+    bytes,
+    namespaceValidation
+  };
+}
+function rootCandidateState(markers, listing) {
+  if (listing.status !== "COMPLETE") return "UNAVAILABLE";
+  if (markers.some((marker) => marker.readStatus !== "READ")) return "UNAVAILABLE";
+  if (markers.some((marker) => marker.namespaceValidation === "VALID")) return "VALID";
+  const expectedInvalid = markers.some(
+    (marker) => marker.readStatus === "READ" && (marker.context === "namespace-marker" || marker.namespaceValidation === "INVALID" || marker.namespaceValidation === "UNSUPPORTED") && marker.namespaceValidation !== "VALID" && marker.namespaceValidation !== "UNRECOGNIZED"
+  );
+  if (expectedInvalid) return "INVALID";
+  if (markers.some(
+    (marker) => marker.readStatus === "UNAVAILABLE" && (marker.context === "namespace-marker" || marker.namespaceValidation === "NOT_APPLICABLE")
+  )) {
+    return "UNAVAILABLE";
+  }
+  return "NON_FK";
+}
+function fingerprintInput(result) {
+  return {
+    rootIdentity: result.rootIdentity,
+    state: result.state,
+    candidates: result.candidates.map((candidate) => {
+      var _a, _b, _c, _d;
+      return {
+        locator: candidate.locator,
+        nominal: candidate.nominal,
+        state: candidate.state,
+        markers: candidate.markers.map((marker) => ({
+          locator: marker.locator,
+          readStatus: marker.readStatus,
+          namespaceValidation: marker.namespaceValidation,
+          bytes: marker.bytes ? Array.from(marker.bytes) : null,
+          failure: marker.failure ? { code: marker.failure.code, message: marker.failure.message } : null
+        })),
+        listingStatus: (_b = (_a = candidate.listing) == null ? void 0 : _a.status) != null ? _b : null,
+        listingEntries: (_d = (_c = candidate.listing) == null ? void 0 : _c.entries) != null ? _d : []
+      };
+    })
+  };
+}
+async function discoverRepresentationRoots(port) {
+  if (!allowsValidatedChild("vault-root", "representation-root")) {
+    throw new Error("Discovery grammar does not allow a representation-root candidate at the vault root.");
+  }
+  const rootListingResult = await listAllDiscoveryChildren(port, "");
+  const rootListing = rootListingResult.listing;
+  const rootDirectories = rootListing.entries.filter((entry) => entry.kind === "directory").map((entry) => entry.name);
+  const candidateNames = new Set(rootDirectories);
+  const candidates = [];
+  for (const nominalName of PRODUCTION_REPRESENTATION_ROOT_BASENAMES) {
+    if (!candidateNames.has(nominalName)) {
+      candidates.push({
+        locator: nominalName,
+        nominal: true,
+        state: rootListing.status === "COMPLETE" ? "ABSENT" : "UNAVAILABLE",
+        markers: []
+      });
+    }
+  }
+  for (const name of [...candidateNames].sort(compareStrings)) {
+    const nominal = isNominalRoot(name);
+    const childListingResult = await listAllDiscoveryChildren(port, name);
+    const childListing = childListingResult.listing;
+    const markerEntries = childListing.entries.filter(
+      (entry) => entry.kind === "file" && (isJsonCandidate(entry.name) || entry.name === PRODUCTION_NAMESPACE_MARKER_LOCATOR)
+    );
+    const markers = [];
+    for (const entry of markerEntries) {
+      markers.push(await readMarkerCandidate(port, `${name}/${entry.name}`));
+    }
+    candidates.push({
+      locator: name,
+      nominal,
+      state: rootCandidateState(markers, childListing),
+      markers: markers.sort((left, right) => compareStrings(left.locator, right.locator)),
+      listing: childListing
+    });
+  }
+  candidates.sort((left, right) => compareStrings(left.locator, right.locator));
+  const state = rootListing.status === "COMPLETE" && candidates.every((candidate) => candidate.state !== "UNAVAILABLE") ? "COMPLETE" : "UNAVAILABLE";
+  const withoutFingerprint = {
+    rootIdentity: port.rootIdentity,
+    state,
+    rootListing,
+    candidates,
+    ...state === "UNAVAILABLE" ? { failure: "One or more bounded root probes could not be completed." } : {}
+  };
+  let fingerprint2;
+  try {
+    fingerprint2 = await canonicalDigest(fingerprintInput(withoutFingerprint));
+  } catch (error) {
+    if (!(error instanceof CanonicalEncodingError)) throw error;
+  }
+  return { ...withoutFingerprint, ...fingerprint2 ? { fingerprint: fingerprint2 } : {} };
+}
+function isWithinDiscoveryDepth(locator) {
+  return locator.split("/").length <= MAX_DISCOVERY_DIRECTORY_DEPTH;
+}
+
+// src/storage/discoveryTraversal.ts
+function compareText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+function join(parent, child) {
+  return parent ? `${parent}/${child}` : child;
+}
+function sortEntries(entries) {
+  return [...entries].sort((left, right) => compareText(left.name, right.name) || compareText(left.kind, right.kind));
+}
+function uniquePhysicalObservations(observations) {
+  const unique = /* @__PURE__ */ new Map();
+  for (const observation of observations) unique.set(`${observation.context}\0${observation.locator}`, observation);
+  return [...unique.values()].sort(
+    (left, right) => compareText(left.locator, right.locator) || compareText(left.context, right.context)
+  );
+}
+async function listAt(context, locator) {
+  const existing = context.listings.get(locator);
+  if (existing) return existing;
+  const { listing } = await listAllDiscoveryChildren(context.port, locator);
+  context.listings.set(locator, listing);
+  return listing;
+}
+async function readAt(context, locator, artifactContext) {
+  const key = `${artifactContext}\0${locator}`;
+  const existing = context.artifacts.get(key);
+  if (existing) return existing;
+  let result;
+  try {
+    result = await context.port.readBytes(locator);
+  } catch (error) {
+    result = {
+      ok: false,
+      failure: { code: "UNAVAILABLE", message: error instanceof Error ? error.message : "Read failed." }
+    };
+  }
+  let raw;
+  if (result.ok === false) {
+    raw = {
+      locator,
+      context: artifactContext,
+      readStatus: result.failure.code === "NOT_FOUND" ? "NOT_FOUND" : "UNAVAILABLE",
+      failure: result.failure
+    };
+  } else {
+    raw = { locator, context: artifactContext, readStatus: "READ", bytes: Uint8Array.from(result.value) };
+  }
+  const observation = {
+    ...raw,
+    recognition: await recognizeDiscoveryArtifact(raw, { recordCodecs: context.recordCodecs })
+  };
+  context.artifacts.set(key, observation);
+  return observation;
+}
+async function readFiles(context, directory, listing, artifactContext) {
+  const observations = [];
+  for (const entry of sortEntries(listing.entries)) {
+    const child = join(directory, entry.name);
+    if (entry.kind === "directory") {
+      addUnknown(
+        context,
+        child,
+        directory,
+        artifactContext,
+        "Unexpected directory in a terminal collection; retained without recursive descent."
+      );
+      continue;
+    }
+    observations.push(await readAt(context, child, artifactContext));
+  }
+  return observations;
+}
+async function readUnknownFiles(context, directory, listing) {
+  const files = sortEntries(listing.entries).filter((entry) => entry.kind === "file");
+  const observations = [];
+  for (const entry of files)
+    observations.push(await readAt(context, join(directory, entry.name), "unknown-structural"));
+  return observations;
+}
+function validKind(observation, kind) {
+  return observation.recognition.status === "VALID" && observation.recognition.kind === kind;
+}
+function relevantAuthorityProbeEvidence(recognition, expectedKind) {
+  if (recognition.status === "VALID") return recognition.kind === expectedKind;
+  return expectedKind === "protocol-fence" && recognition.status === "UNSUPPORTED";
+}
+function artifactStoreId(observation) {
+  if (observation.recognition.status !== "VALID") return void 0;
+  const value = observation.recognition.value;
+  if ("storeId" in value) return value.storeId;
+  return void 0;
+}
+function addUnknown(context, locator, parentLocator, parentContext, reason, rawFileLocators = []) {
+  context.unknownNodes.push({
+    locator,
+    parentLocator,
+    parentContext,
+    reason,
+    rawFileLocators: [...rawFileLocators].sort(compareText)
+  });
+}
+function requireGrammarEdge(parent, child) {
+  if (!allowsValidatedChild(parent, child)) {
+    throw new Error(`S2 traversal attempted undeclared grammar edge ${parent} -> ${child}.`);
+  }
+}
+async function probeRecordCollection(context, locator) {
+  requireGrammarEdge("records-collection", "record-kind-collection");
+  const listing = await listAt(context, locator);
+  if (listing.status !== "COMPLETE") return false;
+  let found = false;
+  for (const entry of sortEntries(listing.entries)) {
+    if (entry.kind !== "directory" || !isWithinDiscoveryDepth(join(locator, entry.name))) continue;
+    const kindLocator = join(locator, entry.name);
+    const kindListing = await listAt(context, kindLocator);
+    if (kindListing.status !== "COMPLETE") continue;
+    const rawObservations = await readUnknownFiles(context, kindLocator, kindListing);
+    const recognized = [];
+    for (const raw of rawObservations) {
+      recognized.push(
+        await recognizeDiscoveryArtifact(
+          { ...raw, context: "record-envelope" },
+          { recordCodecs: context.recordCodecs }
+        )
+      );
+    }
+    if (recognized.some((item) => item.status === "VALID" && item.kind === "revision")) {
+      rawObservations.forEach((raw, index) => {
+        context.artifacts.delete(`unknown-structural\0${raw.locator}`);
+        context.artifacts.set(`record-envelope\0${raw.locator}`, {
+          ...raw,
+          context: "record-envelope",
+          recognition: recognized[index]
+        });
+      });
+      found = true;
+    }
+  }
+  return found;
+}
+async function probeAuthorityCollection(context, locator, artifactContext, expectedKind) {
+  requireGrammarEdge(
+    "meta-collection",
+    artifactContext === "protocol-namespace" ? "protocol-collection" : "representation-states-collection"
+  );
+  const listing = await listAt(context, locator);
+  if (listing.status !== "COMPLETE") return false;
+  const files = sortEntries(listing.entries).filter((entry) => entry.kind === "file");
+  const rawObservations = [];
+  const recognized = [];
+  for (const entry of files) {
+    const raw = await readAt(context, join(locator, entry.name), "unknown-structural");
+    rawObservations.push(raw);
+    recognized.push(
+      await recognizeDiscoveryArtifact(
+        { ...raw, context: artifactContext },
+        { recordCodecs: context.recordCodecs }
+      )
+    );
+  }
+  const relevantEvidence = recognized.some((item) => relevantAuthorityProbeEvidence(item, expectedKind));
+  if (!relevantEvidence) return false;
+  rawObservations.forEach((raw, index) => {
+    context.artifacts.delete(`unknown-structural\0${raw.locator}`);
+    context.artifacts.set(`${artifactContext}\0${raw.locator}`, {
+      ...raw,
+      context: artifactContext,
+      recognition: recognized[index]
+    });
+  });
+  return true;
+}
+function observationsBelow(context, parentLocator) {
+  const prefix = `${parentLocator}/`;
+  return [...context.artifacts.values()].filter((item) => item.locator.startsWith(prefix));
+}
+async function probeMetaCollection(context, locator) {
+  requireGrammarEdge("store-subtree", "meta-collection");
+  const listing = await listAt(context, locator);
+  if (listing.status !== "COMPLETE") return false;
+  for (const entry of sortEntries(listing.entries)) {
+    if (entry.kind !== "directory") continue;
+    const child = join(locator, entry.name);
+    const protocolMatch = await probeAuthorityCollection(context, child, "protocol-namespace", "protocol-fence");
+    if (protocolMatch) return true;
+    const stateMatch = await probeAuthorityCollection(
+      context,
+      child,
+      "representation-state-namespace",
+      "representation-state"
+    );
+    if (stateMatch) return true;
+  }
+  return false;
+}
+async function probeStoreSubtree(context, locator) {
+  requireGrammarEdge("stores-collection", "store-subtree");
+  if (!isWithinDiscoveryDepth(locator)) return { storeIds: [], observations: [], complete: false };
+  const listing = await listAt(context, locator);
+  if (listing.status !== "COMPLETE") return { storeIds: [], observations: [], complete: false };
+  const ownFiles = await readFiles(context, locator, listing, "store-subtree");
+  const observations = [...ownFiles];
+  const validStoreIds = new Set(
+    ownFiles.map(artifactStoreId).filter((value) => Boolean(value))
+  );
+  for (const entry of sortEntries(listing.entries)) {
+    if (entry.kind !== "directory") continue;
+    const child = join(locator, entry.name);
+    if (!isWithinDiscoveryDepth(child)) continue;
+    if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.records) {
+      requireGrammarEdge("store-subtree", "records-collection");
+      const recordsListing = await listAt(context, child);
+      if (recordsListing.status !== "COMPLETE") continue;
+      for (const kindEntry of sortEntries(recordsListing.entries)) {
+        if (kindEntry.kind !== "directory") continue;
+        const kindLocator = join(child, kindEntry.name);
+        const kindListing = await listAt(context, kindLocator);
+        if (kindListing.status !== "COMPLETE") continue;
+        const items = await readFiles(context, kindLocator, kindListing, "record-envelope");
+        observations.push(...items);
+        for (const item of items) {
+          const storeId = artifactStoreId(item);
+          if (storeId) validStoreIds.add(storeId);
+        }
+      }
+    } else if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.meta) {
+      requireGrammarEdge("store-subtree", "meta-collection");
+      const metaListing = await listAt(context, child);
+      if (metaListing.status !== "COMPLETE") continue;
+      for (const metaEntry of sortEntries(metaListing.entries)) {
+        if (metaEntry.kind !== "directory") continue;
+        const metaChild = join(child, metaEntry.name);
+        const metaChildListing = await listAt(context, metaChild);
+        if (metaChildListing.status !== "COMPLETE") continue;
+        let items = [];
+        if (metaEntry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.protocol) {
+          items = await readFiles(context, metaChild, metaChildListing, "protocol-namespace");
+        } else if (metaEntry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.representationStates) {
+          items = await readFiles(context, metaChild, metaChildListing, "representation-state-namespace");
+        } else {
+          const protocolMatch = await probeAuthorityCollection(
+            context,
+            metaChild,
+            "protocol-namespace",
+            "protocol-fence"
+          );
+          if (protocolMatch) {
+            items.push(
+              ...observationsBelow(context, metaChild).filter(
+                (item) => item.context === "protocol-namespace"
+              )
+            );
+          } else if (await probeAuthorityCollection(
+            context,
+            metaChild,
+            "representation-state-namespace",
+            "representation-state"
+          )) {
+            items.push(
+              ...observationsBelow(context, metaChild).filter(
+                (item) => item.context === "representation-state-namespace"
+              )
+            );
+          }
+        }
+        observations.push(...items);
+        for (const item of items) {
+          const storeId = artifactStoreId(item);
+          if (storeId) validStoreIds.add(storeId);
+        }
+      }
+    }
+  }
+  const complete = ![...context.artifacts.values()].some(
+    (item) => (item.locator === locator || item.locator.startsWith(`${locator}/`)) && item.readStatus !== "READ"
+  ) && ![...context.listings.values()].some(
+    (item) => (item.locator === locator || item.locator.startsWith(`${locator}/`)) && item.status !== "COMPLETE"
+  );
+  return { storeIds: [...validStoreIds].sort(compareText), observations, complete };
+}
+async function scanRecordCollection(context, locator) {
+  requireGrammarEdge("store-subtree", "records-collection");
+  requireGrammarEdge("records-collection", "record-kind-collection");
+  const collectionListing = await listAt(context, locator);
+  if (collectionListing.status !== "COMPLETE") return [];
+  const observations = [];
+  for (const entry of sortEntries(collectionListing.entries)) {
+    if (entry.kind !== "directory") {
+      const fileLocator = join(locator, entry.name);
+      await readAt(context, fileLocator, "unknown-structural");
+      addUnknown(
+        context,
+        fileLocator,
+        locator,
+        "records-collection",
+        "Record collection contains a non-directory child.",
+        [fileLocator]
+      );
+      continue;
+    }
+    const kindLocator = join(locator, entry.name);
+    if (!isWithinDiscoveryDepth(kindLocator)) {
+      addUnknown(context, kindLocator, locator, "records-collection", "Maximum structural depth reached.");
+      continue;
+    }
+    const kindListing = await listAt(context, kindLocator);
+    if (kindListing.status !== "COMPLETE") continue;
+    const items = await readFiles(context, kindLocator, kindListing, "record-envelope");
+    observations.push(...items);
+    if (!items.some((item) => validKind(item, "revision"))) {
+      addUnknown(
+        context,
+        kindLocator,
+        locator,
+        "records-collection",
+        "No file validated as a canonical revision envelope.",
+        items.map((item) => item.locator)
+      );
+    }
+  }
+  return observations;
+}
+async function scanRecoveryCollection(context, locator) {
+  requireGrammarEdge("store-subtree", "recovery-collection");
+  requireGrammarEdge("recovery-collection", "recovery-kind-collection");
+  const collectionListing = await listAt(context, locator);
+  if (collectionListing.status !== "COMPLETE") return [];
+  const observations = [];
+  for (const entry of sortEntries(collectionListing.entries)) {
+    const child = join(locator, entry.name);
+    if (entry.kind === "file") {
+      observations.push(await readAt(context, child, "opaque-recovery"));
+    } else if (isWithinDiscoveryDepth(child)) {
+      const childListing = await listAt(context, child);
+      if (childListing.status !== "COMPLETE") continue;
+      observations.push(...await readFiles(context, child, childListing, "opaque-recovery"));
+    }
+  }
+  return observations;
+}
+async function scanMigrationsCollection(context, locator) {
+  requireGrammarEdge("meta-collection", "migrations-collection");
+  requireGrammarEdge("migrations-collection", "migration-subtree");
+  const collectionListing = await listAt(context, locator);
+  if (collectionListing.status !== "COMPLETE") return [];
+  const observations = [];
+  for (const entry of sortEntries(collectionListing.entries)) {
+    const migrationLocator = join(locator, entry.name);
+    if (entry.kind !== "directory" || !isWithinDiscoveryDepth(migrationLocator)) {
+      if (entry.kind === "file") await readAt(context, migrationLocator, "unknown-structural");
+      addUnknown(
+        context,
+        migrationLocator,
+        locator,
+        "migrations-collection",
+        "Unexpected migration-collection child; its name is not interpreted.",
+        entry.kind === "file" ? [migrationLocator] : []
+      );
+      continue;
+    }
+    const migrationListing = await listAt(context, migrationLocator);
+    if (migrationListing.status !== "COMPLETE") continue;
+    observations.push(...await readFiles(context, migrationLocator, migrationListing, "opaque-migration"));
+  }
+  return observations;
+}
+async function scanMetaCollection(context, locator) {
+  requireGrammarEdge("store-subtree", "meta-collection");
+  const metaListing = await listAt(context, locator);
+  if (metaListing.status !== "COMPLETE") return [];
+  const observations = [];
+  for (const entry of sortEntries(metaListing.entries)) {
+    if (entry.kind !== "directory") {
+      const fileLocator = join(locator, entry.name);
+      await readAt(context, fileLocator, "unknown-structural");
+      addUnknown(
+        context,
+        fileLocator,
+        locator,
+        "meta-collection",
+        "Metadata collection contains a non-directory child.",
+        [fileLocator]
+      );
+      continue;
+    }
+    const child = join(locator, entry.name);
+    if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.protocol) {
+      requireGrammarEdge("meta-collection", "protocol-collection");
+      const listing = await listAt(context, child);
+      if (listing.status === "COMPLETE")
+        observations.push(...await readFiles(context, child, listing, "protocol-namespace"));
+    } else if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.representationStates) {
+      requireGrammarEdge("meta-collection", "representation-states-collection");
+      const listing = await listAt(context, child);
+      if (listing.status === "COMPLETE") {
+        observations.push(...await readFiles(context, child, listing, "representation-state-namespace"));
+      }
+    } else if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.migrations) {
+      requireGrammarEdge("meta-collection", "migrations-collection");
+      observations.push(...await scanMigrationsCollection(context, child));
+    } else {
+      const protocolMatch = await probeAuthorityCollection(
+        context,
+        child,
+        "protocol-namespace",
+        "protocol-fence"
+      );
+      const stateMatch = protocolMatch ? false : await probeAuthorityCollection(
+        context,
+        child,
+        "representation-state-namespace",
+        "representation-state"
+      );
+      if (protocolMatch) {
+        const listing = await listAt(context, child);
+        if (listing.status === "COMPLETE")
+          observations.push(...await readFiles(context, child, listing, "protocol-namespace"));
+      } else if (stateMatch) {
+        const listing = await listAt(context, child);
+        if (listing.status === "COMPLETE") {
+          observations.push(...await readFiles(context, child, listing, "representation-state-namespace"));
+        }
+      } else {
+        const childListing = await listAt(context, child);
+        const raw = childListing.status === "COMPLETE" ? await readUnknownFiles(context, child, childListing) : [];
+        addUnknown(
+          context,
+          child,
+          locator,
+          "meta-collection",
+          "Alternate metadata collection did not expose validated protocol or representation-state evidence.",
+          raw.map((item) => item.locator)
+        );
+      }
+    }
+  }
+  return observations;
+}
+async function scanStoreCandidate(context, representationRootLocator, storesCollectionLocator, candidateLocator) {
+  requireGrammarEdge("stores-collection", "store-subtree");
+  const probe = await probeStoreSubtree(context, candidateLocator);
+  const artifacts = probe.observations;
+  const storeIds = new Set(probe.storeIds);
+  const listing = await listAt(context, candidateLocator);
+  if (listing.status !== "COMPLETE") {
+    return {
+      candidateLocator,
+      representationRootLocator,
+      storesCollectionLocator,
+      storeIds: [...storeIds].sort(compareText),
+      hasStoreManifest: artifacts.some((item) => validKind(item, "store")),
+      artifactObservations: artifacts,
+      state: "UNAVAILABLE"
+    };
+  }
+  for (const entry of sortEntries(listing.entries)) {
+    if (entry.kind !== "directory") {
+      const item = artifacts.find((candidate) => candidate.locator === join(candidateLocator, entry.name));
+      if (!item || item.recognition.status === "UNRECOGNIZED") {
+        const fileLocator = join(candidateLocator, entry.name);
+        if (!item) await readAt(context, fileLocator, "unknown-structural");
+        addUnknown(
+          context,
+          fileLocator,
+          candidateLocator,
+          "store-subtree",
+          "Unrecognized immediate store-subtree file.",
+          [fileLocator]
+        );
+      }
+      continue;
+    }
+    const child = join(candidateLocator, entry.name);
+    if (!isWithinDiscoveryDepth(child)) {
+      addUnknown(context, child, candidateLocator, "store-subtree", "Maximum structural depth reached.");
+      continue;
+    }
+    if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.records) {
+      requireGrammarEdge("store-subtree", "records-collection");
+      artifacts.push(...await scanRecordCollection(context, child));
+    } else if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.recovery) {
+      requireGrammarEdge("store-subtree", "recovery-collection");
+      artifacts.push(...await scanRecoveryCollection(context, child));
+    } else if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.meta) {
+      requireGrammarEdge("store-subtree", "meta-collection");
+      artifacts.push(...await scanMetaCollection(context, child));
+    } else {
+      const recordsMatch = await probeRecordCollection(context, child);
+      if (recordsMatch) {
+        artifacts.push(...await scanRecordCollection(context, child));
+      } else {
+        const metaMatch = await probeMetaCollection(context, child);
+        if (metaMatch) {
+          artifacts.push(...await scanMetaCollection(context, child));
+        } else
+          addUnknown(
+            context,
+            child,
+            candidateLocator,
+            "store-subtree",
+            "Unrecognized child directory; candidate probe stopped here."
+          );
+      }
+    }
+  }
+  const candidatePrefix = `${candidateLocator}/`;
+  const candidateArtifacts = uniquePhysicalObservations([
+    ...artifacts,
+    ...[...context.artifacts.values()].filter(
+      (item) => item.locator === candidateLocator || item.locator.startsWith(candidatePrefix)
+    )
+  ]);
+  for (const item of candidateArtifacts) {
+    const storeId = artifactStoreId(item);
+    if (storeId) storeIds.add(storeId);
+  }
+  const sortedIds = [...storeIds].sort(compareText);
+  const complete = !candidateArtifacts.some((item) => item.readStatus !== "READ") && ![...context.listings.values()].some(
+    (item) => (item.locator === candidateLocator || item.locator.startsWith(`${candidateLocator}/`)) && item.status !== "COMPLETE"
+  );
+  const hasUnrecognizedArtifact = candidateArtifacts.some((item) => item.recognition.status !== "VALID");
+  const hasStructuralUnknown = context.unknownNodes.some(
+    (item) => item.locator === candidateLocator || item.locator.startsWith(`${candidateLocator}/`)
+  );
+  return {
+    candidateLocator,
+    representationRootLocator,
+    storesCollectionLocator,
+    storeIds: sortedIds,
+    hasStoreManifest: artifacts.some((item) => validKind(item, "store")),
+    artifactObservations: candidateArtifacts,
+    state: !complete ? "UNAVAILABLE" : sortedIds.length > 1 ? "MIXED_STORE_INVALID" : sortedIds.length === 1 && artifacts.some((item) => validKind(item, "store")) && !hasUnrecognizedArtifact && !hasStructuralUnknown ? "VALID" : "PARTIAL"
+  };
+}
+async function scanStoresCollection(context, rootLocator, collectionLocator) {
+  requireGrammarEdge("representation-root", "stores-collection");
+  const listing = await listAt(context, collectionLocator);
+  if (listing.status !== "COMPLETE") return [];
+  const candidates = [];
+  for (const entry of sortEntries(listing.entries)) {
+    const child = join(collectionLocator, entry.name);
+    if (entry.kind !== "directory") {
+      await readAt(context, child, "unknown-structural");
+      addUnknown(
+        context,
+        child,
+        collectionLocator,
+        "stores-collection",
+        "Store collection contains a non-directory child.",
+        [child]
+      );
+      continue;
+    }
+    if (!isWithinDiscoveryDepth(child)) {
+      addUnknown(context, child, collectionLocator, "stores-collection", "Maximum structural depth reached.");
+      continue;
+    }
+    candidates.push(await scanStoreCandidate(context, rootLocator, collectionLocator, child));
+  }
+  return candidates;
+}
+async function probeAlternateStoresCollection(context, rootLocator, candidateLocator) {
+  requireGrammarEdge("representation-root", "stores-collection");
+  const listing = await listAt(context, candidateLocator);
+  if (listing.status !== "COMPLETE") {
+    context.probes.push({
+      locator: candidateLocator,
+      grammarPosition: "alternate stores collection",
+      result: "UNAVAILABLE",
+      evidenceLocators: []
+    });
+    return { valid: false, candidates: [] };
+  }
+  const candidates = [];
+  for (const entry of sortEntries(listing.entries)) {
+    const child = join(candidateLocator, entry.name);
+    if (entry.kind !== "directory") {
+      await readAt(context, child, "unknown-structural");
+      addUnknown(
+        context,
+        child,
+        candidateLocator,
+        "alternate stores candidate probe",
+        "Candidate collection contains a non-directory child.",
+        [child]
+      );
+      continue;
+    }
+    if (!isWithinDiscoveryDepth(child)) {
+      addUnknown(
+        context,
+        child,
+        candidateLocator,
+        "alternate stores candidate probe",
+        "Maximum structural depth reached."
+      );
+      continue;
+    }
+    const probe = await probeStoreSubtree(context, child);
+    if (!probe.complete) {
+      context.probes.push({
+        locator: child,
+        grammarPosition: "alternate store-subtree candidate",
+        result: "UNAVAILABLE",
+        evidenceLocators: probe.observations.map((item) => item.locator).sort(compareText)
+      });
+      addUnknown(
+        context,
+        child,
+        candidateLocator,
+        "alternate stores candidate probe",
+        "Candidate probe could not establish a complete listing/read.",
+        probe.observations.map((item) => item.locator)
+      );
+      continue;
+    }
+    if (!probe.storeIds.length) {
+      const rawLocators = probe.observations.filter((item) => item.readStatus === "READ").map((item) => item.locator);
+      const invalidEvidence = probe.observations.some(
+        (item) => item.recognition.status === "INVALID" || item.recognition.status === "UNSUPPORTED"
+      );
+      context.probes.push({
+        locator: child,
+        grammarPosition: "alternate store-subtree candidate",
+        result: invalidEvidence ? "INVALID_EVIDENCE" : "NO_QUALIFYING_EVIDENCE",
+        evidenceLocators: rawLocators.sort(compareText)
+      });
+      addUnknown(
+        context,
+        child,
+        candidateLocator,
+        "alternate stores candidate probe",
+        "No qualifying store-bound evidence; candidate probe stopped.",
+        rawLocators
+      );
+      continue;
+    }
+    candidates.push(await scanStoreCandidate(context, rootLocator, candidateLocator, child));
+  }
+  const valid = candidates.length > 0;
+  context.probes.push({
+    locator: candidateLocator,
+    grammarPosition: "alternate stores collection",
+    result: valid ? "VALIDATED_DESCENT" : "NO_QUALIFYING_EVIDENCE",
+    evidenceLocators: candidates.flatMap(
+      (candidate) => candidate.artifactObservations.filter((item) => artifactStoreId(item)).map((item) => item.locator)
+    ).sort(compareText)
+  });
+  return { valid, candidates };
+}
+function fingerprintProjection(snapshot) {
+  var _a;
+  return {
+    rootFingerprint: (_a = snapshot.rootDiscovery.fingerprint) != null ? _a : null,
+    state: snapshot.state,
+    listings: snapshot.listings.map((listing) => ({
+      locator: listing.locator,
+      status: listing.status,
+      entries: sortEntries(listing.entries),
+      failure: listing.failure ? { code: listing.failure.code, message: listing.failure.message } : null
+    })),
+    probes: snapshot.probes,
+    artifacts: snapshot.artifacts.map((item) => ({
+      locator: item.locator,
+      context: item.context,
+      readStatus: item.readStatus,
+      bytes: item.bytes ? Array.from(item.bytes) : null,
+      recognition: item.recognition.status,
+      recognitionKind: item.recognition.status === "VALID" || item.recognition.status === "OPAQUE" ? item.recognition.kind : null,
+      failure: item.failure ? { code: item.failure.code, message: item.failure.message } : null
+    })),
+    unknownNodes: snapshot.unknownNodes
+  };
+}
+async function discoverPhysicalStorageTree(port, recordCodecs = []) {
+  var _a;
+  const rootDiscovery = await discoverRepresentationRoots(port);
+  const context = {
+    port,
+    recordCodecs,
+    listings: /* @__PURE__ */ new Map(),
+    artifacts: /* @__PURE__ */ new Map(),
+    probes: [],
+    unknownNodes: []
+  };
+  context.listings.set("", rootDiscovery.rootListing);
+  for (const candidate of rootDiscovery.candidates) {
+    if (candidate.listing) context.listings.set(candidate.locator, candidate.listing);
+    for (const marker of candidate.markers) {
+      if (marker.bytes && candidate.state !== "NON_FK" && marker.namespaceValidation !== "UNRECOGNIZED") {
+        const recognition = await recognizeDiscoveryArtifact({
+          locator: marker.locator,
+          context: "namespace-probe",
+          readStatus: "READ",
+          bytes: marker.bytes
+        });
+        context.artifacts.set(`namespace-probe\0${marker.locator}`, {
+          locator: marker.locator,
+          context: "namespace-probe",
+          readStatus: marker.readStatus,
+          bytes: marker.bytes,
+          failure: marker.failure,
+          recognition
+        });
+      }
+    }
+  }
+  const storeCandidates = [];
+  for (const root of rootDiscovery.candidates.filter((candidate) => candidate.state === "VALID")) {
+    requireGrammarEdge("vault-root", "representation-root");
+    const rootListing = (_a = root.listing) != null ? _a : await listAt(context, root.locator);
+    if (rootListing.status !== "COMPLETE") continue;
+    const storesCollections = /* @__PURE__ */ new Set();
+    for (const entry of sortEntries(rootListing.entries)) {
+      if (entry.kind !== "directory") {
+        if (entry.name !== "namespace.json") {
+          const markerCopy = root.markers.some(
+            (marker) => marker.locator === join(root.locator, entry.name) && marker.namespaceValidation === "VALID"
+          );
+          if (!markerCopy) {
+            addUnknown(
+              context,
+              join(root.locator, entry.name),
+              root.locator,
+              "representation-root",
+              "Unexpected file at representation root."
+            );
+          }
+        }
+        continue;
+      }
+      const child = join(root.locator, entry.name);
+      if (entry.name === DISCOVERY_NOMINAL_DIRECTORY_NAMES.stores) {
+        storesCollections.add(child);
+      } else {
+        const probe = await probeAlternateStoresCollection(context, root.locator, child);
+        if (probe.valid) storesCollections.add(child);
+        else
+          addUnknown(
+            context,
+            child,
+            root.locator,
+            "representation-root",
+            "Unvalidated alternate stores candidate; traversal stopped after bounded probe."
+          );
+        storeCandidates.push(...probe.candidates);
+      }
+    }
+    for (const collection of [...storesCollections].sort(compareText)) {
+      if (collection !== join(root.locator, DISCOVERY_NOMINAL_DIRECTORY_NAMES.stores)) {
+        continue;
+      }
+      storeCandidates.push(...await scanStoresCollection(context, root.locator, collection));
+    }
+  }
+  const uniqueCandidates = /* @__PURE__ */ new Map();
+  for (const candidate of storeCandidates) uniqueCandidates.set(candidate.candidateLocator, candidate);
+  const candidates = [...uniqueCandidates.values()].sort(
+    (left, right) => compareText(left.candidateLocator, right.candidateLocator)
+  );
+  const allArtifacts = [...context.artifacts.values()].sort(
+    (left, right) => compareText(left.locator, right.locator) || compareText(left.context, right.context)
+  );
+  const listings = [...context.listings.values()].sort((left, right) => compareText(left.locator, right.locator));
+  const state = rootDiscovery.state === "COMPLETE" && listings.every((listing) => listing.status === "COMPLETE") && candidates.every((candidate) => candidate.state !== "UNAVAILABLE") && !context.probes.some((probe) => probe.result === "UNAVAILABLE") ? "COMPLETE" : "UNAVAILABLE";
+  const withoutFingerprint = {
+    rootDiscovery,
+    state,
+    listings,
+    probes: [...context.probes].sort((left, right) => compareText(left.locator, right.locator)),
+    artifacts: allArtifacts,
+    storeCandidates: candidates,
+    unknownNodes: [...context.unknownNodes].sort((left, right) => compareText(left.locator, right.locator))
+  };
+  const fingerprint2 = await canonicalDigest(fingerprintProjection(withoutFingerprint));
+  return { ...withoutFingerprint, fingerprint: fingerprint2 };
+}
+
+// src/storage/RepresentationStoragePort.ts
+function isSafeRepresentationLocator(locator, allowRoot = false) {
+  if (typeof locator !== "string" || locator.includes("\0") || locator.includes("\\")) return false;
+  if (allowRoot && locator === "") return true;
+  if (!locator || locator.startsWith("/") || locator.endsWith("/")) return false;
+  return locator.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+function storageFailure(code, message) {
+  return { ok: false, failure: { code, message } };
+}
+function storageSuccess(value) {
+  return { ok: true, value };
+}
+
+// src/diagnostics/storageDiscoveryCheck.ts
+function immediateName(path, directory) {
+  const normalizedPath = path.replace(/^\/+/, "");
+  const normalizedDirectory = directory.replace(/^\/+|\/+$/g, "");
+  const prefix = normalizedDirectory ? `${normalizedDirectory}/` : "";
+  if (prefix && !normalizedPath.startsWith(prefix) && normalizedPath.includes("/")) {
+    throw new Error("Adapter returned an entry outside the requested directory.");
+  }
+  const relative = prefix && normalizedPath.startsWith(prefix) ? normalizedPath.slice(prefix.length) : normalizedPath;
+  if (!relative || relative.includes("/")) throw new Error("Adapter did not return an immediate child entry.");
+  return relative;
+}
+function compareText2(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : typeof error === "string" ? error : "Unexpected discovery error.";
+}
+function createDevVaultDiscoveryReadPort(app) {
+  if (app.vault.getName() !== "dev-vault") {
+    throw new Error("Storage discovery diagnostic is restricted to dev-vault.");
+  }
+  const adapter = app.vault.adapter;
+  return {
+    rootIdentity: "dev-vault-root-handle",
+    async listChildren(directory, limit) {
+      if (!Number.isSafeInteger(limit) || limit < 1) {
+        return storageFailure("INVALID_LIMIT", "Discovery listing limit must be a positive safe integer.");
+      }
+      try {
+        const listed = await adapter.list(directory || "/");
+        const entries = [
+          ...listed.files.map((path) => ({ name: immediateName(path, directory), kind: "file" })),
+          ...listed.folders.map((path) => ({
+            name: immediateName(path, directory),
+            kind: "directory"
+          }))
+        ].sort((left, right) => compareText2(left.name, right.name) || compareText2(left.kind, right.kind));
+        return storageSuccess({ entries: entries.slice(0, limit), truncated: entries.length > limit });
+      } catch (error) {
+        return storageFailure("UNAVAILABLE", error instanceof Error ? error.message : "Vault listing failed.");
+      }
+    },
+    async readBytes(locator) {
+      if (!isSafeRepresentationLocator(locator)) {
+        return storageFailure("INVALID_LOCATOR", "Discovery read locator is not a safe root-relative path.");
+      }
+      try {
+        const bytes = await adapter.readBinary(locator);
+        return storageSuccess(new Uint8Array(bytes));
+      } catch (error) {
+        return storageFailure("UNAVAILABLE", error instanceof Error ? error.message : "Vault read failed.");
+      }
+    }
+  };
+}
+function registerStorageDiscoveryReadOnlyCommand(plugin) {
+  if (plugin.app.vault.getName() !== "dev-vault") return;
+  plugin.addCommand({
+    id: "fk-storage-s2-discovery-readonly",
+    name: "Inspect bounded storage structure (read only, dev vault)",
+    callback: () => {
+      try {
+        const port = createDevVaultDiscoveryReadPort(plugin.app);
+        void discoverPhysicalStorageTree(port).then((snapshot) => {
+          const candidates = snapshot.rootDiscovery.candidates.filter((candidate) => candidate.state !== "ABSENT" && candidate.state !== "NON_FK").map((candidate) => `${candidate.locator}:${candidate.state}`);
+          const message = [
+            `S2 read-only discovery ${snapshot.state.toLowerCase()}`,
+            `roots=${candidates.length ? candidates.join(",") : "none"}`,
+            `stores=${snapshot.storeCandidates.length}`,
+            `unknown=${snapshot.unknownNodes.length}`
+          ].join("; ");
+          new import_obsidian15.Notice(message, 12e3);
+        }).catch((error) => {
+          new import_obsidian15.Notice(`S2 read-only discovery failed: ${errorMessage(error)}`, 12e3);
+        });
+      } catch (error) {
+        new import_obsidian15.Notice(`S2 read-only discovery refused: ${errorMessage(error)}`, 12e3);
+      }
+    }
+  });
+}
+
 // src/main.ts
 var SMART_SELECTION_TAGS = /* @__PURE__ */ new Set(["P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TD", "TH"]);
 var FRONTMATTER_NEEDS_QUOTES_RE = new RegExp("[:\\s{}\\[\\],&*#?|<>=!%@\\\\-]");
@@ -8114,7 +9876,7 @@ function toDisplayString(value) {
   const primitive = value;
   return String(primitive);
 }
-var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
+var ReadingHighlighterPlugin = class extends import_obsidian16.Plugin {
   async onload() {
     await this.loadSettings();
     this.registerEvent(
@@ -8134,6 +9896,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
     this.registerCommands();
     registerStorageSpikeCommands(this);
+    registerStorageDiscoveryReadOnlyCommand(this);
     this.registerMarkdownPostProcessor((el, ctx) => {
       setRepeatedFootnoteDisplay(el, this.settings.normalizeRepeatedFootnoteReferences);
       ctx.addChild(
@@ -8154,11 +9917,11 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
         this.floatingManager.handleSelection();
       })
     );
-    if (import_obsidian15.Platform.isMobile) {
+    if (import_obsidian16.Platform.isMobile) {
       const btn = this.addRibbonIcon("highlighter", "Highlight selection", () => {
         const view = this.getActiveReadingView();
         if (view) void this.highlightSelection(view);
-        else new import_obsidian15.Notice("Open a note in reading view first.");
+        else new import_obsidian16.Notice("Open a note in reading view first.");
       });
       this.register(() => btn.remove());
     }
@@ -8194,7 +9957,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       id: "extract-all-pdf-text",
       name: "Extract all text from current PDF",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.View);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.View);
         if (view && view.getViewType() === "pdf") {
           if (!checking) {
             void this.extractAllPdfText(view);
@@ -8266,7 +10029,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       id: "export-highlights-json",
       name: "Export highlights to JSON",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.exportHighlightsJSON(view);
@@ -8277,7 +10040,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       id: "export-highlights-csv",
       name: "Export highlights to CSV",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         void this.exportHighlightsCSV(view);
@@ -8288,7 +10051,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       id: "merge-adjacent-highlights",
       name: "Merge adjacent highlights in note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         new MaintenanceModal(this, view.file, () => {
@@ -8300,7 +10063,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       id: "recolor-mark-highlights",
       name: "Recolor <mark> highlights in note\u2026",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         new MaintenanceModal(this, view.file, () => {
@@ -8312,7 +10075,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       id: "migrate-span-highlights",
       name: "Migrate <span> highlights to <mark> in note",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         if (!view || !view.file) return false;
         if (checking) return true;
         new MaintenanceModal(this, view.file, () => {
@@ -8394,7 +10157,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     }
   }
   getActiveReadingView() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
     return view && view.getMode() === "preview" ? view : null;
   }
   getSelectionContext(selectionSnapshot, scope = "configured") {
@@ -8585,7 +10348,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       if (markdownSourceAdapter.observe(head.raw).some(
         (annotation) => annotation.anchor.parts.some((part) => part.start < lineEnd && part.end > lineStart)
       )) {
-        new import_obsidian15.Notice(
+        new import_obsidian16.Notice(
           "This passage already has marks. Annotating it would replace them; select unmarked text for now."
         );
         return "overlap";
@@ -8601,7 +10364,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     timingStep(timing, "selection request built");
     if (!request) {
-      new import_obsidian15.Notice("No text selected.");
+      new import_obsidian16.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -8620,7 +10383,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
       }
       this.restoreScroll(view, scrollPos);
       sel == null ? void 0 : sel.removeAllRanges();
-      new import_obsidian15.Notice("Highlighted!");
+      new import_obsidian16.Notice("Highlighted!");
       return;
     }
     const result = await this.logic.locateSelection(
@@ -8653,10 +10416,10 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     timingStep(timing, "write and optional frontmatter completed");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
-    if (this.settings.enableHaptics && import_obsidian15.Platform.isMobile) {
+    if (this.settings.enableHaptics && import_obsidian16.Platform.isMobile) {
       (_a = navigator.vibrate) == null ? void 0 : _a.call(navigator, 10);
     }
-    new import_obsidian15.Notice("Highlighted!");
+    new import_obsidian16.Notice("Highlighted!");
   }
   async applyColorByIndex(view, index, selectionSnapshot, notationType = DEFAULT_NOTATION_TYPE) {
     if (index < 0 || index >= this.settings.semanticColors.length) return;
@@ -8668,7 +10431,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
     if (!view.file) return;
     let snippet = (selectionSnapshot == null ? void 0 : selectionSnapshot.text) || ((_a = window.getSelection()) == null ? void 0 : _a.toString()) || "";
     if (!snippet.trim()) {
-      new import_obsidian15.Notice("No text selected.");
+      new import_obsidian16.Notice("No text selected.");
       return;
     }
     snippet = this.sanitizePdfText(snippet);
@@ -8699,7 +10462,7 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
 
 `;
     try {
-      if (fileExists instanceof import_obsidian15.TFile) {
+      if (fileExists instanceof import_obsidian16.TFile) {
         const fileContent = await this.app.vault.read(fileExists);
         await this.app.vault.modify(fileExists, fileContent + "\n" + appendString);
       } else {
@@ -8708,14 +10471,14 @@ var ReadingHighlighterPlugin = class extends import_obsidian15.Plugin {
 ${appendString}`;
         await this.app.vault.create(companionFile, fileContent);
       }
-      new import_obsidian15.Notice("Saved to " + pdfName + " - Highlights");
+      new import_obsidian16.Notice("Saved to " + pdfName + " - Highlights");
       (_c = window.getSelection()) == null ? void 0 : _c.removeAllRanges();
-      if (this.settings.enableHaptics && import_obsidian15.Platform.isMobile) {
+      if (this.settings.enableHaptics && import_obsidian16.Platform.isMobile) {
         (_d = navigator.vibrate) == null ? void 0 : _d.call(navigator, 10);
       }
     } catch (e2) {
       console.error("Failed to save PDF highlight", e2);
-      new import_obsidian15.Notice("Failed to save PDF highlight");
+      new import_obsidian16.Notice("Failed to save PDF highlight");
     }
   }
   sanitizePdfText(text) {
@@ -8734,12 +10497,12 @@ ${appendString}`;
   }
   async extractAllPdfText(view) {
     if (!view || view.getViewType() !== "pdf" || !view.file) {
-      new import_obsidian15.Notice("Please open a PDF file first.");
+      new import_obsidian16.Notice("Please open a PDF file first.");
       return;
     }
-    const notice = new import_obsidian15.Notice("Extracting all PDF text...", 0);
+    const notice = new import_obsidian16.Notice("Extracting all PDF text...", 0);
     try {
-      const pdfjs = await (0, import_obsidian15.loadPdfJs)();
+      const pdfjs = await (0, import_obsidian16.loadPdfJs)();
       const buffer = await this.app.vault.readBinary(view.file);
       const loadingTask = pdfjs.getDocument({ data: buffer });
       const pdf = await loadingTask.promise;
@@ -8764,17 +10527,17 @@ ${appendString}`;
       const dummySnapshot = { text: fullText, range: null };
       await this.savePdfHighlight(view, dummySnapshot, "action", "highlightSelection");
       notice.hide();
-      new import_obsidian15.Notice(`Successfully extracted ${pdf.numPages} pages.`);
+      new import_obsidian16.Notice(`Successfully extracted ${pdf.numPages} pages.`);
     } catch (e2) {
       console.error("Full PDF extraction failed", e2);
       notice.hide();
-      new import_obsidian15.Notice("Failed to extract PDF text.");
+      new import_obsidian16.Notice("Failed to extract PDF text.");
     }
   }
   async tagSelection(view, selectionSnapshot) {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian15.Notice("No text selected.");
+      new import_obsidian16.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -8803,7 +10566,7 @@ ${appendString}`;
         request.contextKind
       );
       if (!newResult) {
-        new import_obsidian15.Notice("Selection lost - file may have changed.");
+        new import_obsidian16.Notice("Selection lost - file may have changed.");
         return;
       }
       if (tag && this.settings.enableSmartTagSuggestions) {
@@ -8834,7 +10597,7 @@ ${appendString}`;
   async annotateSelection(view, selectionSnapshot) {
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian15.Notice("No text selected.");
+      new import_obsidian16.Notice("No text selected.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -8851,7 +10614,6 @@ ${appendString}`;
       this.handleSelectionFailure(view, request, "annotateSelection");
       return;
     }
-    const targetFile = result.file;
     new AnnotationModal(this.app, async (comment) => {
       var _a;
       const newResult = await this.logic.locateSelection(
@@ -8864,13 +10626,13 @@ ${appendString}`;
         request.contextKind
       );
       if (!newResult) {
-        new import_obsidian15.Notice("Selection lost - file may have changed.");
+        new import_obsidian16.Notice("Selection lost - file may have changed.");
         return;
       }
-      await this.applyAnnotation(targetFile, newResult.raw, newResult.start, newResult.end, comment);
+      await this.applyAnnotation(newResult.file, newResult.raw, newResult.start, newResult.end, comment);
       this.restoreScroll(view, scrollPos);
       (_a = window.getSelection()) == null ? void 0 : _a.removeAllRanges();
-      new import_obsidian15.Notice("Footnote added.");
+      new import_obsidian16.Notice("Footnote added.");
     }).open();
   }
   async applyAnnotation(file, raw, start, end, comment) {
@@ -8887,7 +10649,7 @@ ${appendString}`;
     const sel = window.getSelection();
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian15.Notice("Select highlighted text to remove.");
+      new import_obsidian16.Notice("Select highlighted text to remove.");
       return;
     }
     const scrollPos = getScroll(view);
@@ -8910,7 +10672,7 @@ ${appendString}`;
     ).map((observation) => observation.highlight);
     const managed = touched.filter((mark) => mark.annotationId);
     if (managed.length > 1) {
-      new import_obsidian15.Notice("Selection touches several annotations. Remove them individually in the navigator.");
+      new import_obsidian16.Notice("Selection touches several annotations. Remove them individually in the navigator.");
       return;
     }
     if (managed.length === 1) {
@@ -8921,46 +10683,46 @@ ${appendString}`;
     } else {
       await this.applyMarkdownModification(targetFile, result.raw, result.start, result.end, "remove");
     }
-    new import_obsidian15.Notice("Highlighting removed.");
+    new import_obsidian16.Notice("Highlighting removed.");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
   }
   async exportHighlights(view) {
     try {
       const exportPath = await exportHighlightsToMD(this.app, view.file);
-      new import_obsidian15.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian16.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian15.TFile) {
+      if (exportFile instanceof import_obsidian16.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian15.Notice("Failed to export highlights.");
+      new import_obsidian16.Notice("Failed to export highlights.");
       console.error(err);
     }
   }
   async exportHighlightsJSON(view) {
     try {
       const exportPath = await exportHighlightsToJSON(this.app, view.file);
-      new import_obsidian15.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian16.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian15.TFile) {
+      if (exportFile instanceof import_obsidian16.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian15.Notice("Failed to export highlights to JSON.");
+      new import_obsidian16.Notice("Failed to export highlights to JSON.");
       console.error(err);
     }
   }
   async exportHighlightsCSV(view) {
     try {
       const exportPath = await exportHighlightsToCSV(this.app, view.file);
-      new import_obsidian15.Notice(`Highlights exported to ${exportPath}`);
+      new import_obsidian16.Notice(`Highlights exported to ${exportPath}`);
       const exportFile = this.app.vault.getAbstractFileByPath(exportPath);
-      if (exportFile instanceof import_obsidian15.TFile) {
+      if (exportFile instanceof import_obsidian16.TFile) {
         await this.app.workspace.getLeaf().openFile(exportFile);
       }
     } catch (err) {
-      new import_obsidian15.Notice("Failed to export highlights to CSV.");
+      new import_obsidian16.Notice("Failed to export highlights to CSV.");
       console.error(err);
     }
   }
@@ -8969,7 +10731,7 @@ ${appendString}`;
     const sel = window.getSelection();
     const request = this.buildSelectionRequest(view, selectionSnapshot);
     if (!request) {
-      new import_obsidian15.Notice("No text selected.");
+      new import_obsidian16.Notice("No text selected.");
       return;
     }
     const quotedText = request.snippet.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
@@ -8977,10 +10739,10 @@ ${appendString}`;
     const quote = this.expandQuoteTemplate(view.file, quotedText, frontmatter);
     const copied = await this.writeClipboardText(quote);
     if (!copied) {
-      new import_obsidian15.Notice("Failed to copy quote.");
+      new import_obsidian16.Notice("Failed to copy quote.");
       return;
     }
-    new import_obsidian15.Notice("Copied as quote!");
+    new import_obsidian16.Notice("Copied as quote!");
     sel == null ? void 0 : sel.removeAllRanges();
   }
   async applyColorHighlight(view, color, autoTag = "", selectionSnapshot, notationType = DEFAULT_NOTATION_TYPE) {
@@ -9000,7 +10762,7 @@ ${appendString}`;
       timingStep(timing, "logical annotation source written");
       this.restoreScroll(view, scrollPos);
       sel == null ? void 0 : sel.removeAllRanges();
-      new import_obsidian15.Notice("Annotated passage!");
+      new import_obsidian16.Notice("Annotated passage!");
       return;
     }
     const result = await this.logic.locateSelection(
@@ -9033,7 +10795,7 @@ ${appendString}`;
     timingStep(timing, "write and optional frontmatter completed");
     this.restoreScroll(view, scrollPos);
     sel == null ? void 0 : sel.removeAllRanges();
-    new import_obsidian15.Notice("Highlighted!");
+    new import_obsidian16.Notice("Highlighted!");
   }
   async activateNavigatorView() {
     var _a;
@@ -9197,7 +10959,7 @@ ${appendString}`;
   handleSelectionFailure(view, request, actionType, payload = null) {
     const report = this.logic.lastFailureReport;
     if (!report) {
-      new import_obsidian15.Notice("Selection failed, but no diagnostic report was generated.");
+      new import_obsidian16.Notice("Selection failed, but no diagnostic report was generated.");
       return;
     }
     new FailureRecoveryModal(this.app, report, async (correctedText, learnedRule) => {
@@ -9209,7 +10971,7 @@ ${appendString}`;
         if (!existing) {
           this.settings.learnedNormRules.push({ stripPattern: learnedRule.stripPattern });
           await this.saveSettings();
-          new import_obsidian15.Notice("Normalization rule learned for future selections!");
+          new import_obsidian16.Notice("Normalization rule learned for future selections!");
         }
       }
       const mockSnapshot = { text: correctedText, range: null };
@@ -9234,7 +10996,7 @@ ${appendString}`;
     }).open();
   }
 };
-var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSettingTab {
+var ReadingHighlighterSettingTab = class extends import_obsidian16.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -9433,11 +11195,11 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
             name: `Rule ${index + 1}`,
             desc: `Ignore: "${rule.stripPattern}"`,
             action: (el) => {
-              new import_obsidian15.Setting(el).addButton((btn) => {
+              new import_obsidian16.Setting(el).addButton((btn) => {
                 btn.setButtonText("Delete").onClick(async () => {
                   this.plugin.settings.learnedNormRules.splice(index, 1);
                   await this.plugin.saveSettings();
-                  new import_obsidian15.Notice("Rule deleted.");
+                  new import_obsidian16.Notice("Rule deleted.");
                   this.refreshDefinitions();
                 });
                 btn.buttonEl.addClass("mod-warning");
@@ -9447,11 +11209,11 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
           {
             name: "Clear all rules",
             action: (el) => {
-              new import_obsidian15.Setting(el).addButton((btn) => {
+              new import_obsidian16.Setting(el).addButton((btn) => {
                 btn.setButtonText("Clear all rules").onClick(async () => {
                   this.plugin.settings.learnedNormRules = [];
                   await this.plugin.saveSettings();
-                  new import_obsidian15.Notice("All rules cleared.");
+                  new import_obsidian16.Notice("All rules cleared.");
                   this.refreshDefinitions();
                 });
                 btn.buttonEl.addClass("mod-warning");
@@ -9505,7 +11267,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
     this.sectionHeading("FuturePlural annotations settings", "h2");
     this.sectionHeading("Canvas creation defaults", "h3");
     renderCanvasSettings(containerEl, this.plugin.settings.canvasDefaults, () => this.plugin.saveSettings());
-    new import_obsidian15.Setting(containerEl).setName("Toolbar position").setDesc("Choose where the floating toolbar should appear.").addDropdown(
+    new import_obsidian16.Setting(containerEl).setName("Toolbar position").setDesc("Choose where the floating toolbar should appear.").addDropdown(
       (dropdown) => dropdown.addOption("text", "Next to text").addOption("top", "Fixed at top center").addOption("bottom", "Fixed at bottom center").addOption("left", "Fixed left side").addOption("right", "Fixed right side (default)").setValue(this.plugin.settings.toolbarPosition).onChange(async (value) => {
         this.plugin.settings.toolbarPosition = value;
         await this.plugin.saveSettings();
@@ -9516,15 +11278,15 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
     for (const type of NOTATION_TYPES) {
       const wrapper = containerEl.createDiv();
       wrapper.createSpan({ text: `${type} opacity` });
-      this.addOpacitySlider(new import_obsidian15.Setting(wrapper), type);
+      this.addOpacitySlider(new import_obsidian16.Setting(wrapper), type);
     }
-    new import_obsidian15.Setting(containerEl).setName("Highlight color").setDesc("Default color for new highlights.").addColorPicker(
+    new import_obsidian16.Setting(containerEl).setName("Highlight color").setDesc("Default color for new highlights.").addColorPicker(
       (color) => color.setValue(this.plugin.settings.highlightColor || "#FFEE58").onChange(async (value) => {
         this.plugin.settings.highlightColor = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Enable color palette").setDesc("Show the semantic colour palette in the toolbar for quick selection.").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Enable color palette").setDesc("Show the semantic colour palette in the toolbar for quick selection.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableColorPalette).onChange(async (value) => {
         this.plugin.settings.enableColorPalette = value;
         await this.plugin.saveSettings();
@@ -9532,7 +11294,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
       })
     );
     if (this.plugin.settings.enableColorPalette) {
-      new import_obsidian15.Setting(containerEl).setName("Only show colours with a meaning").setDesc(
+      new import_obsidian16.Setting(containerEl).setName("Only show colours with a meaning").setDesc(
         "Hide palette colours that have no meaning assigned below, so the toolbar shows only the ones you actually use. Turn this off to show all of them."
       ).addToggle(
         (toggle) => toggle.setValue(this.plugin.settings.showOnlyAssignedColors).onChange(async (value) => {
@@ -9542,7 +11304,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
       );
       this.sectionHeading("Semantic colour meanings", "h4");
       this.plugin.settings.semanticColors.forEach((item, index) => {
-        const setting = new import_obsidian15.Setting(containerEl).setName(`Color ${index + 1}`);
+        const setting = new import_obsidian16.Setting(containerEl).setName(`Color ${index + 1}`);
         const colorPreview = setting.controlEl.createDiv({ cls: "rht-color-swatch" });
         colorPreview.setCssStyles({ backgroundColor: item.color });
         setting.addText(
@@ -9554,26 +11316,26 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
       });
     }
     this.sectionHeading("Tags", "h3");
-    new import_obsidian15.Setting(containerEl).setName("Default tag prefix").setDesc("Automatically add this tag to every highlight (e.g., 'book').").addText(
+    new import_obsidian16.Setting(containerEl).setName("Default tag prefix").setDesc("Automatically add this tag to every highlight (e.g., 'book').").addText(
       (text) => text.setPlaceholder("Book").setValue(this.plugin.settings.defaultTagPrefix).onChange(async (value) => {
         this.plugin.settings.defaultTagPrefix = value.replace(/\s+/g, "_").replace(/^#/, "");
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Smart tag suggestions").setDesc("Suggest tags based on recent usage, folder, and frontmatter.").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Smart tag suggestions").setDesc("Suggest tags based on recent usage, folder, and frontmatter.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableSmartTagSuggestions).onChange(async (value) => {
         this.plugin.settings.enableSmartTagSuggestions = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Enable smart paragraph selection").setDesc("Snap selections inside a paragraph, list item, heading, or blockquote to the entire block.").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Enable smart paragraph selection").setDesc("Snap selections inside a paragraph, list item, heading, or blockquote to the entire block.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableSmartParagraphSelection).onChange(async (value) => {
         this.plugin.settings.enableSmartParagraphSelection = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Quote Template", "h3");
-    new import_obsidian15.Setting(containerEl).setName("Quote format").setDesc(
+    new import_obsidian16.Setting(containerEl).setName("Quote format").setDesc(
       "Template for copying text as quote. Variables: {{text}}, {{file}}, {{path}}, {{date}}, {{time}}, {{domain}}, {{author}}"
     ).addTextArea(
       (text) => text.setValue(this.plugin.settings.quoteTemplate).onChange(async (value) => {
@@ -9582,19 +11344,19 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
       })
     );
     this.sectionHeading("Footnotes", "h3");
-    new import_obsidian15.Setting(containerEl).setName("Enable footnotes").setDesc("Add standard Markdown footnotes to selections.").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Enable footnotes").setDesc("Add standard Markdown footnotes to selections.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableAnnotations).onChange(async (value) => {
         this.plugin.settings.enableAnnotations = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Show footnote button").setDesc("Show the footnote button in the toolbar.").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Show footnote button").setDesc("Show the footnote button in the toolbar.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showAnnotationButton).onChange(async (value) => {
         this.plugin.settings.showAnnotationButton = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Normalize repeated footnote references").setDesc(
+    new import_obsidian16.Setting(containerEl).setName("Normalize repeated footnote references").setDesc(
       "Show each repeated reference with its original footnote number. Turn off for Obsidian's native 2-1, 2-2 labels."
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.normalizeRepeatedFootnoteReferences).onChange(async (value) => {
@@ -9604,32 +11366,32 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
       })
     );
     this.sectionHeading("Toolbar Buttons", "h3");
-    new import_obsidian15.Setting(containerEl).setName("Show tag button").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Show tag button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showTagButton).onChange(async (value) => {
         this.plugin.settings.showTagButton = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Show quote button").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Show quote button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showQuoteButton).onChange(async (value) => {
         this.plugin.settings.showQuoteButton = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Show remove button").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Show remove button").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showRemoveButton).onChange(async (value) => {
         this.plugin.settings.showRemoveButton = value;
         await this.plugin.saveSettings();
       })
     );
     this.sectionHeading("Mobile & UX", "h3");
-    new import_obsidian15.Setting(containerEl).setName("Haptic feedback").setDesc("Vibrate slightly on success (mobile only).").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Haptic feedback").setDesc("Vibrate slightly on success (mobile only).").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableHaptics).onChange(async (value) => {
         this.plugin.settings.enableHaptics = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian15.Setting(containerEl).setName("Show button tooltips").setDesc("Show tooltips when hovering over toolbar buttons.").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Show button tooltips").setDesc("Show tooltips when hovering over toolbar buttons.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showTooltips).onChange(async (value) => {
         this.plugin.settings.showTooltips = value;
         await this.plugin.saveSettings();
@@ -9637,7 +11399,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
     );
     this.sectionHeading("Frontmatter Integration", "h3");
     let tagSetting;
-    new import_obsidian15.Setting(containerEl).setName("Auto-tag highlight in frontmatter").setDesc("Automatically inject a specific tag into the note's frontmatter whenever you highlight text.").addToggle(
+    new import_obsidian16.Setting(containerEl).setName("Auto-tag highlight in frontmatter").setDesc("Automatically inject a specific tag into the note's frontmatter whenever you highlight text.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableFrontmatterTag).onChange(async (value) => {
         this.plugin.settings.enableFrontmatterTag = value;
         await this.plugin.saveSettings();
@@ -9646,7 +11408,7 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
         }
       })
     );
-    tagSetting = new import_obsidian15.Setting(containerEl).setName("Frontmatter highlight tag").setDesc("The tag to add (e.g. 'resaltados'). Do not include the # symbol.").addText(
+    tagSetting = new import_obsidian16.Setting(containerEl).setName("Frontmatter highlight tag").setDesc("The tag to add (e.g. 'resaltados'). Do not include the # symbol.").addText(
       (text) => text.setPlaceholder("Resaltados").setValue(this.plugin.settings.frontmatterTag).onChange(async (value) => {
         this.plugin.settings.frontmatterTag = value.replace(/^#/, "");
         await this.plugin.saveSettings();
@@ -9658,22 +11420,22 @@ var ReadingHighlighterSettingTab = class extends import_obsidian15.PluginSetting
       containerEl.createEl("p", { text: "No rules learned yet.", cls: "setting-item-description" });
     } else {
       this.plugin.settings.learnedNormRules.forEach((rule, index) => {
-        new import_obsidian15.Setting(containerEl).setName(`Rule ${index + 1}`).setDesc(`Ignore: "${rule.stripPattern}"`).addButton((btn) => {
+        new import_obsidian16.Setting(containerEl).setName(`Rule ${index + 1}`).setDesc(`Ignore: "${rule.stripPattern}"`).addButton((btn) => {
           btn.setButtonText("Delete").onClick(async () => {
             this.plugin.settings.learnedNormRules.splice(index, 1);
             await this.plugin.saveSettings();
             this.render();
-            new import_obsidian15.Notice("Rule deleted.");
+            new import_obsidian16.Notice("Rule deleted.");
           });
           btn.buttonEl.addClass("mod-warning");
         });
       });
-      new import_obsidian15.Setting(containerEl).addButton((btn) => {
+      new import_obsidian16.Setting(containerEl).addButton((btn) => {
         btn.setButtonText("Clear all rules").onClick(async () => {
           this.plugin.settings.learnedNormRules = [];
           await this.plugin.saveSettings();
           this.render();
-          new import_obsidian15.Notice("All rules cleared.");
+          new import_obsidian16.Notice("All rules cleared.");
         });
         btn.buttonEl.addClass("mod-warning");
       });
