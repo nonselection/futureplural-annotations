@@ -35,7 +35,19 @@ export interface LogicalRecordDiscovery {
     readonly classification: RecordRepositoryClassification;
 }
 
-export interface LogicalStoreDiscovery {
+export interface BoundedRecoveryEvidence<TRecovery> {
+    readonly physicalCandidateLocator: string;
+    readonly candidateStoreIds: readonly StoreId[];
+    readonly observation: PhysicalArtifactObservation;
+    readonly recognition: TRecovery;
+}
+
+export type BoundedRecoveryRecognizer<TRecovery> = (
+    observation: PhysicalArtifactObservation,
+    expectedStoreId?: StoreId
+) => Promise<TRecovery>;
+
+export interface LogicalStoreDiscovery<TRecovery = never> {
     readonly storeId: StoreId;
     readonly physicalCandidateLocators: readonly string[];
     readonly records: readonly LogicalRecordDiscovery[];
@@ -45,15 +57,19 @@ export interface LogicalStoreDiscovery {
         readonly physicalCandidateLocator: string;
         readonly observation: PhysicalArtifactObservation;
     }[];
+    /** Optional S3 recognition layered only over raw observations inside the S2 recovery grammar. */
+    readonly recoveryEvidence: readonly BoundedRecoveryEvidence<TRecovery>[];
     readonly hasUnavailableEvidence: boolean;
 }
 
-export interface StructuralDiscoverySemantics {
+export interface StructuralDiscoverySemantics<TRecovery = never> {
     readonly traversal: StructuralDiscoverySnapshot;
     readonly inventory: StoreInventoryClassification;
-    readonly logicalStores: readonly LogicalStoreDiscovery[];
+    readonly logicalStores: readonly LogicalStoreDiscovery<TRecovery>[];
     readonly namespaceCandidates: StructuralDiscoverySnapshot["rootDiscovery"]["candidates"];
     readonly physicalCandidates: readonly PhysicalStoreCandidate[];
+    /** Recognized only when a caller injects an S3 codec; raw S2 observations remain authoritative evidence. */
+    readonly recoveryEvidence: readonly BoundedRecoveryEvidence<TRecovery>[];
     readonly unavailableLocators: readonly string[];
     readonly unknownEvidenceLocators: readonly string[];
 }
@@ -146,10 +162,15 @@ function allArtifacts(snapshot: StructuralDiscoverySnapshot): PhysicalArtifactOb
  * Aggregate validated physical observations using S1 classifiers. This does not
  * establish cross-scope write-gate precedence or select a physical winner.
  */
-export async function aggregateStructuralDiscovery(
+export interface StructuralDiscoveryAggregationOptions<TRecovery> {
+    readonly recognizeRecovery?: BoundedRecoveryRecognizer<TRecovery>;
+}
+
+export async function aggregateStructuralDiscovery<TRecovery = never>(
     snapshot: StructuralDiscoverySnapshot,
-    supportedProtocolVersion: number
-): Promise<StructuralDiscoverySemantics> {
+    supportedProtocolVersion: number,
+    options: StructuralDiscoveryAggregationOptions<TRecovery> = {}
+): Promise<StructuralDiscoverySemantics<TRecovery>> {
     if (!Number.isSafeInteger(supportedProtocolVersion) || supportedProtocolVersion < 1) {
         throw new Error("supportedProtocolVersion must be a positive safe integer.");
     }
@@ -160,6 +181,21 @@ export async function aggregateStructuralDiscovery(
         }))
     );
     const observations = allArtifacts(snapshot);
+    const recoveryEvidence: BoundedRecoveryEvidence<TRecovery>[] = [];
+    if (options.recognizeRecovery) {
+        for (const candidate of snapshot.storeCandidates) {
+            for (const observation of uniquePhysicalObservations(candidate.artifactObservations)) {
+                if (observation.context !== "opaque-recovery" || observation.recognition.status !== "OPAQUE") continue;
+                const expectedStoreId = candidate.storeIds.length === 1 ? candidate.storeIds[0] : undefined;
+                recoveryEvidence.push({
+                    physicalCandidateLocator: candidate.candidateLocator,
+                    candidateStoreIds: candidate.storeIds,
+                    observation,
+                    recognition: await options.recognizeRecovery(observation, expectedStoreId),
+                });
+            }
+        }
+    }
     const logicalStoreIds = new Set<StoreId>(inventory.storeIds);
     for (const observation of observations) {
         const storeId = artifactStoreId(observation);
@@ -211,7 +247,7 @@ export async function aggregateStructuralDiscovery(
         }
     }
 
-    const logicalStores: LogicalStoreDiscovery[] = [];
+    const logicalStores: LogicalStoreDiscovery<TRecovery>[] = [];
     for (const storeId of [...logicalStoreIds].sort(compareText)) {
         const physicalCandidates = snapshot.storeCandidates.filter((candidate) => candidate.storeIds.includes(storeId));
         const records = [...recordsByKey.values()]
@@ -275,6 +311,7 @@ export async function aggregateStructuralDiscovery(
                 .filter((item) => item.recognition.status === "OPAQUE")
                 .map((observation) => ({ physicalCandidateLocator: candidate.candidateLocator, observation }))
         );
+        const storeRecoveryEvidence = recoveryEvidence.filter((item) => item.candidateStoreIds.includes(storeId));
         const hasUnavailableEvidence =
             snapshot.state === "UNAVAILABLE" ||
             physicalCandidates.some((candidate) => candidate.state === "UNAVAILABLE") ||
@@ -287,6 +324,7 @@ export async function aggregateStructuralDiscovery(
             protocolFence,
             representationState: validateRepresentationStateLineage(representationStateObservations, storeId),
             opaqueObservations,
+            recoveryEvidence: storeRecoveryEvidence,
             hasUnavailableEvidence,
         });
     }
@@ -308,6 +346,7 @@ export async function aggregateStructuralDiscovery(
         logicalStores,
         namespaceCandidates: snapshot.rootDiscovery.candidates,
         physicalCandidates: snapshot.storeCandidates,
+        recoveryEvidence,
         unavailableLocators: [...new Set(unavailableLocators)].sort(compareText),
         unknownEvidenceLocators: [
             ...new Set([...unknownEvidenceLocators, ...snapshot.unknownNodes.map((node) => node.locator)]),

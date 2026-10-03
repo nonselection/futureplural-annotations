@@ -327,7 +327,15 @@ async function probeStoreSubtree(
     if (!isWithinDiscoveryDepth(locator)) return { storeIds: [], observations: [], complete: false };
     const listing = await listAt(context, locator);
     if (listing.status !== "COMPLETE") return { storeIds: [], observations: [], complete: false };
-    const ownFiles = await readFiles(context, locator, listing, "store-subtree");
+    // This is a structural node, not a terminal collection. Directory edges
+    // are validated/probed by scanStoreCandidate, which retains unknown edges;
+    // do not preclassify them through the terminal-directory rule in readFiles.
+    const ownFiles = await readFiles(
+        context,
+        locator,
+        { ...listing, entries: listing.entries.filter((entry) => entry.kind === "file") },
+        "store-subtree"
+    );
     const observations = [...ownFiles];
     const validStoreIds = new Set<StoreId>(
         ownFiles.map(artifactStoreId).filter((value): value is StoreId => Boolean(value))

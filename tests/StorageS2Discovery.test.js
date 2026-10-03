@@ -162,6 +162,147 @@ function makeRevision(storeId, revisionId, parentRevisionId, payloadValue) {
     };
 }
 
+describe("Storage S2 recognized structural directories", () => {
+    function establishedStore(root = ".finders-keepers", representation = "hidden", includeRecord = false) {
+        const storeId = createStoreId();
+        const files = {};
+        const storePath = addStore(files, root, storeId, {
+            revisions: includeRecord
+                ? [{ envelope: makeRevision(storeId, createRevisionId(), null, "known record") }]
+                : [],
+            fences: [
+                {
+                    schema: "finders-keepers.protocol-fence",
+                    version: 1,
+                    storeId,
+                    requiredProtocolVersion: 1,
+                },
+            ],
+            states: [
+                {
+                    schema: "finders-keepers.representation-state",
+                    version: 1,
+                    storeId,
+                    representationStateId: createRepresentationStateId(),
+                    parentRepresentationStateId: null,
+                    representation,
+                    establishedByMigrationId: null,
+                },
+            ],
+        });
+        return { files, storePath, storeId };
+    }
+
+    function expectEstablishedStore(discovered, aggregate, storeId) {
+        expect(discovered.state).toBe("COMPLETE");
+        expect(aggregate.inventory.state).toBe("ONE_STORE");
+        expect(aggregate.physicalCandidates).toHaveLength(1);
+        expect(aggregate.physicalCandidates[0]).toMatchObject({ state: "VALID", storeIds: [storeId] });
+        expect(aggregate.logicalStores[0].protocolFence.state).toBe("WRITES_ALLOWED");
+        expect(aggregate.logicalStores[0].representationState.state).toBe("REPRESENTATION_STATE_VALID");
+        expect(discovered.unknownNodes).toEqual([]);
+        expect(aggregate.unknownEvidenceLocators).toEqual([]);
+    }
+
+    it.each([
+        [".finders-keepers", "hidden"],
+        ["Finders Keepers", "visible"],
+    ])("rediscovers the fully established %s store prerequisite as VALID", async (root, representation) => {
+        const { files, storePath, storeId } = establishedStore(root, representation);
+        const fixture = treeFixturePort(files);
+
+        const discovered = await discoverPhysicalStorageTree(fixture.port);
+        const aggregate = await aggregateStructuralDiscovery(discovered, 1);
+
+        expectEstablishedStore(discovered, aggregate, storeId);
+        for (const collection of ["meta", "meta/protocol", "meta/representation-states"]) {
+            expect(discovered.listings.map(({ locator }) => locator)).toContain(`${storePath}/${collection}`);
+        }
+        expect(discovered.artifacts.filter(({ recognition }) => recognition.status === "VALID")).toHaveLength(4);
+        expect(fixture.mutationCalls).toEqual([]);
+    });
+
+    it("recognizes allowed collections beside store files and inside deeper structural nodes", async () => {
+        const { files, storePath, storeId } = establishedStore(".finders-keepers", "hidden", true);
+        const emptyCollections = new Map([
+            [storePath, ["recovery"]],
+            [`${storePath}/recovery`, ["mutations", "outcomes"]],
+            [`${storePath}/meta`, ["migrations"]],
+            [`${storePath}/meta/migrations`, ["physical-migration-branch"]],
+        ]);
+        const fixture = treeFixturePort(files, (directory, entries) => [
+            ...entries,
+            ...(emptyCollections.get(directory) ?? []).map((name) => ({ name, kind: "directory" })),
+        ]);
+
+        const discovered = await discoverPhysicalStorageTree(fixture.port, [recordCodec]);
+        const aggregate = await aggregateStructuralDiscovery(discovered, 1);
+
+        expectEstablishedStore(discovered, aggregate, storeId);
+        expect(aggregate.logicalStores[0].records).toHaveLength(1);
+        for (const collection of [
+            "records/sources",
+            "recovery/mutations",
+            "recovery/outcomes",
+            "meta/migrations/physical-migration-branch",
+        ]) {
+            expect(discovered.listings.map(({ locator }) => locator)).toContain(`${storePath}/${collection}`);
+        }
+        expect(fixture.mutationCalls).toEqual([]);
+    });
+
+    it("validates alternate record and metadata collection edges without premature unknown evidence", async () => {
+        const { files, storeId } = establishedStore(".finders-keepers", "hidden", true);
+        const renamedFiles = Object.fromEntries(
+            Object.entries(files).map(([locator, bytes]) => [
+                locator
+                    .replace("/records/", "/provider-record-branch/")
+                    .replace("/meta/", "/provider-metadata-branch/")
+                    .replace("/protocol/", "/provider-fence-branch/")
+                    .replace("/representation-states/", "/provider-state-branch/"),
+                bytes,
+            ])
+        );
+        const fixture = treeFixturePort(renamedFiles);
+
+        const discovered = await discoverPhysicalStorageTree(fixture.port, [recordCodec]);
+        const aggregate = await aggregateStructuralDiscovery(discovered, 1);
+
+        expectEstablishedStore(discovered, aggregate, storeId);
+        expect(aggregate.logicalStores[0].records).toHaveLength(1);
+        expect(fixture.mutationCalls).toEqual([]);
+    });
+
+    it.each([
+        ["unexpected-directory", "store-subtree"],
+        ["meta/unexpected-directory", "meta-collection"],
+    ])("retains unknown %s beside recognized edges without recursive descent", async (relativePath, parentContext) => {
+        const { files, storePath } = establishedStore();
+        const unexpectedLocator = `${storePath}/${relativePath}`;
+        const forbiddenDirectory = `${unexpectedLocator}/not-authority${parentContext === "store-subtree" ? "/deeper" : ""}`;
+        const forbiddenFile = `${forbiddenDirectory}/must-not-be-read.json`;
+        files[forbiddenFile] = textEncoder.encode('{"unrelated":"not FK authority"}');
+        const fixture = treeFixturePort(files);
+
+        const discovered = await discoverPhysicalStorageTree(fixture.port);
+        const aggregate = await aggregateStructuralDiscovery(discovered, 1);
+
+        expect(discovered.state).toBe("COMPLETE");
+        expect(aggregate.inventory.state).toBe("ONE_STORE");
+        expect(aggregate.physicalCandidates[0].state).toBe("PARTIAL");
+        expect(discovered.unknownNodes).toContainEqual(
+            expect.objectContaining({ locator: unexpectedLocator, parentContext })
+        );
+        expect(aggregate.unknownEvidenceLocators).toContain(unexpectedLocator);
+        expect(discovered.unknownNodes.some(({ locator }) => locator === `${storePath}/meta`)).toBe(false);
+        expect(discovered.listings.map(({ locator }) => locator)).not.toContain(forbiddenDirectory);
+        expect(discovered.artifacts.map(({ locator }) => locator)).not.toContain(forbiddenFile);
+        expect(aggregate.logicalStores[0].protocolFence.state).toBe("WRITES_ALLOWED");
+        expect(aggregate.logicalStores[0].representationState.state).toBe("REPRESENTATION_STATE_VALID");
+        expect(fixture.mutationCalls).toEqual([]);
+    });
+});
+
 describe("Storage S2 bounded discovery primitives", () => {
     it("completes a listing beyond the initial page without a sibling-count cap", async () => {
         const entries = Array.from({ length: 73 }, (_value, index) => ({
