@@ -2,6 +2,7 @@
 
 ## CURRENT
 
+- [Canonical Storage Protocol v0.5](../.codex/architecture/Finders_Keepers_Canonical_Storage_Protocol_v0.5.md), [implementation slicing](../.codex/architecture/Finders_Keepers_Canonical_Storage_v0.5_Implementation_Slicing.md) and [change map](../.codex/architecture/Storage_v0.5_Change_Map.md) — human-accepted Option B with amendments; authoritative for NEW storage work. v0.4.2 remains historical evidence and the implementation checkpoint. S1–S3 implementation acceptance is reopened; S4 remains stopped. Next activity is S1 retrofit planning only; implementation, vault access, deployment and B0 remain separately gated.
 - [Architecture](ARCHITECTURE.md) — ownership boundaries and state classes.
 - [Contracts](CONTRACTS.md) — annotation, identity, persistence, and mutation invariants.
 - [Decisions](DECISIONS.md) — settled decisions, open evidence questions, and deferrals.

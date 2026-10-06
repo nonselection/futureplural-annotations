@@ -52,10 +52,18 @@ describe("Storage S3 explicit complete-head resolution", () => {
         expect(candidate.parentRevisionId).toBe(setup.heads[0].revisionId);
         expect(candidate.resolvedRevisionIds).toEqual(setup.heads.map((row) => row.revisionId).sort());
         expect(setup.heads.map((row) => row.revisionId)).not.toContain(candidate.revisionId);
-        expect(result.aggregate.logicalStores[0].records[0].classification.state).toBe("RESOLVED_LINEAGE");
-        expect(result.aggregate.logicalStores[0].records[0].classification.current.envelope.revisionId).toBe(
-            candidate.revisionId
-        );
+        // C2: snapshot-only discovery lost the selected parent's retained edge when it
+        // was replaced. Resolution provenance cannot manufacture that missing proof.
+        const snapshotOnly = result.aggregate.logicalStores[0].records[0].classification;
+        expect(snapshotOnly.state).toBe("LINEAGE_INDETERMINATE");
+        expect(snapshotOnly.current).toBeUndefined();
+        expect(snapshotOnly.writeGate).toMatchObject({ scope: "record" });
+        // The unchanged historical interpreter can separately qualify retained before/after.
+        const qualified = await interpretRecovery(result.aggregate, ids.storeA, [codec]);
+        expect(qualified.records[0].classification).toMatchObject({
+            state: "RESOLVED_LINEAGE",
+            current: { envelope: { revisionId: candidate.revisionId } },
+        });
         expect(result.currentAuthorization.authorized).toBe(true);
         expect(writes(setup.fault)).toHaveLength(1);
         expect(setup.fault.events.some((e) => ["delete", "rename"].includes(e.method))).toBe(false);
@@ -77,7 +85,8 @@ describe("Storage S3 explicit complete-head resolution", () => {
         const interpreted = await interpretRecovery(discovered, ids.storeA, [codec]);
         expect(interpreted.records[0].classification.current.envelope.revisionId).toBe(next.intent.after.revisionId);
         expect(interpreted.records[0].classification.state).toBe("RESOLVED_LINEAGE");
-        expect(interpreted.records[0].snapshotClassification.state).toBe("DIVERGENT_VALID_REVISIONS");
+        // C2: A/B competition is subordinate to the missing R link for snapshot D.
+        expect(interpreted.records[0].snapshotClassification.state).toBe("LINEAGE_INDETERMINATE");
         expect(interpreted.blockers).toEqual([]);
         const gate = await authorizeWrite(
             discovered,
@@ -100,7 +109,11 @@ describe("Storage S3 explicit complete-head resolution", () => {
             revision(createRevisionId(), setup.heads[1].revisionId, "new branch"),
             "later-old-head-child"
         );
-        expect((await setup.discover()).logicalStores[0].records[0].classification.state).toBe(
+        const withNewBranch = await setup.discover();
+        // Snapshot E still lacks its displaced parent; qualified retained history proves
+        // the new old-head descendant competes with E, preserving the original assertion.
+        expect(withNewBranch.logicalStores[0].records[0].classification.state).toBe("LINEAGE_INDETERMINATE");
+        expect((await interpretRecovery(withNewBranch, ids.storeA, [codec])).records[0].classification.state).toBe(
             "DIVERGENT_VALID_REVISIONS"
         );
     });
@@ -315,6 +328,11 @@ describe("Storage S3 explicit complete-head resolution", () => {
         };
         await addRecord(setup, current, "current-resolver");
         await addRecord(setup, setup.heads[1], "old-head-reappears");
+        const missingProof = (await setup.discover()).logicalStores[0].records[0].classification;
+        expect(missingProof.state).toBe("LINEAGE_INDETERMINATE");
+        expect(missingProof.writeGate).toMatchObject({ scope: "record" });
+        // Restore the selected parent as complete evidence before asserting stale scope.
+        await addRecord(setup, setup.heads[0], "selected-parent-proof");
         const classification = (await setup.discover()).logicalStores[0].records[0].classification;
         expect(classification.state).toBe("DIVERGENT_VALID_REVISIONS");
         expect(classification.currentHeads.map((head) => head.envelope.revisionId)).toContain(
@@ -338,8 +356,9 @@ describe("Storage S3 explicit complete-head resolution", () => {
             await expect(resolveCanonicalRecord(setup.request)).rejects.toThrow("fixture crash");
             const history = await interpretRecovery(await setup.discover(), ids.storeA, [codec]);
             expect(history.mutations[0].mutation.outcome).toBeUndefined();
-            if (crashAt === "after-snapshot-reread") expect(history.mutations[0].state).toBe("CANDIDATE_PRESENT");
-            else expect(history.mutations[0].state).toBe("INDETERMINATE"); // divergent pre-state, no unique base
+            // C2: without a verified outcome, before is not qualified ancestry proof.
+            // Exact physical candidate presence alone cannot cure the indeterminate set.
+            expect(history.mutations[0].state).toBe("INDETERMINATE");
             expect(writes(setup.fault)).toHaveLength(crashAt === "after-snapshot-reread" ? 1 : 0);
         }
     );

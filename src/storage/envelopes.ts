@@ -160,6 +160,7 @@ function validateEnvelope<TPayload = unknown, TRecordId extends string = string>
     const typedResolutions: RevisionId[] = [];
     for (const resolutionId of resolutions) {
         if (!isRevisionId(resolutionId)) fail("resolvedRevisionIds contains an invalid RevisionId.");
+        if (resolutionId === revisionId) fail("A revision cannot resolve itself.");
         typedResolutions.push(resolutionId);
     }
     const sorted = [...typedResolutions].sort();

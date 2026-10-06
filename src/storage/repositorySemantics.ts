@@ -1,4 +1,5 @@
-import type { CanonicalDigest } from "./canonicalEncoding";
+import { canonicalSerialize, type CanonicalDigest } from "./canonicalEncoding";
+import type { QualifiedRevisionEvidence, ResolutionHeadBinding } from "./recoveryArtifacts";
 import type { CanonicalRevisionEnvelope } from "./envelopes";
 import type { ProtocolFenceArtifactV1, RepresentationStateArtifactV1 } from "./authorityArtifacts";
 import type { RevisionId, StoreId } from "./identity";
@@ -16,8 +17,6 @@ export interface RevisionObservation {
     readonly envelope: CanonicalRevisionEnvelope;
     readonly digest: CanonicalDigest;
 }
-
-type Proof = true | false | "unknown";
 
 export type RecordRepositoryState =
     | "RECORD_ABSENT"
@@ -52,252 +51,679 @@ function sameRecord(left: CanonicalRevisionEnvelope, right: CanonicalRevisionEnv
     return left.storeId === right.storeId && left.recordKind === right.recordKind && left.recordId === right.recordId;
 }
 
-interface AncestryTrace {
+export interface RevisionGraphWorkEvent {
+    readonly kind:
+        | "identity-claim"
+        | "node"
+        | "parent-edge"
+        | "cycle-visit"
+        | "interval-visit"
+        | "resolution-claim"
+        | "candidate-head"
+        | "ancestry-relation"
+        | "resolution-relation";
+    readonly revisionId?: RevisionId;
+    readonly otherRevisionId?: RevisionId;
+}
+
+/** No numerical budgets here. False or a thrown refusal means no complete result. */
+export type RevisionGraphWorkObserver = (event: RevisionGraphWorkEvent) => boolean | void;
+export interface IncompleteRevisionGraphWork {
+    readonly status: "INCOMPLETE";
+    readonly reason: string;
+}
+
+export type RevisionIdentityClaimValidation =
+    | {
+          readonly status: "VALID";
+          readonly observations: readonly RevisionObservation[];
+          readonly sawEquivalentCopy: boolean;
+      }
+    | { readonly status: "INVALID"; readonly classification: RecordRepositoryClassification }
+    | IncompleteRevisionGraphWork;
+
+export interface IndexedRevisionInfo {
+    readonly revisionId: RevisionId;
+    readonly parentRevisionId: RevisionId | null | undefined;
+    readonly missingBoundary: boolean;
+    readonly cycleInvolvement: boolean;
+    readonly component: number;
+    readonly enter: number;
+    readonly exit: number;
+}
+
+declare const indexedRevisionGraphBrand: unique symbol;
+/** Opaque, complete index of caller-qualified evidence; it does not certify inventory completeness. */
+export interface IndexedRevisionGraph {
+    readonly [indexedRevisionGraphBrand]: true;
     readonly revisionIds: readonly RevisionId[];
-    readonly valid: boolean;
+    readonly missingBoundaryIds: readonly RevisionId[];
+    readonly hasParentCycle: boolean;
+    observation(revisionId: RevisionId): RevisionObservation | undefined;
+    parentRevisionId(revisionId: RevisionId): RevisionId | null | undefined;
+    children(revisionId: RevisionId): readonly RevisionId[];
+    revisionInfo(revisionId: RevisionId): IndexedRevisionInfo | undefined;
 }
 
-function traceAncestry(start: RevisionId, byId: Map<RevisionId, RevisionObservation>): AncestryTrace {
-    const revisionIds: RevisionId[] = [];
-    const visited = new Set<RevisionId>();
-    let cursorId: RevisionId | undefined = start;
-    while (cursorId) {
-        if (visited.has(cursorId)) return { revisionIds, valid: false };
-        visited.add(cursorId);
-        revisionIds.push(cursorId);
-        const current = byId.get(cursorId);
-        if (!current) return { revisionIds, valid: true };
-        const parentId = current.envelope.parentRevisionId;
-        if (parentId === null) return { revisionIds, valid: true };
-        cursorId = parentId;
+export type IndexedRevisionGraphResult =
+    | { readonly status: "COMPLETE"; readonly index: IndexedRevisionGraph }
+    | { readonly status: "INVALID"; readonly classification: RecordRepositoryClassification }
+    | IncompleteRevisionGraphWork;
+
+export interface IndexedRevisionRelation {
+    readonly relation: "equivalent" | "left-ancestor" | "right-ancestor" | "competing" | "unknown";
+    readonly cycleInvolvement: boolean;
+}
+export type IndexedRevisionRelationResult =
+    | ({ readonly status: "COMPLETE" } & IndexedRevisionRelation)
+    | IncompleteRevisionGraphWork;
+export interface CandidateLineageRelation extends IndexedRevisionRelation {
+    readonly left: RevisionId;
+    readonly right: RevisionId;
+}
+export type IndexedHeadEvaluation =
+    | {
+          readonly status: "COMPLETE";
+          readonly classification: RecordRepositoryClassification;
+          readonly pairRelations: readonly CandidateLineageRelation[];
+      }
+    | IncompleteRevisionGraphWork;
+
+interface GraphData {
+    readonly byId: Map<RevisionId, RevisionObservation>;
+    readonly info: Map<RevisionId, IndexedRevisionInfo>;
+    readonly children: Map<RevisionId, readonly RevisionId[]>;
+    readonly claimsByTarget: Map<RevisionId, readonly RevisionId[]>;
+    readonly knownRevisionIds: Set<RevisionId>;
+    readonly sawEquivalentCopy: boolean;
+    readonly hasParentCycle: boolean;
+}
+const issuedGraphs = new WeakMap<IndexedRevisionGraph, GraphData>();
+
+class InterruptedGraphWork extends Error {}
+function observeWork(observer: RevisionGraphWorkObserver | undefined, event: RevisionGraphWorkEvent): void {
+    try {
+        if (observer?.(event) === false) throw new InterruptedGraphWork("Revision graph work was refused.");
+    } catch (error) {
+        if (error instanceof InterruptedGraphWork) throw error;
+        throw new InterruptedGraphWork(
+            `Revision graph observer interrupted work: ${error instanceof Error ? error.message : "refusal"}`
+        );
     }
-    return { revisionIds, valid: false };
 }
-
-function relation(
-    left: RevisionObservation,
-    right: RevisionObservation,
-    byId: Map<RevisionId, RevisionObservation>
-): "left-ancestor" | "right-ancestor" | "unrelated" | "unknown" {
-    const leftPath = traceAncestry(left.envelope.revisionId, byId);
-    const rightPath = traceAncestry(right.envelope.revisionId, byId);
-    if (!leftPath.valid || !rightPath.valid) return "unknown";
-
-    if (rightPath.revisionIds.includes(left.envelope.revisionId)) return "left-ancestor";
-    if (leftPath.revisionIds.includes(right.envelope.revisionId)) return "right-ancestor";
-    if (leftPath.revisionIds.some((revisionId) => rightPath.revisionIds.includes(revisionId))) return "unrelated";
-
-    // Separate roots or missing chains do not establish a competing branch unless
-    // retained parent IDs prove that both revisions share a common base.
-    return "unknown";
+function incomplete(error: InterruptedGraphWork): IncompleteRevisionGraphWork {
+    return { status: "INCOMPLETE", reason: error.message };
 }
-
-function isResolvedHistoricalHead(
-    historicalId: RevisionId,
-    current: RevisionObservation,
-    byId: Map<RevisionId, RevisionObservation>
-): Proof {
-    let cursor: RevisionObservation | undefined = current;
-    const visited = new Set<RevisionId>();
-    while (cursor) {
-        const cursorId = cursor.envelope.revisionId;
-        if (visited.has(cursorId)) return "unknown";
-        visited.add(cursorId);
-        if (cursor.envelope.resolvedRevisionIds.includes(historicalId)) return true;
-        const parentId = cursor.envelope.parentRevisionId;
-        if (parentId === null) return false;
-        cursor = byId.get(parentId);
-        if (!cursor) return "unknown";
+function graphData(index: IndexedRevisionGraph): GraphData {
+    const data = issuedGraphs.get(index);
+    if (!data) throw new Error("Expected a complete issued revision graph index.");
+    return data;
+}
+function requiredIndexValue<T>(value: T | undefined): T {
+    if (value === undefined) throw new Error("Complete revision index invariant is missing.");
+    return value;
+}
+function freezeJson<T>(value: T): T {
+    const pending: object[] = value && typeof value === "object" ? [value] : [];
+    while (pending.length) {
+        const item = requiredIndexValue(pending.pop());
+        const childValues: unknown[] = Object.values(item);
+        for (const child of childValues) if (child && typeof child === "object") pending.push(child);
+        Object.freeze(item);
     }
-    return "unknown";
+    return value;
 }
-
 function invalidRecord(observation: RevisionObservation | undefined, reason: string): RecordRepositoryClassification {
-    return {
-        state: "RECORD_INVALID",
-        writeGate: recordGate(observation, reason),
-        reason,
-    };
+    return { state: "RECORD_INVALID", writeGate: recordGate(observation, reason), reason };
 }
 
-/** Classifies only the supplied, already-validated observations; it never discovers files or selects by path. */
+/** Complete already-validated claims, including non-authoritative preparation candidates. No head admission. */
+export function validateRevisionIdentityClaims(
+    claims: readonly RevisionObservation[],
+    observer?: RevisionGraphWorkObserver
+): RevisionIdentityClaimValidation {
+    try {
+        const byId = new Map<RevisionId, RevisionObservation>();
+        const first = claims[0];
+        let sawEquivalentCopy = false;
+        for (const claim of claims) {
+            observeWork(observer, { kind: "identity-claim", revisionId: claim.envelope.revisionId });
+            if (first && !sameRecord(first.envelope, claim.envelope)) {
+                return {
+                    status: "INVALID",
+                    classification: invalidRecord(
+                        first,
+                        "Observations do not belong to one store-bound logical record."
+                    ),
+                };
+            }
+            const previous = byId.get(claim.envelope.revisionId);
+            if (previous) {
+                if (
+                    previous.digest !== claim.digest ||
+                    canonicalSerialize(previous.envelope) !== canonicalSerialize(claim.envelope)
+                ) {
+                    const reason = `RevisionId ${claim.envelope.revisionId} has incompatible canonical content/digests.`;
+                    return {
+                        status: "INVALID",
+                        classification: {
+                            state: "REVISION_IDENTITY_INVALID",
+                            currentHeads: [previous, claim],
+                            writeGate: recordGate(first, reason),
+                            reason,
+                        },
+                    };
+                }
+                sawEquivalentCopy = true;
+            } else {
+                // Keep later queries independent of mutable caller-owned envelope objects.
+                const envelope = JSON.parse(canonicalSerialize(claim.envelope)) as CanonicalRevisionEnvelope;
+                byId.set(claim.envelope.revisionId, freezeJson({ envelope, digest: claim.digest }));
+            }
+        }
+        return { status: "VALID", observations: Object.freeze([...byId.values()]), sawEquivalentCopy };
+    } catch (error) {
+        if (error instanceof InterruptedGraphWork) return incomplete(error);
+        throw error;
+    }
+}
+
+/** Only explicitly caller-qualified roles contribute parent edges. Extra identity claims never do. */
+export function indexQualifiedRevisionGraph(
+    qualified: readonly QualifiedRevisionEvidence[],
+    observer?: RevisionGraphWorkObserver,
+    identityClaims: readonly RevisionObservation[] = []
+): IndexedRevisionGraphResult {
+    try {
+        const observations: RevisionObservation[] = [];
+        for (const evidence of qualified) {
+            if (evidence.role === "DIRECT_CANONICAL") observations.push(evidence);
+            else if (evidence.role === "QUALIFIED_PRIOR_PUBLICATION")
+                observations.push({ envelope: evidence.evidence.envelope, digest: evidence.evidence.digest });
+            else
+                return {
+                    status: "INVALID",
+                    classification: invalidRecord(
+                        undefined,
+                        "Qualified revision evidence requires an explicit direct or prior-publication role."
+                    ),
+                };
+        }
+        const validation = validateRevisionIdentityClaims([...observations, ...identityClaims], observer);
+        if (validation.status !== "VALID") return validation;
+        const knownRevisionIds = new Set<RevisionId>();
+        const validated = new Map(
+            validation.observations.map((item) => {
+                const envelope = item.envelope;
+                // Identity references remain known even when their claim supplies no authority edges.
+                knownRevisionIds.add(envelope.revisionId);
+                if (envelope.parentRevisionId !== null) knownRevisionIds.add(envelope.parentRevisionId);
+                for (const target of envelope.resolvedRevisionIds) knownRevisionIds.add(target);
+                return [envelope.revisionId, item] as const;
+            })
+        );
+        const byId = new Map<RevisionId, RevisionObservation>();
+        let sawEquivalentCopy = false;
+        for (const observation of observations) {
+            const id = observation.envelope.revisionId;
+            if (byId.has(id)) sawEquivalentCopy = true;
+            byId.set(id, requiredIndexValue(validated.get(id)));
+        }
+        const parent = new Map<RevisionId, RevisionId | null | undefined>();
+        const mutableChildren = new Map<RevisionId, RevisionId[]>();
+        const claimsByTarget = new Map<RevisionId, RevisionId[]>();
+        const ensureNode = (id: RevisionId, parentId: RevisionId | null | undefined) => {
+            if (!parent.has(id)) {
+                observeWork(observer, { kind: "node", revisionId: id });
+                parent.set(id, parentId);
+                mutableChildren.set(id, []);
+            }
+        };
+        for (const [id, observation] of byId) ensureNode(id, observation.envelope.parentRevisionId);
+        for (const [id, observation] of byId) {
+            const parentId = observation.envelope.parentRevisionId;
+            if (parentId !== null) {
+                observeWork(observer, { kind: "parent-edge", revisionId: id, otherRevisionId: parentId });
+                ensureNode(parentId, undefined);
+                requiredIndexValue(mutableChildren.get(parentId)).push(id);
+            }
+            for (const target of observation.envelope.resolvedRevisionIds) {
+                observeWork(observer, { kind: "resolution-claim", revisionId: id, otherRevisionId: target });
+                const claiming = claimsByTarget.get(target) ?? [];
+                claiming.push(id);
+                claimsByTarget.set(target, claiming);
+            }
+        }
+        const done = new Set<RevisionId>();
+        const info = new Map<RevisionId, IndexedRevisionInfo>();
+        let componentCount = 0;
+        let hasParentCycle = false;
+        // Functional parent graph: each node/edge is traversed once, including terminal placeholders.
+        for (const start of parent.keys()) {
+            if (done.has(start)) continue;
+            const path: RevisionId[] = [];
+            const positions = new Map<RevisionId, number>();
+            let cursor = start;
+            let component: number;
+            let cyclic = false;
+            while (true) {
+                const known = info.get(cursor);
+                if (known) {
+                    component = known.component;
+                    cyclic = known.cycleInvolvement;
+                    break;
+                }
+                if (positions.has(cursor)) {
+                    component = componentCount++;
+                    cyclic = true;
+                    hasParentCycle = true;
+                    break;
+                }
+                observeWork(observer, { kind: "cycle-visit", revisionId: cursor });
+                positions.set(cursor, path.length);
+                path.push(cursor);
+                const parentId = parent.get(cursor);
+                if (parentId === null || parentId === undefined) {
+                    component = componentCount++;
+                    break;
+                }
+                cursor = parentId;
+            }
+            for (let i = path.length - 1; i >= 0; i--) {
+                const id = path[i];
+                info.set(id, {
+                    revisionId: id,
+                    parentRevisionId: parent.get(id),
+                    missingBoundary: !byId.has(id),
+                    cycleInvolvement: cyclic,
+                    component,
+                    enter: -1,
+                    exit: -1,
+                });
+                done.add(id);
+            }
+        }
+        let interval = 0;
+        for (const [root, parentId] of parent) {
+            if (parentId !== null && parentId !== undefined) continue;
+            const pending: { id: RevisionId; exit: boolean }[] = [{ id: root, exit: false }];
+            while (pending.length) {
+                const frame = requiredIndexValue(pending.pop());
+                observeWork(observer, { kind: "interval-visit", revisionId: frame.id });
+                const metadata = requiredIndexValue(info.get(frame.id));
+                if (frame.exit) {
+                    info.set(frame.id, { ...metadata, exit: interval++ });
+                    continue;
+                }
+                info.set(frame.id, { ...metadata, enter: interval++ });
+                pending.push({ id: frame.id, exit: true });
+                for (const child of requiredIndexValue(mutableChildren.get(frame.id)))
+                    pending.push({ id: child, exit: false });
+            }
+        }
+        const children = new Map([...mutableChildren].map(([id, ids]) => [id, Object.freeze(ids)]));
+        const frozenClaims = new Map([...claimsByTarget].map(([id, ids]) => [id, Object.freeze(ids)]));
+        for (const [id, metadata] of info) info.set(id, Object.freeze(metadata));
+        const data: GraphData = {
+            byId,
+            info,
+            children,
+            claimsByTarget: frozenClaims,
+            knownRevisionIds,
+            sawEquivalentCopy,
+            hasParentCycle,
+        };
+        const index = Object.freeze({
+            revisionIds: Object.freeze([...byId.keys()]),
+            missingBoundaryIds: Object.freeze([...parent.keys()].filter((id) => !byId.has(id))),
+            hasParentCycle,
+            observation: (id: RevisionId) => byId.get(id),
+            parentRevisionId: (id: RevisionId) => parent.get(id),
+            children: (id: RevisionId) => children.get(id) ?? Object.freeze([] as RevisionId[]),
+            revisionInfo: (id: RevisionId) => info.get(id),
+        }) as IndexedRevisionGraph;
+        issuedGraphs.set(index, data); // Never issue a partly constructed index.
+        return { status: "COMPLETE", index };
+    } catch (error) {
+        if (error instanceof InterruptedGraphWork) return incomplete(error);
+        throw error;
+    }
+}
+
+function relationKernel(
+    data: GraphData,
+    left: RevisionId,
+    right: RevisionId,
+    observer?: RevisionGraphWorkObserver
+): IndexedRevisionRelation {
+    observeWork(observer, { kind: "ancestry-relation", revisionId: left, otherRevisionId: right });
+    const a = data.info.get(left);
+    const b = data.info.get(right);
+    const cycleInvolvement = Boolean(a?.cycleInvolvement || b?.cycleInvolvement);
+    if (!a || !b) return { relation: "unknown", cycleInvolvement };
+    if (left === right) return { relation: "equivalent", cycleInvolvement };
+    if (cycleInvolvement || a.component !== b.component) return { relation: "unknown", cycleInvolvement };
+    if (a.enter <= b.enter && b.exit <= a.exit) return { relation: "left-ancestor", cycleInvolvement };
+    if (b.enter <= a.enter && a.exit <= b.exit) return { relation: "right-ancestor", cycleInvolvement };
+    return { relation: "competing", cycleInvolvement };
+}
+export function relateIndexedRevisions(
+    index: IndexedRevisionGraph,
+    left: RevisionId,
+    right: RevisionId,
+    observer?: RevisionGraphWorkObserver
+): IndexedRevisionRelationResult {
+    try {
+        return { status: "COMPLETE", ...relationKernel(graphData(index), left, right, observer) };
+    } catch (error) {
+        if (error instanceof InterruptedGraphWork) return incomplete(error);
+        throw error;
+    }
+}
+
+/** Pure convenience maxima over exactly this supplied set; S2 owns actual admitted inventory/maxima. */
+function suppliedOrdinaryCandidates(index: IndexedRevisionGraph, observer?: RevisionGraphWorkObserver): RevisionId[] {
+    const data = graphData(index);
+    const ids: RevisionId[] = [];
+    for (const id of index.revisionIds) {
+        observeWork(observer, { kind: "candidate-head", revisionId: id });
+        if (data.hasParentCycle || !requiredIndexValue(data.children.get(id)).length) ids.push(id);
+    }
+    return ids;
+}
+function orderedObservations(data: GraphData, ids: Iterable<RevisionId>): RevisionObservation[] {
+    return [...ids].sort().map((id) => requiredIndexValue(data.byId.get(id)));
+}
+function blocked(
+    data: GraphData,
+    ids: readonly RevisionId[],
+    state: "LINEAGE_INDETERMINATE" | "DIVERGENT_VALID_REVISIONS",
+    reason: string
+): RecordRepositoryClassification {
+    const heads = orderedObservations(data, ids);
+    return { state, currentHeads: heads, writeGate: recordGate(heads[0], reason), reason };
+}
+
+/** Evaluates only the caller's declared complete candidate set; never supplies inventory admission. */
+export function evaluateIndexedHeadRelations(
+    index: IndexedRevisionGraph,
+    suppliedCandidateHeadIds: readonly RevisionId[],
+    observer?: RevisionGraphWorkObserver
+): IndexedHeadEvaluation {
+    try {
+        const data = graphData(index);
+        const ids = [...new Set(suppliedCandidateHeadIds)];
+        for (const id of ids) {
+            observeWork(observer, { kind: "candidate-head", revisionId: id });
+            if (!data.byId.has(id))
+                return {
+                    status: "COMPLETE",
+                    classification: invalidRecord(
+                        undefined,
+                        "Candidate heads must be qualified nodes in the supplied index."
+                    ),
+                    pairRelations: [],
+                };
+        }
+        if (data.hasParentCycle)
+            return {
+                status: "COMPLETE",
+                classification: blocked(
+                    data,
+                    index.revisionIds,
+                    "LINEAGE_INDETERMINATE",
+                    "Qualified record parent links contain a cycle; resolution cannot cure it."
+                ),
+                pairRelations: [],
+            };
+        if (!ids.length)
+            return {
+                status: "COMPLETE",
+                classification: data.byId.size
+                    ? invalidRecord(undefined, "No candidate heads supplied for a nonempty qualified graph.")
+                    : { state: "RECORD_ABSENT" },
+                pairRelations: [],
+            };
+        const pairs: CandidateLineageRelation[] = [];
+        let unknown = false;
+        let nonmaximal = false;
+        for (let left = 0; left < ids.length; left++) {
+            for (let right = left + 1; right < ids.length; right++) {
+                const relationship = relationKernel(data, ids[left], ids[right], observer);
+                pairs.push({ left: ids[left], right: ids[right], ...relationship });
+                unknown ||= relationship.relation === "unknown";
+                nonmaximal ||= relationship.relation === "left-ancestor" || relationship.relation === "right-ancestor";
+            }
+        }
+        const pairRelations = Object.freeze(pairs.map((pair) => Object.freeze(pair)));
+        // Human C2: inspect all necessary relations before allowing any subset divergence or suppression.
+        if (unknown)
+            return {
+                status: "COMPLETE",
+                classification: blocked(
+                    data,
+                    ids,
+                    "LINEAGE_INDETERMINATE",
+                    "Required candidate lineage relations cannot be proven."
+                ),
+                pairRelations,
+            };
+        if (nonmaximal)
+            return {
+                status: "COMPLETE",
+                classification: invalidRecord(
+                    data.byId.get(ids[0]),
+                    "Supplied candidate heads are not ordinary maximal lineages."
+                ),
+                pairRelations,
+            };
+        const targets = new Map(ids.map((id) => [id, new Set<RevisionId>()]));
+        const incoming = new Map(ids.map((id) => [id, 0]));
+        for (const target of ids) {
+            for (const resolver of data.claimsByTarget.get(target) ?? []) {
+                for (const current of ids) {
+                    if (current === target) continue;
+                    observeWork(observer, {
+                        kind: "resolution-relation",
+                        revisionId: resolver,
+                        otherRevisionId: current,
+                    });
+                    const relationship = relationKernel(data, resolver, current, observer);
+                    if (relationship.relation !== "equivalent" && relationship.relation !== "left-ancestor") continue;
+                    const selected = requiredIndexValue(targets.get(current));
+                    if (!selected.has(target)) {
+                        selected.add(target);
+                        incoming.set(target, requiredIndexValue(incoming.get(target)) + 1);
+                    }
+                }
+            }
+        }
+        // Diagnose cyclic applicability before any head can be hidden by another resolver.
+        const topologicalIncoming = new Map(incoming);
+        const topologicalQueue = ids.filter((id) => topologicalIncoming.get(id) === 0);
+        let visited = 0;
+        for (let position = 0; position < topologicalQueue.length; position++) {
+            const resolver = topologicalQueue[position];
+            visited++;
+            observeWork(observer, { kind: "resolution-relation", revisionId: resolver });
+            for (const target of requiredIndexValue(targets.get(resolver))) {
+                const remaining = requiredIndexValue(topologicalIncoming.get(target)) - 1;
+                topologicalIncoming.set(target, remaining);
+                if (remaining === 0) topologicalQueue.push(target);
+            }
+        }
+        if (visited !== ids.length)
+            return {
+                status: "COMPLETE",
+                classification: blocked(
+                    data,
+                    ids,
+                    "LINEAGE_INDETERMINATE",
+                    "Current resolution claims form a cycle; current authority is indeterminate."
+                ),
+                pairRelations,
+            };
+        const alive = new Set(ids);
+        const resolvedAway = new Set<RevisionId>();
+        let active = ids.filter((id) => incoming.get(id) === 0);
+        while (active.length) {
+            const removed = new Set<RevisionId>();
+            for (const resolver of active) {
+                observeWork(observer, { kind: "resolution-relation", revisionId: resolver });
+                for (const target of requiredIndexValue(targets.get(resolver)))
+                    if (alive.has(target)) removed.add(target);
+            }
+            for (const target of removed) {
+                alive.delete(target);
+                resolvedAway.add(target);
+            }
+            const newlyActive: RevisionId[] = [];
+            for (const stale of removed) {
+                for (const target of requiredIndexValue(targets.get(stale))) {
+                    if (!alive.has(target)) continue;
+                    const remaining = requiredIndexValue(incoming.get(target)) - 1;
+                    incoming.set(target, remaining);
+                    if (remaining === 0) newlyActive.push(target);
+                }
+            }
+            active = newlyActive; // Removed resolvers never exercise their stale claims.
+        }
+        let classification: RecordRepositoryClassification;
+        if (alive.size > 1)
+            classification = blocked(
+                data,
+                [...alive],
+                "DIVERGENT_VALID_REVISIONS",
+                "Multiple proven competing revision heads remain."
+            );
+        else if (!alive.size)
+            classification = blocked(
+                data,
+                ids,
+                "LINEAGE_INDETERMINATE",
+                "Resolution provenance suppresses every observed head."
+            );
+        else {
+            const current = requiredIndexValue(data.byId.get([...alive][0]));
+            if (resolvedAway.size)
+                classification = {
+                    state: "RESOLVED_LINEAGE",
+                    current,
+                    historicalResolvedRevisionIds: [...resolvedAway].sort(),
+                };
+            else if (data.byId.size === 1)
+                classification = { state: data.sawEquivalentCopy ? "EQUIVALENT_DUPLICATE" : "RECORD_FOUND", current };
+            else classification = { state: "LINEAR_DESCENDANT", current };
+        }
+        return { status: "COMPLETE", classification, pairRelations };
+    } catch (error) {
+        if (error instanceof InterruptedGraphWork) return incomplete(error);
+        throw error;
+    }
+}
+
+/** Historical API: caller-validated explicit evidence only; all semantics delegate to the one indexed core. */
 export function classifyRecordRevisions(observations: readonly RevisionObservation[]): RecordRepositoryClassification {
-    if (!observations.length) return { state: "RECORD_ABSENT" };
-    const first = observations[0];
-    if (observations.some((item) => !sameRecord(first.envelope, item.envelope))) {
-        return invalidRecord(first, "Observations do not belong to one store-bound logical record.");
-    }
-
-    const byId = new Map<RevisionId, RevisionObservation>();
-    let sawEquivalentCopy = false;
-    for (const observation of observations) {
-        const revisionId = observation.envelope.revisionId;
-        const previous = byId.get(revisionId);
-        if (!previous) {
-            byId.set(revisionId, observation);
-            continue;
-        }
-        if (previous.digest !== observation.digest) {
-            const reason = `RevisionId ${revisionId} has more than one canonical digest.`;
-            return {
-                state: "REVISION_IDENTITY_INVALID",
-                currentHeads: [previous, observation],
-                writeGate: recordGate(first, reason),
-                reason,
-            };
-        }
-        sawEquivalentCopy = true;
-    }
-
-    const revisions = [...byId.values()];
-    if (revisions.length === 1) {
-        return sawEquivalentCopy
-            ? { state: "EQUIVALENT_DUPLICATE", current: revisions[0] }
-            : { state: "RECORD_FOUND", current: revisions[0] };
-    }
-
-    const superseded = new Set<RevisionId>();
-    for (let leftIndex = 0; leftIndex < revisions.length; leftIndex += 1) {
-        for (let rightIndex = leftIndex + 1; rightIndex < revisions.length; rightIndex += 1) {
-            const left = revisions[leftIndex];
-            const right = revisions[rightIndex];
-            const relationship = relation(left, right, byId);
-            if (relationship === "left-ancestor") superseded.add(left.envelope.revisionId);
-            if (relationship === "right-ancestor") superseded.add(right.envelope.revisionId);
-        }
-    }
-
-    const heads = revisions.filter((item) => !superseded.has(item.envelope.revisionId));
-    let currentHeads = [...heads];
-    const resolvedAway = new Set<RevisionId>();
-    while (currentHeads.length) {
-        const targetsByResolver = new Map<RevisionId, Set<RevisionId>>();
-        const resolvedByAnotherHead = new Set<RevisionId>();
-        for (const historical of currentHeads) {
-            for (const resolver of currentHeads) {
-                if (historical.envelope.revisionId === resolver.envelope.revisionId) continue;
-                if (isResolvedHistoricalHead(historical.envelope.revisionId, resolver, byId) !== true) continue;
-                const resolverId = resolver.envelope.revisionId;
-                const targets = targetsByResolver.get(resolverId) ?? new Set<RevisionId>();
-                targets.add(historical.envelope.revisionId);
-                targetsByResolver.set(resolverId, targets);
-                resolvedByAnotherHead.add(historical.envelope.revisionId);
-            }
-        }
-
-        // Only undominated current lineages may exercise resolution provenance.
-        // A resolver that is itself resolved by a newer current lineage is stale;
-        // its old claims must not suppress additional heads.
-        const activeResolvers = currentHeads.filter((head) => !resolvedByAnotherHead.has(head.envelope.revisionId));
-        if (!activeResolvers.length && targetsByResolver.size) {
-            const reason = "Current resolution claims form a cycle; current authority is indeterminate.";
-            return {
-                state: "LINEAGE_INDETERMINATE",
-                currentHeads: heads,
-                writeGate: recordGate(first, reason),
-                reason,
-            };
-        }
-
-        const selectedTargets = new Set<RevisionId>();
-        for (const resolver of activeResolvers) {
-            for (const target of targetsByResolver.get(resolver.envelope.revisionId) ?? []) {
-                selectedTargets.add(target);
-            }
-        }
-        if (!selectedTargets.size) break;
-        for (const target of selectedTargets) resolvedAway.add(target);
-        currentHeads = currentHeads.filter((head) => !selectedTargets.has(head.envelope.revisionId));
-    }
-    if (!currentHeads.length) {
-        const reason = "Resolution provenance suppresses every observed head; current authority is indeterminate.";
-        return {
-            state: "LINEAGE_INDETERMINATE",
-            currentHeads: heads,
-            writeGate: recordGate(first, reason),
-            reason,
-        };
-    }
-
-    for (let leftIndex = 0; leftIndex < currentHeads.length; leftIndex += 1) {
-        for (let rightIndex = leftIndex + 1; rightIndex < currentHeads.length; rightIndex += 1) {
-            const relationship = relation(currentHeads[leftIndex], currentHeads[rightIndex], byId);
-            if (relationship === "unrelated") {
-                const reason = "Multiple proven competing revision heads remain.";
-                return {
-                    state: "DIVERGENT_VALID_REVISIONS",
-                    currentHeads,
-                    writeGate: recordGate(first, reason),
-                    reason,
-                };
-            }
-            if (relationship === "unknown") {
-                const reason = "Revision ancestry cannot be proven from retained parent links.";
-                return {
-                    state: "LINEAGE_INDETERMINATE",
-                    currentHeads,
-                    writeGate: recordGate(first, reason),
-                    reason,
-                };
-            }
-        }
-    }
-
-    if (currentHeads.length > 1) {
-        const reason = "More than one current head remains without a proven ordering.";
-        return {
-            state: "LINEAGE_INDETERMINATE",
-            currentHeads,
-            writeGate: recordGate(first, reason),
-            reason,
-        };
-    }
-
-    if (resolvedAway.size) {
-        return {
-            state: "RESOLVED_LINEAGE",
-            current: currentHeads[0],
-            historicalResolvedRevisionIds: [...resolvedAway].sort(),
-        };
-    }
-
-    return { state: "LINEAR_DESCENDANT", current: currentHeads[0] };
+    const built = indexQualifiedRevisionGraph(observations.map((item) => ({ role: "DIRECT_CANONICAL", ...item })));
+    if (built.status === "INVALID") return built.classification;
+    if (built.status === "INCOMPLETE") throw new Error(built.reason);
+    const evaluated = evaluateIndexedHeadRelations(built.index, suppliedOrdinaryCandidates(built.index));
+    if (evaluated.status === "INCOMPLETE") throw new Error(evaluated.reason);
+    return evaluated.classification;
 }
 
 export type ExplicitResolutionValidation =
     | { readonly valid: true; readonly resolvedRevisionIds: readonly RevisionId[] }
     | { readonly valid: false; readonly reason: string };
+export type IndexedExplicitResolutionValidation =
+    | { readonly status: "COMPLETE"; readonly validation: ExplicitResolutionValidation }
+    | IncompleteRevisionGraphWork;
 
-/** Requires the explicit operation to adjudicate exactly the repository's proven competing-head set. */
+function explicitCoverageKernel(
+    resolution: CanonicalRevisionEnvelope,
+    index: IndexedRevisionGraph,
+    result: RecordRepositoryClassification,
+    headBindings: readonly ResolutionHeadBinding[],
+    observer?: RevisionGraphWorkObserver
+): IndexedExplicitResolutionValidation {
+    try {
+        const reject = (reason: string): IndexedExplicitResolutionValidation => ({
+            status: "COMPLETE",
+            validation: { valid: false, reason },
+        });
+        if (resolution.resolvedRevisionIds.length < 2)
+            return reject("Explicit resolution requires at least two competing heads.");
+        if (result.state !== "DIVERGENT_VALID_REVISIONS" || !result.currentHeads)
+            return reject("Resolution coverage requires a proven divergent pre-resolution head set.");
+        if (result.currentHeads.some((head) => !sameRecord(resolution, head.envelope)))
+            return reject("Resolution and competing heads must belong to the same store-bound record.");
+        const data = graphData(index);
+        const competingHeadIds = result.currentHeads.map((head) => head.envelope.revisionId).sort();
+        if (resolution.parentRevisionId === null || !competingHeadIds.includes(resolution.parentRevisionId))
+            return reject("Resolution parent must be one of the adjudicated competing heads.");
+        // Missing content or stale provenance never frees an already named revision identity.
+        if (data.knownRevisionIds.has(resolution.revisionId))
+            return reject("Resolution revisionId must be fresh relative to pre-resolution history.");
+        const suppliedBindings = new Map<RevisionId, CanonicalDigest>();
+        for (const head of headBindings) {
+            observeWork(observer, { kind: "candidate-head", revisionId: head.revisionId });
+            if (suppliedBindings.has(head.revisionId)) return reject("Head digest bindings must be unique.");
+            suppliedBindings.set(head.revisionId, head.digest);
+        }
+        if (
+            headBindings.length !== competingHeadIds.length ||
+            result.currentHeads.some((head) => suppliedBindings.get(head.envelope.revisionId) !== head.digest)
+        )
+            return reject("Head bindings must exactly match the complete qualified head IDs/digests.");
+        const listed = resolution.resolvedRevisionIds;
+        if (
+            listed.length !== competingHeadIds.length ||
+            listed.some((id, position) => id !== competingHeadIds[position])
+        )
+            return reject("resolvedRevisionIds must equal the complete proven competing-head set.");
+        return { status: "COMPLETE", validation: { valid: true, resolvedRevisionIds: Object.freeze([...listed]) } };
+    } catch (error) {
+        if (error instanceof InterruptedGraphWork) return incomplete(error);
+        throw error;
+    }
+}
+
+/** Caller supplies complete candidate IDs and exact head digest bindings; no inventory completeness inference. */
+export function validateExplicitResolutionCoverageFromHeads(
+    resolution: CanonicalRevisionEnvelope,
+    index: IndexedRevisionGraph,
+    candidateHeadIds: readonly RevisionId[],
+    headBindings: readonly ResolutionHeadBinding[],
+    observer?: RevisionGraphWorkObserver
+): IndexedExplicitResolutionValidation {
+    const evaluated = evaluateIndexedHeadRelations(index, candidateHeadIds, observer);
+    if (evaluated.status === "INCOMPLETE") return evaluated;
+    return explicitCoverageKernel(resolution, index, evaluated.classification, headBindings, observer);
+}
+
+/** Compatibility over caller-declared evidence; coverage and classification use the same indexed kernel. */
 export function validateExplicitResolutionCoverage(
     resolution: CanonicalRevisionEnvelope,
-    preResolutionObservations: readonly RevisionObservation[]
+    observations: readonly RevisionObservation[]
 ): ExplicitResolutionValidation {
-    const listed = resolution.resolvedRevisionIds;
-    if (listed.length < 2) {
-        return { valid: false, reason: "Explicit resolution requires at least two competing heads." };
-    }
-
-    const preResolution = classifyRecordRevisions(preResolutionObservations);
-    if (preResolution.state !== "DIVERGENT_VALID_REVISIONS" || !preResolution.currentHeads) {
-        return { valid: false, reason: "Resolution coverage requires a proven divergent pre-resolution head set." };
-    }
-    const heads = preResolution.currentHeads;
-    if (heads.some((head) => !sameRecord(resolution, head.envelope))) {
-        return { valid: false, reason: "Resolution and competing heads must belong to the same store-bound record." };
-    }
-    const competingHeadIds = heads.map((head) => head.envelope.revisionId).sort();
-    if (resolution.parentRevisionId === null || !competingHeadIds.includes(resolution.parentRevisionId)) {
-        return { valid: false, reason: "Resolution parent must be one of the adjudicated competing heads." };
-    }
-    if (preResolutionObservations.some((observation) => observation.envelope.revisionId === resolution.revisionId)) {
-        return { valid: false, reason: "Resolution revisionId must be fresh relative to pre-resolution history." };
-    }
-
-    if (listed.length !== competingHeadIds.length || listed.some((id, index) => id !== competingHeadIds[index])) {
-        return { valid: false, reason: "resolvedRevisionIds must equal the complete proven competing-head set." };
-    }
-    return { valid: true, resolvedRevisionIds: listed };
+    const built = indexQualifiedRevisionGraph(observations.map((item) => ({ role: "DIRECT_CANONICAL", ...item })));
+    if (built.status !== "COMPLETE")
+        return {
+            valid: false,
+            reason:
+                built.status === "INCOMPLETE"
+                    ? built.reason
+                    : "Resolution coverage requires a proven divergent pre-resolution head set.",
+        };
+    const candidates = suppliedOrdinaryCandidates(built.index);
+    const evaluation = evaluateIndexedHeadRelations(built.index, candidates);
+    if (evaluation.status === "INCOMPLETE") return { valid: false, reason: evaluation.reason };
+    const bindings = (evaluation.classification.currentHeads ?? []).map((head) => ({
+        revisionId: head.envelope.revisionId,
+        digest: head.digest,
+    }));
+    const result = explicitCoverageKernel(resolution, built.index, evaluation.classification, bindings);
+    return result.status === "COMPLETE" ? result.validation : { valid: false, reason: result.reason };
 }
 
 export interface StoreCandidateObservation {

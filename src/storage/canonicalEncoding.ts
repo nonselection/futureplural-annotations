@@ -1,8 +1,10 @@
 /** Deterministic JSON-compatible encoding and SHA-256 digest helpers. */
 
 declare const canonicalDigestBrand: unique symbol;
+declare const artifactDigestBrand: unique symbol;
 
 export type CanonicalDigest = string & { readonly [canonicalDigestBrand]: true };
+export type ArtifactDigest = string & { readonly [artifactDigestBrand]: true };
 
 export class CanonicalEncodingError extends Error {
     constructor(message: string) {
@@ -102,6 +104,10 @@ export function isCanonicalDigest(value: unknown): value is CanonicalDigest {
     return typeof value === "string" && DIGEST_PATTERN.test(value);
 }
 
+export function isArtifactDigest(value: unknown): value is ArtifactDigest {
+    return typeof value === "string" && DIGEST_PATTERN.test(value);
+}
+
 export async function sha256Bytes(value: Uint8Array): Promise<CanonicalDigest> {
     const cryptoApi = window.crypto;
     if (!cryptoApi?.subtle) {
@@ -120,6 +126,11 @@ export async function canonicalDigest(value: unknown): Promise<CanonicalDigest> 
         throw new CanonicalEncodingError("TextEncoder is unavailable on this runtime.");
     }
     return sha256Bytes(new encoder().encode(canonicalSerialize(value)));
+}
+
+/** Same canonical encoding and SHA-256, with a separate artifact-content role. */
+export async function artifactDigest(value: unknown): Promise<ArtifactDigest> {
+    return (await canonicalDigest(value)) as string as ArtifactDigest;
 }
 
 export function digestsEqual(left: CanonicalDigest, right: CanonicalDigest): boolean {
