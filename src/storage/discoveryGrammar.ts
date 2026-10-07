@@ -1,7 +1,7 @@
 /**
  * Finite, provider-neutral grammar for S2 physical discovery.
- * Unknown nodes never grant traversal. Sibling count is intentionally unbounded;
- * only structural depth and validated evidence bound the walk.
+ * Unknown nodes never grant traversal. Version 1 fixes structural edges/depth;
+ * successor S2 also meters sibling work with finite invocation budgets.
  */
 
 export const DISCOVERY_GRAMMAR_VERSION = 1 as const;
@@ -35,8 +35,9 @@ export interface DiscoveryGrammarRule {
 }
 
 /**
- * Candidate probes are bounded lookahead only. A node becomes FK-owned for
- * further traversal only after its required marker/artifact validates.
+ * Candidate probes are bounded lookahead only. These structural edges do not
+ * require namespace/declaration presence; successor attribution is a later S2
+ * stage. Nominal names and descriptive probe text are non-authoritative hints.
  */
 export const DISCOVERY_GRAMMAR: Readonly<Record<DiscoveryStructuralLevel, DiscoveryGrammarRule>> = Object.freeze({
     "vault-root": {
